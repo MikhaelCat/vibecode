@@ -92,6 +92,8 @@ async def main():
                     raise SystemExit(f"validation not rendered: {data['checks']}")
                 if "осадки" not in data["meta"]:
                     raise SystemExit(f"weather not rendered: {data['meta']}")
+                if "мок" in data["meta"].lower() or "mock-llm" in data["title"].lower():
+                    raise SystemExit(f"mock labels must be hidden: {data}")
                 if any("День 1: День 1" in t for t in data["tabs"]):
                     raise SystemExit(f"duplicate day label: {data['tabs']}")
                 if "guard" in data["stages"]:
