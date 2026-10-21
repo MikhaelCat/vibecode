@@ -26,11 +26,13 @@ sudoedit /opt/travel-ai/.env
 ## 2. Сборка
 ```bash
 cargo build --release
+npm --prefix src/frontend run build
 ```
 
-Нужны `target/release/travel-ai`, `src/prompts`, `data`, `migrations`. Сборка — под
-Linux x86_64 с той же libc, что на сервере; альтернатива:
-`docker build -f deploy/Dockerfile -t travel-ai .` Фронтенд в репозиторий пока не входит.
+Нужны `target/release/travel-ai`, `src/prompts`, `data`, `migrations`,
+`src/frontend/dist`. Сборка — под Linux x86_64 с той же libc, что на сервере;
+альтернатива: `docker build -f deploy/Dockerfile -t travel-ai .` — фронтенд
+собирается внутри образа.
 
 ## 3. Установка
 Запускайте из корня репозитория:
