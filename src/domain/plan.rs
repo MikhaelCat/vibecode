@@ -88,6 +88,16 @@ pub struct DayPlan {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanWeather {
+    pub date: NaiveDate,
+    pub t_min: f64,
+    pub t_max: f64,
+    pub precip_prob: f64,
+    pub wind_max: f64,
+    pub desc: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Plan {
     pub id: Uuid,
     pub title: String,
@@ -99,6 +109,7 @@ pub struct Plan {
     pub total_km: f64,
     pub cost_estimate_rub: Option<u32>,
     pub warnings: Vec<Warning>,
+    pub weather: Vec<PlanWeather>,
     pub sources: Vec<SourceRef>,
     pub generation: Generation,
     pub created_at: DateTime<Utc>,
@@ -305,6 +316,23 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
         });
     }
 
+    let weather = days
+        .iter()
+        .filter_map(|day| {
+            facts.weather_for(day.date).map(|weather| PlanWeather {
+                date: day.date,
+                t_min: weather.temp_min,
+                t_max: weather.temp_max,
+                precip_prob: weather.precip_prob,
+                wind_max: weather.wind_max,
+                desc: format!(
+                    "осадки {:.0}%, ветер {:.0} м/с",
+                    weather.precip_prob, weather.wind_max
+                ),
+            })
+        })
+        .collect();
+
     Plan {
         id: Uuid::new_v4(),
         title: if draft.title.trim().is_empty() {
@@ -328,6 +356,7 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
         total_km: (total_km * 10.0).round() / 10.0,
         cost_estimate_rub: cost,
         warnings,
+        weather,
         sources: facts.sources.clone(),
         generation: Generation::Llm,
         created_at: Utc::now(),
