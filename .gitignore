@@ -13,3 +13,7 @@ results/
 
 # Keep the committed template.
 !.env.example
+
+# Python cache from matvey/ reference tools
+__pycache__/
+*.pyc
