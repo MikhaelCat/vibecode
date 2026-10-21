@@ -30,6 +30,14 @@ $('chips').addEventListener('click', (e) => {
 });
 $('token').value = localStorage.getItem('app_token') || '';
 $('form').addEventListener('submit', (e) => { e.preventDefault(); run($('q').value.trim()); });
+
+// ?query=...&autorun=1 — shareable query and headless UI test hook.
+const params = new URLSearchParams(location.search);
+const prefill = params.get('query');
+if (prefill) {
+  $('q').value = prefill;
+  if (params.get('autorun') === '1') setTimeout(() => run(prefill), 0);
+}
 fetch(API + '/api/health').then((r) => r.json()).then((h) => {
   const el = $('health'); el.textContent = `${h.model || 'онлайн'}`; el.classList.add('ok');
 }).catch(() => {});
