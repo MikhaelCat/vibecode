@@ -105,6 +105,8 @@ pub struct Plan {
     pub intent: Intent,
     pub days: Vec<DayPlan>,
     pub lodging: Vec<Lodging>,
+    #[serde(default)]
+    pub lodging_options: Vec<Lodging>,
     pub transport: TransportMode,
     pub total_km: f64,
     pub cost_estimate_rub: Option<u32>,
@@ -282,6 +284,9 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
         }
     }
 
+    let mut lodging_options: Vec<Lodging> = facts.lodging.values().cloned().collect();
+    lodging_options.sort_by_key(|option| option.price_per_night);
+
     let total_km = days
         .iter()
         .flat_map(|day| day.legs.iter())
@@ -352,6 +357,7 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
         intent: intent.clone(),
         days,
         lodging,
+        lodging_options,
         transport: intent.transport,
         total_km: (total_km * 10.0).round() / 10.0,
         cost_estimate_rub: cost,
