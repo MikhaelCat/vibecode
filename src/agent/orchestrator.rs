@@ -87,10 +87,20 @@ impl Orchestrator {
     }
 
     pub async fn budget_ok(&self) -> bool {
-        if self.cfg.daily_budget_usd <= 0.0 {
+        if !self.cfg.has_real_llm() {
             return true;
         }
-        self.store.spent_today().await < self.cfg.daily_budget_usd
+        if self.cfg.daily_budget_usd > 0.0
+            && self.store.spent_today().await >= self.cfg.daily_budget_usd
+        {
+            return false;
+        }
+        if self.cfg.daily_token_budget > 0
+            && self.store.spent_tokens_today().await >= self.cfg.daily_token_budget
+        {
+            return false;
+        }
+        true
     }
 
     pub async fn run(&self, query: String, sink: Option<mpsc::Sender<StreamEvent>>) -> RunOutcome {
@@ -351,18 +361,15 @@ impl Orchestrator {
             }
 
             if let Some((plan, report)) = pending_submit.take() {
+                let generation = if repairs > 0 {
+                    Generation::Repaired
+                } else {
+                    Generation::Llm
+                };
                 return self
                     .finish_plan(
-                        run_id,
-                        query,
-                        intent,
-                        plan,
-                        report,
-                        usage,
-                        trace,
-                        started,
-                        sink,
-                        Generation::Llm,
+                        run_id, query, intent, plan, report, usage, trace, started, sink,
+                        generation,
                     )
                     .await;
             }
@@ -444,7 +451,7 @@ impl Orchestrator {
         run_id: Uuid,
         query: String,
         intent: Intent,
-        plan: Plan,
+        mut plan: Plan,
         report: ValidationReport,
         usage: TokenUsage,
         mut trace: RunTrace,
@@ -452,6 +459,7 @@ impl Orchestrator {
         sink: Option<mpsc::Sender<StreamEvent>>,
         generation: Generation,
     ) -> RunOutcome {
+        plan.generation = generation;
         trace.validation = Some(report.clone());
         trace.outcome = if generation == Generation::Fallback {
             Outcome::Degraded
@@ -544,14 +552,19 @@ impl Orchestrator {
         trace: &RunTrace,
         latency_ms: u64,
     ) {
+        let stored_usage = if self.cfg.has_real_llm() {
+            usage
+        } else {
+            TokenUsage::default()
+        };
         let record = RunRecord {
             id: run_id,
             created_at: Utc::now(),
             query: query.to_string(),
             status: status.to_string(),
             latency_ms,
-            usage,
-            cost_usd: cost,
+            usage: stored_usage,
+            cost_usd: if self.cfg.has_real_llm() { cost } else { 0.0 },
             plan_json: plan.and_then(|plan| serde_json::to_string(plan).ok()),
             trace_json: serde_json::to_string(trace).ok(),
         };
