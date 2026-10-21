@@ -8,6 +8,12 @@ use crate::tools::registry::ToolCtx;
 static NOMINATIM_LIMIT: tokio::sync::Mutex<Option<Instant>> = tokio::sync::Mutex::const_new(None);
 static AREA_CACHE: tokio::sync::Mutex<Vec<(String, Instant, Area)>> =
     tokio::sync::Mutex::const_new(Vec::new());
+/// Successful Nominatim responses are reused for 30 minutes. This skips both
+/// the network and the 1 req/s limiter for repeated geocode/resolve_area calls.
+static NOMINATIM_CACHE: tokio::sync::Mutex<Vec<(String, Instant, Vec<Value>)>> =
+    tokio::sync::Mutex::const_new(Vec::new());
+const NOMINATIM_CACHE_TTL: Duration = Duration::from_secs(1800);
+const NOMINATIM_CACHE_MAX_ENTRIES: usize = 64;
 
 type NatureArea = (&'static str, f64, f64, (f64, f64, f64, f64));
 
@@ -61,8 +67,20 @@ pub struct Area {
     pub label: String,
 }
 
-/// Nominatim is rate-limited to one request per second.
+/// Nominatim is rate-limited to one request per second. Results are memoized
+/// for 30 minutes so repeated geocode/resolve_area calls stay off the limiter.
 pub async fn nominatim(ctx: &ToolCtx, query: &str, limit: usize) -> Vec<Value> {
+    let key = nominatim_cache_key(query, limit);
+    {
+        let cache = NOMINATIM_CACHE.lock().await;
+        if let Some((_, _, items)) = cache
+            .iter()
+            .find(|(cached_key, expires, _)| *cached_key == key && *expires > Instant::now())
+        {
+            return items.clone();
+        }
+    }
+
     {
         let mut last = NOMINATIM_LIMIT.lock().await;
         if let Some(last_request) = *last {
@@ -94,10 +112,10 @@ pub async fn nominatim(ctx: &ToolCtx, query: &str, limit: usize) -> Vec<Value> {
         Ok(response) if response.status().is_success() => response,
         _ => return Vec::new(),
     };
-    let Ok(items) = response.json::<Vec<Value>>().await else {
+    let Ok(raw_items) = response.json::<Vec<Value>>().await else {
         return Vec::new();
     };
-    items
+    let items: Vec<Value> = raw_items
         .into_iter()
         .filter_map(|item| {
             let lat = item.get("lat")?.as_str()?.parse::<f64>().ok()?;
@@ -131,7 +149,26 @@ pub async fn nominatim(ctx: &ToolCtx, query: &str, limit: usize) -> Vec<Value> {
             }))
         })
         .take(limit)
-        .collect()
+        .collect();
+
+    let now = Instant::now();
+    let mut cache = NOMINATIM_CACHE.lock().await;
+    cache.retain(|(_, expires, _)| *expires > now);
+    if cache.len() >= NOMINATIM_CACHE_MAX_ENTRIES {
+        cache.remove(0);
+    }
+    cache.push((key, now + NOMINATIM_CACHE_TTL, items.clone()));
+    items
+}
+
+fn nominatim_cache_key(query: &str, limit: usize) -> String {
+    let normalized = query
+        .to_lowercase()
+        .replace('ё', "е")
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("{normalized}|{limit}")
 }
 
 pub async fn photon(ctx: &ToolCtx, query: &str, limit: usize) -> Vec<Value> {

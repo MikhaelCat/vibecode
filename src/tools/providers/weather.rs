@@ -67,7 +67,7 @@ impl Tool for WeatherTool {
         );
 
         if let Ok(Ok(response)) =
-            tokio::time::timeout(Duration::from_secs(5), ctx.http.get(url).send()).await
+            tokio::time::timeout(Duration::from_secs(3), ctx.http.get(url).send()).await
         {
             if response.status().is_success() {
                 if let Ok(value) = response.json::<Value>().await {
@@ -168,7 +168,7 @@ async fn vlru_days(
 ) -> Option<Vec<Value>> {
     let url = format!("https://www.vl.ru/weather/{slug}");
     let response = tokio::time::timeout(
-        Duration::from_secs(6),
+        Duration::from_secs(4),
         ctx.http
             .get(url)
             .header(

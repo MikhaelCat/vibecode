@@ -31,7 +31,7 @@ impl Tool for PlacesTool {
                     "items": {"type": "string"},
                     "description": "nature, museum, viewpoint, park, historic, beach, lake, river, restaurant, cafe, hotel, attraction"
                 },
-                "limit": {"type": "integer", "minimum": 1, "maximum": 40},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
                 "date": {"type": "string"}
             },
             "required": ["area"]
@@ -39,7 +39,7 @@ impl Tool for PlacesTool {
     }
 
     async fn call(&self, args: Value, ctx: &ToolCtx) -> Result<ToolOutput, ToolError> {
-        let limit = limit_from(&args, 12, 40);
+        let limit = limit_from(&args, 10, 20);
         let area_text = args
             .get("area")
             .and_then(Value::as_str)
@@ -64,6 +64,28 @@ impl Tool for PlacesTool {
             ));
         };
 
+        // Wikipedia geosearch answers in one request and does not compete for
+        // the two Overpass slots, so try it first for attraction-like
+        // categories. Food and lodging stay on OSM, where they are precise.
+        let wikipedia_first = prefers_wikipedia(&categories);
+        let mut wikipedia_tried = false;
+        if wikipedia_first {
+            wikipedia_tried = true;
+            if let Some(places) =
+                wikipedia_matching_places(ctx, area.lat, area.lon, limit, &categories).await
+            {
+                return Ok(ToolOutput::ok(
+                    json!({"places": places}),
+                    SourceKind::Live,
+                    format!(
+                        "Википедия: {} объектов рядом с {}",
+                        places.len(),
+                        area.label
+                    ),
+                ));
+            }
+        }
+
         if let Some(places) = overpass_places(ctx, &area, &categories, limit).await {
             if !places.is_empty() {
                 return Ok(ToolOutput::ok(
@@ -74,8 +96,10 @@ impl Tool for PlacesTool {
             }
         }
 
-        if wants_wikipedia(&categories) {
-            if let Some(places) = wikipedia_places(ctx, area.lat, area.lon, limit).await {
+        if !wikipedia_tried && wants_wikipedia(&categories) {
+            if let Some(places) =
+                wikipedia_matching_places(ctx, area.lat, area.lon, limit, &categories).await
+            {
                 return Ok(ToolOutput::ok(
                     json!({"places": places}),
                     SourceKind::Live,
@@ -120,7 +144,7 @@ async fn overpass_places(
         .map(|filter| format!("{filter}({bbox});"))
         .collect();
     let query = format!(
-        "[out:json][timeout:8];({});out center 120;",
+        "[out:json][timeout:7];({});out center 80;",
         clauses.join("")
     );
     let _permit = crate::tools::providers::OVERPASS_SLOTS
@@ -128,7 +152,7 @@ async fn overpass_places(
         .await
         .ok()?;
     let response = tokio::time::timeout(
-        Duration::from_secs(9),
+        Duration::from_secs(7),
         ctx.http
             .post("https://overpass-api.de/api/interpreter")
             .body(query)
@@ -375,6 +399,101 @@ fn wants_wikipedia(categories: &[String]) -> bool {
                 || category.contains("river")
                 || category.contains("рек")
         })
+}
+
+/// Attraction-like requests are a good fit for a single fast Wikipedia
+/// geosearch. If any category needs OSM semantics (food, hotels, "all"),
+/// Overpass must run first.
+fn prefers_wikipedia(categories: &[String]) -> bool {
+    categories.is_empty()
+        || categories
+            .iter()
+            .all(|category| attraction_category(category))
+}
+
+fn attraction_category(category: &str) -> bool {
+    [
+        "attraction",
+        "sight",
+        "nature",
+        "museum",
+        "viewpoint",
+        "park",
+        "historic",
+        "beach",
+        "lake",
+        "river",
+        "достоприм",
+        "природ",
+        "музе",
+        "смотров",
+        "парк",
+        "истор",
+        "пляж",
+        "озер",
+        "рек",
+    ]
+    .iter()
+    .any(|needle| category.contains(needle))
+}
+
+async fn wikipedia_matching_places(
+    ctx: &ToolCtx,
+    lat: f64,
+    lon: f64,
+    limit: usize,
+    categories: &[String],
+) -> Option<Vec<Value>> {
+    let places = wikipedia_places(ctx, lat, lon, limit).await?;
+    let filtered: Vec<Value> = places
+        .into_iter()
+        .filter(|place| wikipedia_matches_categories(place, categories))
+        .collect();
+    if filtered.is_empty() {
+        None
+    } else {
+        Some(filtered)
+    }
+}
+
+/// Keep Wikipedia results category-accurate: a beach query should not be
+/// satisfied by a random museum article, otherwise Overpass never runs.
+fn wikipedia_matches_categories(place: &Value, categories: &[String]) -> bool {
+    if categories.is_empty() {
+        return true;
+    }
+    let kind = place.get("kind").and_then(Value::as_str).unwrap_or("sight");
+    categories.iter().any(|category| {
+        let category = category.as_str();
+        if category.contains("all")
+            || category.contains("attraction")
+            || category.contains("sight")
+            || category.contains("достоприм")
+        {
+            !matches!(kind, "food" | "rest")
+        } else if category.contains("nature") || category.contains("природ") {
+            matches!(
+                kind,
+                "nature" | "beach" | "lake" | "river" | "park" | "viewpoint"
+            )
+        } else if category.contains("museum") || category.contains("музе") {
+            kind == "museum"
+        } else if category.contains("viewpoint") || category.contains("смотров") {
+            matches!(kind, "viewpoint" | "nature")
+        } else if category.contains("park") || category.contains("парк") {
+            matches!(kind, "park" | "nature")
+        } else if category.contains("historic") || category.contains("истор") {
+            kind == "historic"
+        } else if category.contains("beach") || category.contains("пляж") {
+            kind == "beach"
+        } else if category.contains("lake") || category.contains("озер") {
+            kind == "lake"
+        } else if category.contains("river") || category.contains("рек") {
+            kind == "river"
+        } else {
+            false
+        }
+    })
 }
 
 fn local_places(

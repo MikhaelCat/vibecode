@@ -216,6 +216,7 @@ impl Orchestrator {
         let mut pending_submit: Option<(Plan, ValidationReport)> = None;
         let mut submit_problem: Option<String> = None;
         let mut last_error: Option<String> = None;
+        let mut search_calls = 0usize;
 
         'agent: for step in 0..self.cfg.max_steps.max(1) {
             let llm_started = Instant::now();
@@ -302,6 +303,30 @@ impl Orchestrator {
                     }
                 };
 
+                // Bound search tool usage per run. Models tend to issue one
+                // search per category; after six results are enough to plan.
+                if matches!(name.as_str(), "search_places" | "get_nearby_attractions") {
+                    if search_calls >= 6 {
+                        let content = json!({
+                            "error": "search budget exhausted; use existing facts and call submit_plan"
+                        })
+                        .to_string();
+                        messages.push(LlmMessage::tool(call.id.clone(), content));
+                        trace.tool_calls.push(ToolCallTrace {
+                            id: call.id.clone(),
+                            name: name.clone(),
+                            args_summary: truncate(&args.to_string(), 200),
+                            ms: 0,
+                            ok: false,
+                            cached: false,
+                            source: "budget".to_string(),
+                            summary: "search budget exhausted".to_string(),
+                        });
+                        continue;
+                    }
+                    search_calls += 1;
+                }
+
                 self.emit(
                     &sink,
                     "tool_call",
@@ -341,9 +366,10 @@ impl Orchestrator {
                         Ok(output) => {
                             facts.ingest(&name, &output);
                             tools_used.push(name.clone());
+                            let compact = compact_tool_data(&name, &output.data);
                             let content = truncate(
-                                &serde_json::to_string(&output.data).unwrap_or_default(),
-                                24_000,
+                                &serde_json::to_string(&compact).unwrap_or_default(),
+                                12_000,
                             );
                             trace.tool_calls.push(ToolCallTrace {
                                 id: call_id.clone(),
@@ -711,4 +737,67 @@ fn plan_window(intent: &Intent) -> String {
 
 fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
+}
+
+/// Keep tool results small for the LLM context: only the fields the model needs
+/// to build a plan. Facts are ingested from the full output before this runs.
+fn compact_tool_data(name: &str, data: &Value) -> Value {
+    match name {
+        "search_places" | "geocode" | "get_nearby_attractions" => project_array(
+            data,
+            "places",
+            &["id", "name", "kind", "lat", "lon", "opening_hours"],
+        ),
+        "find_lodging" => project_array(
+            data,
+            "options",
+            &["id", "name", "settlement", "price_per_night", "kind"],
+        ),
+        "find_events" => project_array(
+            data,
+            "events",
+            &["id", "title", "date", "end_date", "place"],
+        ),
+        "get_weather" => project_array(
+            data,
+            "days",
+            &[
+                "date",
+                "precip_prob",
+                "wind_max",
+                "temp_min",
+                "temp_max",
+                "sunrise",
+                "sunset",
+            ],
+        ),
+        "get_route" => project_fields(data, &["from", "to", "distance_km", "duration_min"]),
+        "find_fuel" => project_array(data, "stations", &["id", "name", "lat", "lon"]),
+        _ => data.clone(),
+    }
+}
+
+fn project_array(data: &Value, key: &str, fields: &[&str]) -> Value {
+    let Some(items) = data.get(key).and_then(Value::as_array) else {
+        return data.clone();
+    };
+    let mut compact = data.clone();
+    compact[key] = Value::Array(
+        items
+            .iter()
+            .map(|item| project_fields(item, fields))
+            .collect(),
+    );
+    compact
+}
+
+fn project_fields(item: &Value, fields: &[&str]) -> Value {
+    let mut object = serde_json::Map::new();
+    for field in fields {
+        object.insert(
+            (*field).to_string(),
+            item.get(*field).cloned().unwrap_or(Value::Null),
+        );
+    }
+    Value::Object(object)
 }

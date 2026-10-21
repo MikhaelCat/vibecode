@@ -59,7 +59,7 @@
             <label class="field"><span>Дата конца</span><input id="end_date" type="date" required></label>
             <label class="field"><span>Транспорт</span>
               <select id="transport">
-                <option value="">Из текста запроса</option>
+                <option value="">Автомобиль (по умолчанию)</option>
                 <option value="car">Автомобиль</option>
                 <option value="foot">Пешком</option>
                 <option value="bike">Велосипед</option>
@@ -67,7 +67,7 @@
               </select>
             </label>
           </div>
-          <p class="hint">Даты и транспорт не тронуты? Возьмём их из текста запроса. Выбрали вручную — форма главнее.</p>
+          <p class="hint">Если транспорт не выбран, по умолчанию — автомобиль. Если в тексте явно указано «пешком» или «велосипед», используем его. Даты из формы главнее текста.</p>
 
           <div class="row">
             <button id="go" class="btn" type="submit">
@@ -112,7 +112,7 @@
       <div class="map-loading" id="map-loading">Загружаю карту…</div>
       <div class="map-overlay">
         <span class="map-caption" id="map-caption">Приморский край · карта</span>
-        <span class="map-credit">© OpenStreetMap · © CARTO</span>
+        <span class="map-credit">© OpenStreetMap</span>
       </div>
     </div>
   </section>
@@ -161,7 +161,7 @@
   </div>
   <div class="foot-col">
     <h3>Данные</h3>
-    <p>OpenStreetMap (ODbL)<br>CARTO basemaps<br>Open-Meteo (CC BY 4.0)<br>OSRM</p>
+    <p>OpenStreetMap (ODbL)<br>Open-Meteo (CC BY 4.0)<br>OSRM</p>
   </div>
   <div class="foot-col">
     <h3>Границы</h3>

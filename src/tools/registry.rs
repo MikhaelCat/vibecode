@@ -121,15 +121,19 @@ impl Registry {
             .get(name)
             .ok_or_else(|| ToolError::BadArgs(format!("unknown tool: {name}")))?;
 
-        // Tools such as get_weather/find_events fall back to the intent dates,
-        // so include the date window in the key instead of only raw args.
-        let cache_key = format!(
-            "{name}:{}:{}:{}:{}",
-            intent.transport,
-            intent.start_date,
-            intent.end_date,
-            serde_json::to_string(&args).unwrap_or_default()
-        );
+        // get_weather/find_events fall back to the intent dates, so their key
+        // must include the date window. Other tools only depend on the intent
+        // transport plus their own args, which lets places/lodging results be
+        // reused across dates.
+        let args_json = serde_json::to_string(&args).unwrap_or_default();
+        let cache_key = if matches!(name, "get_weather" | "find_events") {
+            format!(
+                "{name}:{}:{}:{}:{args_json}",
+                intent.transport, intent.start_date, intent.end_date
+            )
+        } else {
+            format!("{name}:{}:{args_json}", intent.transport)
+        };
         if let Some(cached) = self.cache.get(&cache_key).await {
             if let Ok(mut output) = serde_json::from_value::<ToolOutput>(cached) {
                 output.meta.cached = true;

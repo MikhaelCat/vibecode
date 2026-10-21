@@ -65,23 +65,20 @@ function initMap() {
     keyboard: false,
     tapHold: false,
     preferCanvas: true,
-  }).setView([44.0, 133.0], 7);
+    minZoom: 7,
+    maxBounds: [[41.5, 128.5], [49.5, 141.0]],
+    maxBoundsViscosity: 1.0,
+  }).setView([43.7, 133.5], 8);
   if (touchMap) map.getContainer().style.touchAction = 'pan-y';
 
   const mapLoading = $('map-loading');
-  const tiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png', {
+  const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
     maxZoom: 18,
-    subdomains: 'abcd',
     keepBuffer: 1,
     updateWhenIdle: true,
     detectRetina: false,
-  });
-  let tileErrors = 0;
-  tiles.on('tileerror', () => {
-    tileErrors += 1;
-    if (tileErrors === 3) {
-      tiles.setUrl('https://tile.openstreetmap.org/{z}/{x}/{y}.png');
-    }
+    noWrap: true,
+    bounds: L.latLngBounds([[41.5, 128.5], [49.5, 141.0]]),
   });
   tiles.on('tileload', () => {
     if (mapTilesLoaded) return;
@@ -194,7 +191,7 @@ function updateDateHint() {
     : 'Даты не тронуты — возьмём их из текста запроса.';
   const transport = $('transport').value
     ? 'Транспорт выбран в форме.'
-    : 'Транспорт тоже возьмём из текста.';
+    : 'Транспорт не выбран — по умолчанию автомобиль, если в тексте нет другого.';
   hint.textContent = `${dates} ${transport}`;
 }
 
@@ -519,9 +516,6 @@ function renderDay() {
     }).bindPopup(popup).addTo(layer);
     markers[index] = marker;
   });
-  if (points.length > 1) {
-    L.polyline(points, { color: '#0f766e', weight: 3, opacity: 0.85, lineJoin: 'round' }).addTo(layer);
-  }
   if (points.length) {
     map.fitBounds(L.latLngBounds(points).pad(0.25), { maxZoom: 12 });
   }
@@ -530,26 +524,14 @@ function renderDay() {
     : 'Приморский край · карта';
 }
 
-function sourceInfo(placeId) {
-  const id = String(placeId || '');
-  if (id.startsWith('wikipedia:')) {
-    const page = id.slice('wikipedia:'.length);
-    return /^\d+$/.test(page)
-      ? { label: 'Wikipedia', url: `https://ru.wikipedia.org/?curid=${page}` }
-      : { label: 'Wikipedia', url: null };
-  }
-  const osm = id.match(/^osm:(node|way|relation)\/(\d+)$/);
-  if (osm) {
-    return {
-      label: 'OpenStreetMap',
-      url: `https://www.openstreetmap.org/${osm[1]}/${osm[2]}`,
-    };
-  }
-  if (id.startsWith('nominatim:') || id.startsWith('photon:')) {
-    return { label: 'OpenStreetMap', url: 'https://www.openstreetmap.org/' };
-  }
-  if (id.startsWith('mock:')) return { label: 'локальные данные', url: null };
-  return { label: 'источник', url: null };
+function stopDescription(stop) {
+  if (stop.note) return stop.note;
+  const parts = [];
+  const kind = kindRu[stop.kind] || 'точка маршрута';
+  parts.push(kind.charAt(0).toUpperCase() + kind.slice(1));
+  if (stop.opening_hours) parts.push(`часы: ${stop.opening_hours}`);
+  if (stop.price_rub) parts.push(`${stop.price_rub} ₽`);
+  return parts.join(' · ');
 }
 
 function stopHtml(stop, index) {
@@ -557,12 +539,7 @@ function stopHtml(stop, index) {
   const end = fmtTime(stop.end);
   const range = time && end ? `${time}–${end}` : time;
   const kind = kindRu[stop.kind] || '';
-  const source = stop.place_id ? sourceInfo(stop.place_id) : null;
-  const sourceHtml = source
-    ? (source.url
-      ? `<a class="source" href="${esc(source.url)}" target="_blank" rel="noopener noreferrer" title="Открыть объект в источнике">Источник: ${esc(source.label)}</a>`
-      : `<span class="source">Источник: ${esc(source.label)}</span>`)
-    : '';
+  const description = stopDescription(stop);
   return `<li class="stop" data-i="${index}" data-place-id="${esc(stop.place_id || '')}">
     <div class="stop-rail"><span class="stop-num">${String(index + 1).padStart(2, '0')}</span></div>
     <div class="stop-body">
@@ -571,8 +548,7 @@ function stopHtml(stop, index) {
         ${kind ? `<span class="stop-kind">${esc(kind)}</span>` : ''}
       </div>
       <h4>${esc(stop.name)}</h4>
-      ${stop.note ? `<p>${esc(stop.note)}</p>` : ''}
-      ${sourceHtml}
+      ${description ? `<p class="stop-desc">${esc(description)}</p>` : ''}
     </div>
   </li>`;
 }

@@ -757,6 +757,12 @@ mod tests {
     }
 
     #[test]
+    fn transport_defaults_to_car_when_not_specified() {
+        let intent = parse("Хочу на выходные по Приморью", today()).unwrap();
+        assert_eq!(intent.transport, TransportMode::Car);
+    }
+
+    #[test]
     fn no_car_means_transit() {
         let intent = parse("На два дня в Арсеньев, без машины", today()).unwrap();
         assert_eq!(intent.transport, TransportMode::Transit);

@@ -71,7 +71,7 @@ async def main():
                 tabs: [...document.querySelectorAll('#tabs .tab')].map(x => x.textContent),
                 dayDates: [...document.querySelectorAll('#tabs .tab small')].map(x => x.textContent.trim()),
                 stopIds: [...document.querySelectorAll('#stops .stop')].map(x => x.dataset.placeId).filter(Boolean),
-                sources: document.querySelectorAll('#stops .stop .source').length,
+                descriptions: document.querySelectorAll('#stops .stop-desc').length,
                 hasChecks: !!document.getElementById('checks'),
                 hasTrace: !!document.getElementById('trace-box'),
                 errorHidden: document.getElementById('error').hidden,
@@ -127,8 +127,8 @@ async def main():
                     raise SystemExit(f"duplicate stops on the active day: {data['stopIds']}")
                 if data.get("hasChecks") or data.get("hasTrace"):
                     raise SystemExit(f"debug panels must be removed from the UI: {data}")
-                if data.get("stops") and not data.get("sources"):
-                    raise SystemExit("stop source links are missing")
+                if data.get("stops") and data.get("descriptions") != data.get("stops"):
+                    raise SystemExit(f"every stop needs a mini description: {data}")
                 if not data["errorHidden"] or not data["refusalHidden"]:
                     raise SystemExit(f"stale notices are visible: {data}")
                 if "guard" in data["stages"]:
