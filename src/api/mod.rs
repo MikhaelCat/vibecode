@@ -15,7 +15,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
-use crate::agent::Orchestrator;
+use crate::agent::{Orchestrator, RunOverrides};
 use crate::config::Config;
 use crate::error::ApiError;
 use crate::store::Store;
@@ -54,6 +54,7 @@ async fn plan_sse(
     Json(request): Json<PlanRequest>,
 ) -> Result<Response, ApiError> {
     check_auth(&state, &headers)?;
+    let overrides = validate_overrides(&request)?;
     let query = validate_query(&state, request.query)?;
     if !state.orchestrator.budget_ok().await {
         return Err(ApiError::budget_exhausted(
@@ -71,7 +72,7 @@ async fn plan_sse(
     let orchestrator = state.orchestrator.clone();
     tokio::spawn(async move {
         let _permit = permit;
-        orchestrator.run(query, Some(tx)).await;
+        orchestrator.run_with(query, Some(tx), overrides).await;
     });
 
     Ok(plan_stream(rx).into_response())
@@ -83,6 +84,7 @@ async fn plan_sync(
     Json(request): Json<PlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
     check_auth(&state, &headers)?;
+    let overrides = validate_overrides(&request)?;
     let query = validate_query(&state, request.query)?;
     if !state.orchestrator.budget_ok().await {
         return Err(ApiError::budget_exhausted(
@@ -97,7 +99,7 @@ async fn plan_sync(
         .map_err(|_| ApiError::rate_limited("Слишком много одновременных запросов"))?;
     let outcome = tokio::time::timeout(
         Duration::from_secs(120),
-        state.orchestrator.run(query, None),
+        state.orchestrator.run_with(query, None, overrides),
     )
     .await
     .map_err(|_| ApiError {
@@ -129,6 +131,7 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
         "model": state.orchestrator.model(),
         "mock_llm": !state.cfg.has_real_llm(),
         "prompt_version": state.orchestrator.prompt_version(),
+        "auth_required": state.cfg.app_token.is_some(),
         "uptime_secs": state.started_at.elapsed().as_secs(),
         "budget": {
             "daily_usd": state.cfg.daily_budget_usd,
@@ -176,6 +179,30 @@ fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
             "Неверный или отсутствующий APP_TOKEN",
         ))
     }
+}
+
+fn validate_overrides(request: &PlanRequest) -> Result<RunOverrides, ApiError> {
+    let start = request.start_date;
+    let end = request.end_date;
+    if start.is_some() != end.is_some() {
+        return Err(ApiError::bad_request(
+            "start_date и end_date нужно передавать вместе",
+        ));
+    }
+    if let (Some(start), Some(end)) = (start, end) {
+        if end < start {
+            return Err(ApiError::bad_request("end_date раньше start_date"));
+        }
+        let days = (end - start).num_days() + 1;
+        if !(1..=3).contains(&days) {
+            return Err(ApiError::bad_request("план поддерживает от 1 до 3 дней"));
+        }
+    }
+    Ok(RunOverrides {
+        start_date: start,
+        end_date: end,
+        transport: request.transport,
+    })
 }
 
 fn validate_query(state: &AppState, query: String) -> Result<String, ApiError> {
