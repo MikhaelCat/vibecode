@@ -1361,7 +1361,7 @@ cache = false
 | E2E (ручной) | 5 демо-запросов + 4 guardrail | чек-лист §19.5 |
 | Eval | 20 запросов × 2 конфига | `eval` bin |
 
-Минимум к защите: валидатор покрыт тестами на каждое правило, агент — на ремонт и fallback, API — на SSE-контракт. Тесты гоняются в `just ci` (fmt + clippy + test) и в GitHub Actions, если есть.
+Минимум к защите: валидатор покрыт тестами на каждое правило, агент — на ремонт и fallback, API — на SSE-контракт. Тесты гоняются через `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test` и в GitHub Actions.
 
 ---
 
