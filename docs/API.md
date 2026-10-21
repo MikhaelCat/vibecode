@@ -24,7 +24,7 @@
 
 ## 2. POST /api/plan — SSE
 
-Запрос: `Content-Type: application/json`, тело `{"query":"...","start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD","transport":"car"}`. `start_date`/`end_date`/`transport` необязательны: если даты переданы, они переопределяют разобранный intent и ограничивают план 1–3 днями; `transport` — `car`, `foot`, `bike`, `transit`. Успех — `200 text/event-stream`, `Cache-Control: no-cache`; кадр — `event: <имя>\ndata: <json>\n\n`. Ошибки валидации, бюджета, авторизации и занятости семафора приходят до открытия потока обычным JSON с 4xx.
+Запрос: `Content-Type: application/json`, тело `{"query":"...","start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD","transport":"car"}`. `start_date`/`end_date`/`transport` необязательны: если даты переданы, они переопределяют разобранный intent и ограничивают план 1–7 днями; `transport` — `car`, `foot`, `bike`, `transit`. Успех — `200 text/event-stream`, `Cache-Control: no-cache`; кадр — `event: <имя>\ndata: <json>\n\n`. Ошибки валидации, бюджета, авторизации и занятости семафора приходят до открытия потока обычным JSON с 4xx.
 
 | Событие | Поля `data` | Когда |
 |---|---|---|
