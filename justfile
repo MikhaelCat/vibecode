@@ -11,10 +11,6 @@ check:
 build:
 	cargo build --release
 
-web:
-	pnpm --dir src/frontend install
-	pnpm --dir src/frontend build
-
 eval VERSION:
 	cargo run --release --bin eval -- \
 		--config configs/{{VERSION}}.toml \
