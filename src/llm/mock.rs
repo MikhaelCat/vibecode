@@ -266,7 +266,7 @@ fn select_places(mut places: Vec<MockPlace>, intent: &Intent, rainy: bool) -> Ve
             .partial_cmp(&haversine_km(base, (b.lat, b.lon)))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    places.truncate(4);
+    places.truncate(12);
     places
 }
 
@@ -331,7 +331,7 @@ fn build_draft(intent: &Intent, places: &[MockPlace], lodging_ids: &[String]) ->
     }
 
     PlanDraft {
-        title: "Демо-план по Приморью".to_string(),
+        title: "План по Приморью".to_string(),
         summary: format!("{} дн. — офлайн-план для проверки пайплайна", days.len()),
         days,
         lodging_ids: lodging_ids.to_vec(),
