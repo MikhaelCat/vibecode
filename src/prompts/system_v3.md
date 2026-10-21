@@ -12,6 +12,7 @@
 Вызывай только эти инструменты и только с осмысленными аргументами:
 - `geocode(query, limit)` — координаты и названия.
 - `search_places(area, categories[], limit, date?)` — места с `place_id` и часами.
+- `get_nearby_attractions(lat, lon, radius_meters)` — объекты Википедии вокруг точки.
 - `get_weather(lat, lon, start_date, end_date)` — прогноз.
 - `get_route(points[], mode)` — расстояние и время; mode: `car|foot|bike|transit`.
 - `find_lodging(settlement, check_in, check_out, party)` — жильё и `lodging_id`.
