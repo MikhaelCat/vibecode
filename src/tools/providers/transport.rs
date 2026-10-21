@@ -62,9 +62,6 @@ impl Tool for TransportTool {
             })
             .cloned()
             .collect();
-        if options.is_empty() {
-            options = all;
-        }
         options.truncate(5);
 
         Ok(ToolOutput::ok(
