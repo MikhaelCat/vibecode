@@ -213,6 +213,18 @@ then
   exit 1
 fi
 
+section "SPA is served"
+if ! curl -fsS "$BASE_URL/" -o "$TMP_DIR/index.html"; then
+  fail "GET / did not return the SPA index"
+fi
+if ! grep -q "vibecode" "$TMP_DIR/index.html"; then
+  fail "GET / does not look like the SPA shell"
+fi
+if ! curl -fsS "$BASE_URL/app.js" -o /dev/null; then
+  fail "GET /app.js is not served"
+fi
+ok "SPA shell and app.js are served"
+
 section "Sync plan: car weekend"
 car_payload="$TMP_DIR/car-request.json"
 car_response="$TMP_DIR/car-response.json"
