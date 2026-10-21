@@ -3,7 +3,7 @@
 Веб-ассистент: свободный запрос на русском → проверенный план поездки на 1–3 дня по Приморскому краю: места, маршрут, ночёвка, погода, ограничения, карта и trace того, как план собран.
 
 **Хакатон:** Т-Банк × Сириус · 2 дня · защита 8 + 3 минуты  
-**Стек:** Rust (axum + tokio), T-Bank Spirit LLM Proxy (DeepSeek) / OpenRouter, OpenStreetMap / Open-Meteo / OSRM, SQLite, SPA + Leaflet  
+**Стек:** Rust (axum + tokio), T-Bank Spirit LLM Proxy (DeepSeek) / OpenRouter, OpenStreetMap / Open-Meteo / OSRM, SQLite; фронтенд — отдельная команда, позже  
 **Основная папка кода:** [`src/`](src/)
 
 ---
@@ -45,8 +45,8 @@ POST-эндпоинта требуют `x-app-token`), а расход огра�
 | Роль | Зона | Папки |
 |---|---|---|
 | **Backend + deploy** | API/SSE, orchestrator, агентный цикл, валидатор, store, бюджет, VM и systemd | `src/api/`, `src/agent/`, `src/domain/`, `src/llm/`, `src/store/`, `src/main.rs`, `deploy/` |
-| **Frontend** | SPA, SSE-клиент, карта, план, trace | `src/frontend/` |
-| **Parser** | OSM/Open-Meteo/OSRM, нормализация, моки, fixtures, кэш | `src/tools/providers/`, `src/parser/`, `data/mock/`, `fixtures/` |
+| **Frontend** | SPA, SSE-клиент, карта, план, trace (позже, отдельная ветка) | `src/frontend/` |
+| **Parser** | OSM/Open-Meteo/OSRM, нормализация, моки, кэш | `src/tools/providers/`, `src/parser/`, `data/mock/` |
 | **QA** | эвал, тесты, guardrails, метрики | `src/bin/eval.rs`, `src/qa/`, `data/eval/`, `tests/` |
 | **System prompt engineer** | system/preflight/repair-промпты, описания тулов, отказы | `src/prompts/`, `configs/` |
 
@@ -68,12 +68,10 @@ vibecode/
 │   ├── store/              # SQLite, runs, budget
 │   ├── bin/eval.rs         # QA: раннер эвалов
 │   ├── prompts/            # prompt engineer
-│   ├── frontend/           # frontend
-│   ├── parser/             # parser: скрипты и fixtures
+│   ├── parser/             # parser: заметки и нормализация
 │   └── qa/                 # QA: сценарии и guardrails
 ├── data/                   # mock, geo, eval
 ├── configs/                # v1/v2/v3 для эвала
-├── fixtures/               # записанные ответы провайдеров
 ├── migrations/             # SQLite
 ├── deploy/                 # systemd, install.sh, Dockerfile
 ├── scripts/                # smoke, eval_all, docker_smoke
@@ -83,7 +81,7 @@ vibecode/
 └── README.md
 ```
 
-`src/` — главная папка: Rust-бэкенд лежит в корне `src/`, команды — в `src/frontend/`, `src/parser/`, `src/qa/`, `src/prompts/`. Cargo собирает только Rust-модули, вложенные папки команд для него — ресурсы.
+`src/` — главная папка: Rust-бэкенд лежит в корне `src/`, parser/QA/prompts — в `src/parser/`, `src/qa/`, `src/prompts/`. Фронтенд в этом репозитории ещё не добавлен: `src/frontend/` появится отдельной командой. Cargo собирает только Rust-модули.
 
 ---
 
@@ -111,13 +109,7 @@ curl -N -X POST http://127.0.0.1:8080/api/plan \
   -d '{"query":"Хочу на выходные по Приморью на машине, не больше двух дней"}'
 ```
 
-Фронтенд:
-
-```bash
-pnpm --dir src/frontend install
-pnpm --dir src/frontend dev
-pnpm --dir src/frontend build   # dist отдаёт axum
-```
+Фронтенд пока не входит в репозиторий: API и SSE можно проверить через `scripts/smoke.sh` и `docs/API.md`.
 
 ## Docker и CI
 
@@ -148,7 +140,6 @@ docker run -d --name travel-ai --env-file .env -p 8080:8080 \
 
 ```bash
 cargo build --release
-pnpm --dir src/frontend install && pnpm --dir src/frontend build
 bash deploy/install.sh
 sudo journalctl -u travel-ai -f
 ```
