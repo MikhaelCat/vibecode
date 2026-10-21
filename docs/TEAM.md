@@ -12,8 +12,8 @@
 | Роль | Владелец | Зона | Папки и файлы |
 |---|---|---|---|
 | **Backend + deploy** | Mikhael | API/SSE, orchestrator, агентный цикл, валидатор, store, бюджет, Spirit LLM Proxy/OpenRouter, VM и systemd | `src/api/`, `src/agent/`, `src/domain/`, `src/llm/`, `src/store/`, `src/main.rs`, `src/lib.rs`, `deploy/` |
-| **Frontend** | @frontend | SPA, SSE-клиент, карта, план, trace-панель | `src/frontend/` |
-| **Parser** | @parser | OSM/Open-Meteo/OSRM, нормализация, моки, fixtures, кэш | `src/tools/providers/`, `src/parser/`, `data/mock/`, `fixtures/` |
+| **Frontend** | @frontend | SPA, SSE-клиент, карта, план, trace-панель (позже, отдельной веткой) | `src/frontend/` |
+| **Parser** | @parser | OSM/Open-Meteo/OSRM, нормализация, моки, кэш | `src/tools/providers/`, `src/parser/`, `data/mock/` |
 | **QA** | @qa | эвал, тесты, guardrails, метрики | `src/bin/eval.rs`, `src/qa/`, `data/eval/`, `tests/` |
 | **System prompt engineer** | @prompt | system/preflight/repair-промпты, описания тулов, отказы, версии | `src/prompts/`, `configs/` |
 
@@ -40,7 +40,7 @@ src/
 ├── bin/eval.rs             # QA: раннер эвалов
 ├── prompts/                # prompt: system_v1/v2/v3, preflight, repair
 ├── frontend/               # frontend: index.html, TS, CSS, vite
-├── parser/                 # parser: скрипты, fixtures, отчёты
+├── parser/                 # parser: заметки и нормализация
 └── qa/                     # QA: сценарии, guardrail-набор, отчёты
 ```
 
