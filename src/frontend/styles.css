@@ -33,6 +33,11 @@ h1{font:700 clamp(30px,5vw,44px)/1.08 var(--f-head);letter-spacing:-.03em;margin
 textarea,input{font:inherit;color:inherit;background:var(--paper);border:1.5px solid var(--line);border-radius:var(--r)}
 textarea{width:100%;padding:14px 16px;resize:vertical;min-height:92px}
 textarea:focus,input:focus{border-color:var(--tide);outline:none}
+.controls{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin-top:14px}
+.field{display:flex;flex-direction:column;gap:5px;font-size:13px;color:var(--ink-2)}
+.field input,.field select{width:100%;padding:9px 11px;border:1.5px solid var(--line);border-radius:10px;background:var(--paper);color:var(--ink);font:inherit;font-size:14px}
+.field input:focus,.field select:focus{border-color:var(--tide);outline:none}
+@media (max-width:620px){.controls{grid-template-columns:1fr 1fr}.field:last-child{grid-column:1/-1}}
 .row{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-top:12px}
 .btn{font:600 16px var(--f-body);background:var(--tiger);color:#1b0e04;border:0;border-radius:var(--r);padding:13px 22px;cursor:pointer;transition:transform .12s}
 .btn:hover{transform:translateY(-1px)}
@@ -64,7 +69,6 @@ textarea:focus,input:focus{border-color:var(--tide);outline:none}
 .plan-head p{margin:0 0 14px;color:var(--ink-2)}
 .meta{display:flex;flex-wrap:wrap;gap:8px}
 .pill{font-size:14px;padding:5px 12px;border-radius:99px;background:var(--paper);border:1px solid var(--line)}
-.mock{font-size:11px;font-weight:600;padding:1px 7px;border-radius:6px;background:#f3d9b6;color:#6b3a07;margin-left:6px}
 
 .tabs{display:flex;gap:6px;margin:26px 0 4px;border-bottom:1.5px solid var(--line)}
 .tab{font:600 15px var(--f-body);background:none;border:0;padding:10px 16px;color:var(--ink-2);cursor:pointer;border-bottom:3px solid transparent;margin-bottom:-1.5px}
