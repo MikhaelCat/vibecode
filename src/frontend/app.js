@@ -43,19 +43,25 @@ let layer = null;
 let markers = [];
 let mapTilesLoaded = false;
 if (window.L) {
-  // Wheel zoom hijacks page scrolling and touch drags trap mobile users on the
-  // map. Keep zoom buttons; allow wheel and one-finger scrolling everywhere.
-  const compactMap = window.matchMedia('(max-width: 760px)').matches;
+  // Wheel zoom hijacks page scrolling and touch drags trap users on tablets and
+  // landscape phones too. Keep zoom buttons and let one-finger gestures scroll.
+  const touchMap = navigator.maxTouchPoints > 0 || window.matchMedia('(any-pointer: coarse)').matches;
   map = L.map('map', {
     zoomControl: true,
     attributionControl: false,
-    scrollWheelZoom: false,
-    dragging: !compactMap,
-    touchZoom: !compactMap,
-    doubleClickZoom: !compactMap,
+    // Desktop: wheel zooms the map only while the cursor is over it. Touch:
+    // one-finger gestures keep scrolling the page.
+    scrollWheelZoom: true,
+    wheelDebounceTime: 40,
+    wheelPxPerZoomLevel: 90,
+    dragging: !touchMap,
+    touchZoom: !touchMap,
+    doubleClickZoom: !touchMap,
     boxZoom: false,
+    keyboard: false,
+    tapHold: false,
   }).setView([44.0, 133.0], 7);
-  if (compactMap) map.getContainer().style.touchAction = 'pan-y';
+  if (touchMap) map.getContainer().style.touchAction = 'pan-y';
   const mapLoading = $('map-loading');
   const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 });
   tiles.on('tileload', () => {
@@ -76,10 +82,9 @@ function fitMap() {
   if (map) map.invalidateSize();
 }
 if (map) {
+  // Leaflet tracks window resizes itself. Extra invalidateSize calls on every
+  // scrollbar/address-bar resize cause repaint jank, so only size once on ready.
   map.whenReady(fitMap);
-  window.addEventListener('resize', fitMap);
-  const card = document.querySelector('.map-card');
-  if (window.ResizeObserver && card) new ResizeObserver(fitMap).observe(card);
 }
 
 // ---------- состояние ----------

@@ -94,7 +94,18 @@ impl Cache {
             value: value.clone(),
             expires_at: Instant::now() + ttl,
         };
-        self.inner.write().await.insert(key.clone(), entry);
+        let now = Instant::now();
+        {
+            let mut guard = self.inner.write().await;
+            guard.retain(|_, entry| entry.expires_at > now);
+            while guard.len() >= 512 {
+                let Some(oldest) = guard.keys().next().cloned() else {
+                    break;
+                };
+                guard.remove(&oldest);
+            }
+            guard.insert(key.clone(), entry);
+        }
 
         if let Some(mut connection) = self.redis().await {
             let seconds = ttl.as_secs().max(1);

@@ -94,7 +94,7 @@
 - Мультиязычный интерфейс, голосовой ввод.
 - Точные графики автобусов и поездов, пробки, платные дороги.
 - RAG/векторная база: данные структурированные и живые, инструменты важнее документов.
-- Микросервисы, Kubernetes, Redis, Postgres — на два дня это лишняя операционная нагрузка.
+- Микросервисы, Kubernetes, Postgres как основная БД — на два дня это лишняя операционная нагрузка. Redis используется только как опциональный кэш тулов.
 
 ### 2.3 Допущения
 
@@ -308,7 +308,7 @@ vibecode/
 | JSON Schema | `schemars` (derive) | Схема `submit_plan` из тех же типов, что и serde |
 | Ошибки | `thiserror` (lib), `anyhow` (bin) | Разделение доменных и инфраструктурных ошибок |
 | Хранилище | `sqlx` (sqlite, runtime-запросы) | Async, миграции, без compile-time макросов |
-| Кэш | `moka` (future) | TTL, single-flight, защита от дублей |
+| Кэш | Redis + `RwLock<HashMap>` | Общий TTL-кэш тулов между инстансами с fallback в память |
 | Время | `chrono`, `chrono-tz` | `NaiveDate` + Asia/Vladivostok |
 | Логи | `tracing`, `tracing-subscriber` | JSON-логи, request id |
 | Парсинг часов | `opening-hours` | `opening_hours` из OSM; unknown → не блокируем |
@@ -758,9 +758,9 @@ while let Some(ev) = stream.next().await {
 |---|---|---|---|---|---|---|
 | `get_weather` | Open-Meteo, fallback VL.ru | live | нет | щедрые, non-commercial | 10 мин | `stale`/«нет данных»; погода не выдумывается |
 | `search_places` | OSM Overpass + Wikipedia | live | нет | fair use, 2 слота | 10 мин | `data/mock/places.json` рядом с районом |
-| `geocode` | Nominatim | live | нет | **1 req/s**, User-Agent обязателен | 30 дней | локальный словарь топонимов |
-| `get_route` | OSRM demo / ORS | live | ORS — ключ | demo без SLA; ORS free tier | 30 дней | прямая по формуле гаверсинуса + пометка `approximate` |
-| `find_fuel` | Overpass `amenity=fuel` | live (наличие — mock) | нет | как Overpass | 7 дней | пусто + warning «нет данных» |
+| `geocode` | Nominatim | live | нет | **1 req/s**, User-Agent обязателен | 10 мин | локальный словарь топонимов |
+| `get_route` | OSRM demo / ORS | live | ORS — ключ | demo без SLA; ORS free tier | 10 мин | прямая по формуле гаверсинуса + пометка `approximate` |
+| `find_fuel` | Overpass `amenity=fuel` | live (наличие — mock) | нет | как Overpass | 10 мин | пусто + warning «нет данных» |
 | `find_lodging` | mock JSON + OSM Overpass | mock/live | нет | Overpass fair use | 10 мин | пусто с пометкой |
 | `find_transport` | mock JSON | mock | нет | — | — | — |
 | `find_events` | VL.ru afisha (JSON-LD) | live | нет | robots.txt разрешает страницу | 10 мин | пусто + `ok:false`, если провайдер недоступен |
@@ -828,7 +828,7 @@ out center tags 80;
 ### 10.4 Кэш и лимиты
 
 - Ключ кэша: `(tool, нормализованные args, дата-бакет)`. Координаты округляем до 4 знаков, даты — до дня.
-- `moka` с TTL по таблице; negative-cache 10 минут, чтобы не долбить упавший провайдер.
+- Redis/память с TTL 10 минут; negative-cache 10 минут, чтобы не долбить упавший провайдер.
 - Single-flight: одновременные одинаковые запросы ждут один вызов (`try_get_with`).
 - Семафоры: Nominatim — 1, Overpass — 2, Open-Meteo — 4, OSRM — 2.
 - Таймаут на тул — 15 с; общий дедлайн запроса — 90 с.
@@ -1694,7 +1694,7 @@ thiserror = "2"
 anyhow = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-moka = { version = "0.12", features = ["future"] }
+redis = { version = "0.27", features = ["tokio-comp", "connection-manager"] } # optional cache
 sqlx = { version = "0.8", features = ["runtime-tokio", "sqlite", "chrono", "migrate"] }
 chrono = { version = "0.4", features = ["serde"] }
 chrono-tz = "0.10"

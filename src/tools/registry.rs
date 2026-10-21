@@ -121,9 +121,13 @@ impl Registry {
             .get(name)
             .ok_or_else(|| ToolError::BadArgs(format!("unknown tool: {name}")))?;
 
+        // Tools such as get_weather/find_events fall back to the intent dates,
+        // so include the date window in the key instead of only raw args.
         let cache_key = format!(
-            "{name}:{}:{}",
+            "{name}:{}:{}:{}:{}",
             intent.transport,
+            intent.start_date,
+            intent.end_date,
             serde_json::to_string(&args).unwrap_or_default()
         );
         if let Some(cached) = self.cache.get(&cache_key).await {
@@ -159,6 +163,11 @@ impl Registry {
 }
 
 fn mark_cached_sources(data: &mut Value) {
+    if let Some(source) = data.get_mut("source") {
+        if source.is_string() {
+            *source = Value::String("cache".to_string());
+        }
+    }
     for key in ["places", "options", "stations", "events"] {
         if let Some(items) = data.get_mut(key).and_then(Value::as_array_mut) {
             for item in items {
