@@ -1,6 +1,7 @@
 use crate::domain::dates::add_days;
 use crate::domain::facts::Facts;
-use crate::domain::intent::Intent;
+use crate::domain::geo::haversine_km;
+use crate::domain::intent::{Intent, TransportMode};
 use crate::domain::plan::{enrich, DayDraft, Generation, ItemDraft, ItemKind, Plan, PlanDraft};
 
 /// Deterministic plan from already collected facts. Never calls the LLM.
@@ -8,7 +9,41 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
     facts.ensure_minimal(intent.start_date, intent.end_date);
 
     let mut places: Vec<_> = facts.places.values().cloned().collect();
-    places.sort_by(|a, b| a.name.cmp(&b.name));
+    let bad_weather = facts.weather.values().any(|weather| {
+        weather.precip_prob >= 70.0
+            || (matches!(intent.transport, TransportMode::Foot | TransportMode::Bike)
+                && weather.wind_max >= 12.0)
+    });
+    if bad_weather {
+        let indoor: Vec<_> = places
+            .iter()
+            .filter(|place| matches!(place.kind.as_str(), "museum" | "food" | "rest"))
+            .cloned()
+            .collect();
+        if !indoor.is_empty() {
+            places = indoor;
+        }
+    }
+    let base = (43.1155, 131.8855);
+    let radius_km = match intent.transport {
+        TransportMode::Foot => 20.0,
+        TransportMode::Bike => 50.0,
+        TransportMode::Car => 300.0,
+        TransportMode::Transit => 400.0,
+    };
+    let nearby: Vec<_> = places
+        .iter()
+        .filter(|place| haversine_km(base, (place.lat, place.lon)) <= radius_km)
+        .cloned()
+        .collect();
+    if !nearby.is_empty() {
+        places = nearby;
+    }
+    places.sort_by(|a, b| {
+        haversine_km(base, (a.lat, a.lon))
+            .partial_cmp(&haversine_km(base, (b.lat, b.lon)))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 
     let mut cursor = 0;
     let mut days = Vec::new();
@@ -17,7 +52,7 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
     while date <= intent.end_date {
         let mut items = Vec::new();
         for slot in 0..2 {
-            if places.is_empty() {
+            if places.is_empty() || (slot > 0 && places.len() == 1) {
                 break;
             }
             let place = &places[cursor % places.len()];
