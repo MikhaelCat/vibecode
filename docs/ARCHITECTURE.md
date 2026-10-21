@@ -2,12 +2,14 @@
 
 ## План проекта и техническая архитектура
 
-**Стек:** Rust (axum + tokio) · OpenRouter · OpenStreetMap / Open-Meteo / OSRM · SQLite · Leaflet  
+**Стек:** Rust (axum + tokio) · Spirit LLM Proxy / OpenRouter · OpenStreetMap / Open-Meteo / OSRM · SQLite · фронтенд позже  
 **Формат:** командный хакатон Т-Банк × Сириус, два дня, защита 8 + 3 минуты  
 **Версия документа:** 1.1 · 21.10.2026  
 **Источник требований:** презентация «Travel AI Assistant.pptx», 20 слайдов  
+**Статус:** Rust-бэкенд, данные, валидатор, эвал и Docker/CI реализованы; фронтенд в этом репозитории пока отсутствует — его добавляет отдельная команда.
+
 **Репозиторий:** https://github.com/MikhaelCat/vibecode  
-**Основной код:** `src/` — Rust-бэкенд в корне, команды — в `src/frontend/`, `src/parser/`, `src/qa/`, `src/prompts/`
+**Основной код:** `src/` — Rust-бэкенд в корне; `src/parser/`, `src/qa/`, `src/prompts/` — зоны команд; `src/frontend/` появится позже
 
 > **TL;DR.** Веб-ассистент на Rust: свободный запрос → агентный цикл с тулами (погода, места, маршрут, жильё) → план по дням → детерминированная проверка на сходимость с запросом и реальным миром → карта и trace. Сдаём работающий URL, эвал 20 запросов × 2–3 версии и презентацию. Главный риск — не успеть с эвалом и утонуть в Rust; лечится walking skeleton в первый день и жёстким P0.
 
@@ -49,7 +51,7 @@
 |---|---|---|
 | **Backend + deploy** | axum/SSE, orchestrator, агентный цикл, валидатор, store, бюджет, OpenRouter, VM и systemd | `src/api/`, `src/agent/`, `src/domain/`, `src/llm/`, `src/store/`, `src/tools/mod.rs`, `src/tools/registry.rs`, `deploy/` |
 | **Frontend** | SPA, SSE-клиент, план, карта Leaflet, trace-панель | `src/frontend/` |
-| **Parser** | адаптеры OSM / Open-Meteo / OSRM, нормализация, моки, fixtures, кэш | `src/tools/providers/`, `src/parser/`, `data/mock/`, `fixtures/` |
+| **Parser** | адаптеры OSM / Open-Meteo / OSRM, нормализация, моки, кэш | `src/tools/providers/`, `src/parser/`, `data/mock/` |
 | **QA** | эвал-датасет и раннер, unit/integration-тесты, guardrail-набор, метрики | `src/bin/eval.rs`, `data/eval/`, `src/qa/`, `tests/` |
 | **System prompt engineer** | system/preflight/repair-промпты, описания тулов, шаблоны отказов, версии промптов | `src/prompts/`, `configs/` |
 
@@ -265,7 +267,6 @@ vibecode/
 │   ├── mock/{lodging,transport,events,fuel}.json
 │   ├── geo/primorye.geojson
 │   └── eval/{queries.jsonl,guardrails.jsonl}
-├── fixtures/                  # записанные ответы провайдеров для тестов
 ├── migrations/
 │   └── 0001_init.sql
 ├── src/
@@ -283,8 +284,8 @@ vibecode/
 │   ├── api/{mod,sse,dto}.rs
 │   ├── bin/eval.rs
 │   ├── prompts/               # system prompt engineer: v1/v2/v3, preflight, repair
-│   ├── frontend/              # frontend: index.html, ts, css, vite
-│   ├── parser/                # parser: скрипты нормализации, fixtures, отчёты
+│   ├── frontend/              # frontend (позже): index.html, ts, css, vite
+│   ├── parser/                # parser: заметки и нормализация
 │   └── qa/                    # QA: сценарии, guardrail-набор, отчёты
 └── deploy/
     ├── travel-ai.service
@@ -755,7 +756,7 @@ while let Some(ev) = stream.next().await {
 | Тул | Провайдер | Тип | Ключ | Лимиты | TTL кэша | Фолбэк |
 |---|---|---|---|---|---|---|
 | `get_weather` | Open-Meteo | live | нет | щедрые, non-commercial | 3 ч | `stale` из кэша, затем «нет данных» |
-| `search_places` | OSM Overpass | live | нет | fair use, 2 слота | 7 дней | `fixtures/overpass_*.json` |
+| `search_places` | OSM Overpass | live | нет | fair use, 2 слота | 7 дней | `data/mock/places.json` |
 | `geocode` | Nominatim | live | нет | **1 req/s**, User-Agent обязателен | 30 дней | локальный словарь топонимов |
 | `get_route` | OSRM demo / ORS | live | ORS — ключ | demo без SLA; ORS free tier | 30 дней | прямая по формуле гаверсинуса + пометка `approximate` |
 | `find_fuel` | Overpass `amenity=fuel` | live (наличие — mock) | нет | как Overpass | 7 дней | пусто + warning «нет данных» |
@@ -1345,7 +1346,6 @@ cache = false
 - Автоматический прогон по команде и Markdown-отчёт (уже в раннере).
 - `GET /api/evals/latest` и вкладка «Замеры» в UI с таблицей.
 - График «токены vs hard-pass» по версиям (SVG из данных, без библиотек).
-- Ночной smoke-тест живых API с записью в `fixtures/`.
 
 ---
 
@@ -1356,7 +1356,7 @@ cache = false
 | Unit | Валидатор V01–V15 (табличные кейсы), нормализация дат, гео, парсер SSE | `#[test]`, `rstest` |
 | Unit | Схемы тулов принимают эталонные аргументы | `serde_json` |
 | Component | Агент с `MockLlm`: 3 сценария (успех, ремонт, лимит шагов) | `tokio::test` |
-| Contract | Тулы на записанных ответах провайдеров | `wiremock` + `fixtures/` |
+| Contract | Нормализация `ToolOutput` в `Facts` на эталонных JSON | `serde_json` + `cargo test` |
 | API | `POST /api/plan` SSE: порядок событий, отказ, ошибка, таймаут | `axum::body::Body` + `hyper` |
 | E2E (ручной) | 5 демо-запросов + 4 guardrail | чек-лист §19.5 |
 | Eval | 20 запросов × 2 конфига | `eval` bin |
@@ -1485,7 +1485,7 @@ RUST_LOG=info,travel_ai=debug
 |---|---|---|
 | **Backend + deploy** | API/SSE, orchestrator, агентный цикл, валидатор, store, бюджет, OpenRouter, VM и systemd | `src/api/`, `src/agent/`, `src/domain/`, `src/llm/`, `src/store/`, `deploy/` |
 | **Frontend** | SPA, SSE-клиент, план, карта Leaflet, trace-панель | `src/frontend/` |
-| **Parser** | адаптеры OSM/Open-Meteo/OSRM, нормализация, моки, fixtures, кэш | `src/tools/providers/`, `src/parser/`, `data/mock/`, `fixtures/` |
+| **Parser** | адаптеры OSM/Open-Meteo/OSRM, нормализация, моки, кэш | `src/tools/providers/`, `src/parser/`, `data/mock/` |
 | **QA** | эвал-датасет и раннер, unit/integration-тесты, guardrail-набор, метрики | `src/bin/eval.rs`, `data/eval/`, `src/qa/`, `tests/` |
 | **System prompt engineer** | system/preflight/repair-промпты, описания тулов, шаблоны отказов, версии промптов | `src/prompts/`, `configs/` |
 
@@ -1552,7 +1552,7 @@ RUST_LOG=info,travel_ai=debug
 |---|---|---|---|---|
 | OpenRouter-модель плохо зовёт тулы | Сред. | Выс. | Простая схема, 2–3 тула на старте, ремонт, pin модели, fallback | >20% шагов без тулов |
 | Лимит $30/день | Сред. | Выс. | Кэш, компактный контекст, дешёвый preflight, бюджет-гард, эвал одним прогоном | 70% бюджета до обеда |
-| Лимиты Nominatim/Overpass | Сред. | Сред. | Семафоры, кэш, fixtures, вежливый User-Agent | 429/таймауты подряд |
+| Лимиты Nominatim/Overpass | Сред. | Сред. | Семафоры, кэш, mock-датасет, вежливый User-Agent | 429/таймауты подряд |
 | Разреженные `opening_hours` в OSM | Выс. | Сред. | unknown → soft, честная пометка в UI | >50% мест без часов |
 | Галлюцинации мест | Сред. | Выс. | Провенанс V10, ремонт, fallback | hard V10 |
 | Долгая сборка/деплой на VM | Сред. | Сред. | Собрать локально, один бинарник, systemd, деплой с G1 | >10 мин на деплой |
