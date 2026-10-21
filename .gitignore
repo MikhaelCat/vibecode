@@ -14,6 +14,7 @@ results/
 # Keep the committed template.
 !.env.example
 
-# Python cache from matvey/ reference tools
+# Python tooling (parser, reference scripts)
 __pycache__/
 *.pyc
+.venv/
