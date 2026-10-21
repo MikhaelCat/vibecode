@@ -20,9 +20,9 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
             .filter(|place| matches!(place.kind.as_str(), "museum" | "food" | "rest"))
             .cloned()
             .collect();
-        if !indoor.is_empty() {
-            places = indoor;
-        }
+        // If there are no verified indoor places, leave the day empty instead
+        // of planning an unsafe outdoor visit.
+        places = indoor;
     }
     let base = (43.1155, 131.8855);
     let radius_km = match intent.transport {
@@ -122,6 +122,12 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
 
     let mut plan = enrich(draft, intent, facts);
     plan.generation = Generation::Fallback;
+    if bad_weather {
+        plan.warnings.push(crate::domain::plan::Warning {
+            code: "weather_unsafe".to_string(),
+            message: "Сильный ветер или дождь — уличные точки убраны из плана".to_string(),
+        });
+    }
     plan.warnings.push(crate::domain::plan::Warning {
         code: "fallback".to_string(),
         message:
@@ -149,7 +155,9 @@ fn kind_from_label(label: &str) -> ItemKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::facts::{PlaceFact, SourceKind, WeatherDay};
     use crate::domain::intent::{Pace, TransportMode};
+    use crate::domain::validate::validate;
     use chrono::NaiveDate;
 
     #[test]
@@ -175,6 +183,73 @@ mod tests {
         assert!(!plan.days[0].items.is_empty());
         assert!(!plan.lodging.is_empty());
         assert_eq!(plan.generation, Generation::Fallback);
+    }
+
+    #[test]
+    fn dangerous_wind_removes_outdoor_points() {
+        let date = NaiveDate::from_ymd_opt(2026, 10, 24).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        let intent = Intent {
+            region: "primorye".to_string(),
+            start_date: date,
+            end_date: end,
+            max_days: 2,
+            transport: TransportMode::Foot,
+            budget_rub: None,
+            party_size: 1,
+            with_children: false,
+            interests: vec![],
+            must_see: vec![],
+            avoid: vec![],
+            pace: Pace::Normal,
+            assumptions: vec![],
+        };
+        let mut facts = Facts::default();
+        facts.places.insert(
+            "test:outdoor".to_string(),
+            PlaceFact {
+                id: "test:outdoor".to_string(),
+                name: "Сопка".to_string(),
+                lat: 43.12,
+                lon: 131.89,
+                kind: "nature".to_string(),
+                opening_hours: None,
+                source: SourceKind::Live,
+            },
+        );
+        facts.places.insert(
+            "test:museum".to_string(),
+            PlaceFact {
+                id: "test:museum".to_string(),
+                name: "Музей".to_string(),
+                lat: 43.1155,
+                lon: 131.8855,
+                kind: "museum".to_string(),
+                opening_hours: None,
+                source: SourceKind::Live,
+            },
+        );
+        facts.weather.insert(
+            date,
+            WeatherDay {
+                date,
+                precip_prob: 0.0,
+                wind_max: 20.0,
+                temp_min: 5.0,
+                temp_max: 10.0,
+                sunrise: None,
+                sunset: None,
+            },
+        );
+
+        let plan = assemble(&mut facts, &intent);
+        assert!(plan.all_items().all(|item| !item.is_outdoor()));
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "weather_unsafe"));
+        let report = validate(&plan, &facts, &intent);
+        assert!(report.hard_ok(), "{:?}", report.violations);
     }
 
     #[test]

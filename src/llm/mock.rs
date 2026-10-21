@@ -47,6 +47,7 @@ impl LlmClient for MockLlm {
             .any(|message| message.role == "tool");
 
         if !has_tool_result {
+            let area = area_from_messages(&request.messages);
             let weather_args = json!({
                 "lat": 43.1155,
                 "lon": 131.8855,
@@ -54,7 +55,7 @@ impl LlmClient for MockLlm {
                 "end_date": intent.end_date.to_string()
             });
             let lodging_args = json!({
-                "settlement": "Владивосток",
+                "settlement": area.clone(),
                 "check_in": intent.start_date.to_string(),
                 "check_out": intent.end_date.to_string(),
                 "party": intent.party_size
@@ -64,8 +65,8 @@ impl LlmClient for MockLlm {
                     self.call_id(),
                     "search_places",
                     json!({
-                        "area": "Приморский край",
-                        "categories": ["nature", "museum", "viewpoint"],
+                        "area": area.clone(),
+                        "categories": ["nature", "museum", "viewpoint", "park", "beach", "lake", "river"],
                         "limit": 20
                     })
                     .to_string(),
@@ -163,6 +164,41 @@ fn default_intent() -> Intent {
     }
 }
 
+fn area_from_messages(messages: &[crate::llm::LlmMessage]) -> String {
+    const AREAS: &[(&str, &str)] = &[
+        ("уссурийск", "Уссурийск"),
+        ("находк", "Находка"),
+        ("арсеньев", "Арсеньев"),
+        ("дальнегорск", "Дальнегорск"),
+        ("славянк", "Славянка"),
+        ("андреевк", "Андреевка"),
+        ("терней", "Терней"),
+        ("кавалерово", "Кавалерово"),
+        ("лесозаводск", "Лесозаводск"),
+        ("большой камень", "Большой Камень"),
+        ("фокино", "Фокино"),
+        ("партизанск", "Партизанск"),
+        ("спасск", "Спасск-Дальний"),
+        ("русск", "Владивосток"),
+        ("тобизин", "Тобизина"),
+        ("пидан", "Пидан"),
+        ("ханк", "озеро Ханка"),
+        ("владивосток", "Владивосток"),
+    ];
+    let query = messages
+        .iter()
+        .rev()
+        .find(|message| message.role == "user")
+        .and_then(|message| message.content.as_deref())
+        .unwrap_or("")
+        .to_lowercase();
+    AREAS
+        .iter()
+        .find(|(needle, _)| query.contains(needle))
+        .map(|(_, area)| (*area).to_string())
+        .unwrap_or_else(|| "Владивосток".to_string())
+}
+
 fn collect_places(messages: &[crate::llm::LlmMessage]) -> Vec<MockPlace> {
     let mut places = Vec::new();
     let mut seen = std::collections::HashSet::new();
@@ -248,9 +284,8 @@ fn select_places(mut places: Vec<MockPlace>, intent: &Intent, rainy: bool) -> Ve
             .filter(|place| matches!(place.kind.as_str(), "museum" | "food" | "rest"))
             .cloned()
             .collect();
-        if !indoor.is_empty() {
-            places = indoor;
-        }
+        // No verified indoor option means an empty day, not an unsafe outdoor plan.
+        places = indoor;
     }
     let base = (43.1155, 131.8855);
     let radius_km = match intent.transport {
