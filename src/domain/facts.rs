@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::domain::dates::add_days;
+use crate::domain::geo::haversine_km;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -286,6 +287,19 @@ impl Facts {
         self.routes.get(&route_key(from, to))
     }
 
+    /// Route facts are keyed by the provider's "lat,lon" strings; match them to plan points.
+    pub fn route_for_points(&self, from: (f64, f64), to: (f64, f64)) -> Option<&RouteFact> {
+        self.routes.values().find(|route| {
+            let Some(route_from) = parse_latlon(&route.from) else {
+                return false;
+            };
+            let Some(route_to) = parse_latlon(&route.to) else {
+                return false;
+            };
+            haversine_km(from, route_from) < 0.02 && haversine_km(to, route_to) < 0.02
+        })
+    }
+
     pub fn enough_for_plan(&self) -> bool {
         self.places.len() >= 2
     }
@@ -335,6 +349,11 @@ fn array_field<'a>(data: &'a Value, key: &str) -> &'a [Value] {
 
 fn route_key(from: &str, to: &str) -> String {
     format!("{from}->{to}")
+}
+
+fn parse_latlon(value: &str) -> Option<(f64, f64)> {
+    let (lat, lon) = value.split_once(',')?;
+    Some((lat.trim().parse().ok()?, lon.trim().parse().ok()?))
 }
 
 fn sample_weather(date: NaiveDate) -> WeatherDay {
