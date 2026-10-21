@@ -42,12 +42,11 @@ jobs:
       - name: Release build
         run: cargo build --release
 
-      - name: Optional frontend build
+      - name: Build frontend
         if: ${{ hashFiles('src/frontend/package.json') != '' }}
         run: |
-          corepack enable
-          pnpm --dir src/frontend install --no-frozen-lockfile
-          pnpm --dir src/frontend build
+          mkdir -p src/frontend/dist
+          cp src/frontend/index.html src/frontend/styles.css src/frontend/app.js src/frontend/dist/
 
   docker:
     name: Docker image (GHCR on main)
