@@ -3,98 +3,159 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>vibecode — планировщик поездок по Приморью</title>
-<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>🐯</text></svg>">
+<meta name="description" content="AI-планировщик поездок по Приморскому краю: маршрут по дням, погода, карта и проверка плана.">
+<title>vibecode — маршрут по Приморью</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect width='100' height='100' rx='22' fill='%23071a24'/><path d='M20 68 44 26l12 21 10-14 14 35' fill='none' stroke='%235eead4' stroke-width='7' stroke-linecap='round' stroke-linejoin='round'/></svg>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Unbounded:wght@500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
 <header class="top">
-  <a class="brand" href="/">vibecode</a>
-  <span class="region">Приморский край</span>
-  <span id="health" class="health" title="Статус бэкенда">нет связи</span>
+  <a class="brand" href="/" aria-label="vibecode, на главную">
+    <span class="brand-mark" aria-hidden="true"></span>
+    vibecode
+  </a>
+  <span class="region">Приморский край <i>42–48° N</i></span>
+  <span id="health" class="health">нет связи</span>
 </header>
 
 <main>
   <section class="hero">
+    <div class="hero-glow" aria-hidden="true"></div>
+    <div class="hero-grid" aria-hidden="true"></div>
     <div class="hero-inner">
-      <p class="eyebrow">AI travel planner · 42–48° N</p>
-      <h1>Куда поедем<br>в Приморье?</h1>
+      <p class="eyebrow"><span></span>AI travel planner · Приморье</p>
+      <h1>Поездка,<br>собранная<br><em>по фактам.</em></h1>
+      <p class="hero-lead">Опишите поездку словами. Ассистент найдёт места, проверит погоду и маршрут, соберёт план по дням и покажет, откуда взял каждую точку.</p>
+      <div class="hero-stats">
+        <div><b>1–7</b><span>дней в одном плане</span></div>
+        <div><b>OSM</b><span>места и карта</span></div>
+        <div><b>Open-Meteo</b><span>живая погода</span></div>
+      </div>
     </div>
+    <a class="hero-scroll" href="#composer"><span></span>Собрать маршрут</a>
   </section>
 
-  <section class="composer">
+  <section class="composer" id="composer">
     <div class="wrap">
       <div class="section-head">
         <span class="index">01</span>
         <h2>Расскажите о поездке</h2>
       </div>
-      <p class="intro">Выберите даты и транспорт, опишите поездку словами — ассистент соберёт план на 1–3 дня, проверит его и покажет, откуда взял каждую точку.</p>
 
-      <form id="form">
-        <textarea id="q" rows="4" maxlength="600" required
-          placeholder="Например: люблю море и маяки, без долгих переездов"></textarea>
+      <div class="composer-grid">
+        <form id="form" class="panel">
+          <label class="sr-only" for="q">Описание поездки</label>
+          <textarea id="q" rows="4" maxlength="1000" required
+            placeholder="Например: хочу на выходные к морю и маякам, без долгих переездов"></textarea>
+          <div class="counter"><span id="count">0</span> / 1000</div>
 
-        <div class="controls">
-          <label class="field"><span>С</span><input id="start_date" type="date" required></label>
-          <label class="field"><span>По</span><input id="end_date" type="date" required></label>
-          <label class="field"><span>Транспорт</span>
-            <select id="transport">
-              <option value="car">Автомобиль</option>
-              <option value="foot">Пешком</option>
-              <option value="bike">Велосипед</option>
-              <option value="transit">Автобус / поезд</option>
-            </select>
-          </label>
-        </div>
+          <div class="controls">
+            <label class="field"><span>Дата начала</span><input id="start_date" type="date" required></label>
+            <label class="field"><span>Дата конца</span><input id="end_date" type="date" required></label>
+            <label class="field"><span>Транспорт</span>
+              <select id="transport">
+                <option value="car">Автомобиль</option>
+                <option value="foot">Пешком</option>
+                <option value="bike">Велосипед</option>
+                <option value="transit">Автобус / поезд</option>
+              </select>
+            </label>
+          </div>
+          <p class="hint">Не трогали даты? Возьмём их из текста запроса. Выбрали вручную — форма главнее.</p>
 
-        <div class="row">
-          <button id="go" class="btn" type="submit">Собрать маршрут</button>
-          <details class="token" id="token-box" hidden><summary>Токен доступа</summary>
-            <input id="token" type="password" placeholder="APP_TOKEN, если задан на сервере" autocomplete="off">
-          </details>
-        </div>
-      </form>
+          <div class="row">
+            <button id="go" class="btn" type="submit">
+              <span class="btn-label">Собрать маршрут</span>
+              <span class="btn-arrow" aria-hidden="true">→</span>
+            </button>
+            <details class="token" id="token-box" hidden>
+              <summary>Токен доступа</summary>
+              <input id="token" type="password" placeholder="APP_TOKEN, если задан на сервере" autocomplete="off">
+            </details>
+          </div>
+        </form>
 
-      <div class="chips" id="chips"></div>
+        <aside class="preview" aria-label="Как это работает">
+          <p class="preview-label">Как это работает</p>
+          <ol class="preview-list">
+            <li><span>01</span><div><b>Разбираем запрос</b><p>Даты, транспорт, интересы и ограничения.</p></div></li>
+            <li><span>02</span><div><b>Проверяем данные</b><p>Места, погода, расстояния и жильё — из инструментов.</p></div></li>
+            <li><span>03</span><div><b>Собираем план</b><p>Ровно на выбранные дни, без повторов точек.</p></div></li>
+            <li><span>04</span><div><b>Показываем проверки</b><p>Что подтверждено, а где данных не хватает.</p></div></li>
+          </ol>
+        </aside>
+      </div>
+
+      <div class="examples">
+        <p>Примеры запросов</p>
+        <div class="chips" id="chips"></div>
+      </div>
+
       <ol id="stages" class="stages" aria-live="polite"></ol>
-      <div id="refusal" class="refusal" hidden></div>
+      <div id="refusal" class="notice notice-refusal" hidden></div>
+      <div id="error" class="notice notice-error" hidden>
+        <div><b>Не удалось собрать маршрут.</b> <span id="error-text"></span></div>
+        <button type="button" class="btn btn-small" id="retry">Повторить</button>
+      </div>
     </div>
   </section>
 
-  <section class="mapwrap">
-    <div id="map" role="region" aria-label="Карта маршрута"></div>
-    <div class="map-foot"><span>Приморский край · 42–48° N</span><span>© OpenStreetMap</span></div>
+  <section class="map-band" aria-label="Карта маршрута">
+    <div class="map-card">
+      <div id="map" role="region" aria-label="Карта Приморского края"></div>
+      <div class="map-overlay">
+        <span class="map-caption" id="map-caption">Приморский край · карта OSM</span>
+        <span class="map-credit">© OpenStreetMap</span>
+      </div>
+    </div>
   </section>
 
-  <section class="results">
+  <section class="results" id="results">
     <div class="wrap">
       <article id="result" hidden>
         <header class="plan-head">
+          <p class="plan-kicker">Ваш маршрут</p>
           <h2 id="p-title"></h2>
           <p id="p-sum"></p>
           <div id="p-meta" class="meta"></div>
         </header>
-        <div id="tabs" class="tabs" role="tablist"></div>
-        <ol id="stops" class="stops"></ol>
+
+        <div class="day-bar">
+          <div id="tabs" class="tabs" role="tablist" aria-label="Дни поездки"></div>
+        </div>
+
+        <div class="day-head">
+          <div>
+            <p class="day-kicker" id="day-kicker">День 1</p>
+            <h3 id="day-name"></h3>
+          </div>
+          <div class="day-facts" id="day-facts"></div>
+        </div>
+
+        <ol id="stops" class="stops" aria-live="polite"></ol>
 
         <section class="lodging" id="lodging-box" hidden>
           <div class="section-head">
             <span class="index">STAY</span>
             <h2>Где остановиться</h2>
           </div>
-          <div id="lodging"></div>
+          <div id="lodging" class="lodging-grid"></div>
         </section>
 
         <section class="check">
-          <h3>Проверка плана</h3>
+          <div class="section-head">
+            <span class="index">CHECK</span>
+            <h3>Проверка плана</h3>
+          </div>
           <div id="checks" class="checks"></div>
         </section>
 
-        <details class="trace" id="trace-box"><summary>Как собран план <span id="usage"></span></summary>
+        <details class="trace" id="trace-box">
+          <summary>Как собран план <span id="usage"></span></summary>
           <ul id="trace"></ul>
         </details>
       </article>
@@ -103,17 +164,17 @@
 </main>
 
 <footer class="foot">
-  <div class="foot-col">
-    <div class="brand">vibecode</div>
-    <p>AI-планировщик поездок по Приморскому краю. Реальные координаты, погода и маршруты; жильё и расписания — проверяйте перед выездом.</p>
+  <div class="foot-brand">
+    <div class="brand"><span class="brand-mark" aria-hidden="true"></span>vibecode</div>
+    <p>AI-планировщик поездок по Приморскому краю. Координаты, погода и маршруты — из открытых источников; жильё и расписания проверяйте перед выездом.</p>
   </div>
   <div class="foot-col">
     <h3>Данные</h3>
     <p>OpenStreetMap (ODbL)<br>Open-Meteo (CC BY 4.0)<br>OSRM</p>
   </div>
   <div class="foot-col">
-    <h3>Документы</h3>
-    <p>API · UI guide · Eval<br>Только Приморский край</p>
+    <h3>Границы</h3>
+    <p>Только Приморский край.<br>Поездки на 1–7 дней.<br>Без бронирования и оплаты.</p>
   </div>
 </footer>
 

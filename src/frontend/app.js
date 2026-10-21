@@ -48,7 +48,7 @@ function clampDates(changed) {
   if (!start || !end) return;
   const s = new Date(start + 'T00:00:00');
   const e = new Date(end + 'T00:00:00');
-  const max = new Date(s); max.setDate(max.getDate() + 2);
+  const max = new Date(s); max.setDate(max.getDate() + 6);
   if (e < s) { $('end_date').value = start; return; }
   if (e > max) { $('end_date').value = isoDate(max); return; }
   if (changed === 'start') { $('end_date').min = start; }
