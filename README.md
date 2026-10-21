@@ -12,6 +12,8 @@
 
 - [Архитектура и план проекта](docs/ARCHITECTURE.md) — требования, компоненты, агентный цикл, тулы, валидатор, API, эвал, деплой, таймлайн.
 - [Команда и контракты](docs/TEAM.md) — роли, зоны ответственности, API для фронта/парсера/QA, git-процесс, Definition of Done.
+- [Замеры и методология](docs/EVAL.md) — mock-таблица, живой контрольный прогон и команды.
+- `matvey/` — Python-прототип инструментов из одноимённой ветки (Nominatim, Open-Meteo, Wikipedia, OSRM, Overpass). Wikipedia geosearch портирован в Rust-тул `get_nearby_attractions`.
 
 Коротко о главном:
 
