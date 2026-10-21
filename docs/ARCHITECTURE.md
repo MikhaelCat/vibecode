@@ -275,12 +275,12 @@ vibecode/
 │   ├── error.rs
 │   ├── obs.rs
 │   ├── domain/{mod,intent,plan,trace,validate,geo,dates,fallback}.rs
-│   ├── llm/{mod,openrouter,stream,usage,retry}.rs
-│   ├── agent/{mod,orchestrator,prompt,guard,cycle,compress,repair}.rs
-│   ├── tools/{mod,registry,args,cache}.rs
-│   ├── tools/providers/{mod,osm,open_meteo,osrm,lodging,transport,fuel,events}.rs
-│   ├── store/{mod,runs,budget,eval}.rs
-│   ├── api/{mod,routes,sse,dto,limits}.rs
+│   ├── llm/{mod,openrouter,mock}.rs
+│   ├── agent/{mod,orchestrator,prompt,guard,repair}.rs
+│   ├── tools/{mod,registry,cache}.rs
+│   ├── tools/providers/{mod,places,weather,route,lodging,transport,fuel,events,geocode}.rs
+│   ├── store/mod.rs
+│   ├── api/{mod,sse,dto}.rs
 │   ├── bin/eval.rs
 │   ├── prompts/               # system prompt engineer: v1/v2/v3, preflight, repair
 │   ├── frontend/              # frontend: index.html, ts, css, vite
@@ -995,7 +995,7 @@ L1 + L2 объединяем в один вызов на V3 (экономия т
 | `POST` | `/api/plan` | Основной: SSE-поток плана |
 | `POST` | `/api/plan/sync` | То же без стриминга, JSON (эвал, отладка) |
 | `GET` | `/api/runs/{id}` | План + trace по run_id |
-| `GET` | `/api/stats` | Сегодня: запуски, токены, стоимость, hard-pass |
+| `GET` | `/api/stats` | Сегодня: запуски, токены, стоимость |
 | `GET` | `/api/health` | `{status, version, model, uptime, budget}` |
 | `GET` | `/` | `src/frontend/dist`, SPA-fallback |
 
@@ -1117,14 +1117,6 @@ CREATE TABLE runs (
   trace_json TEXT
 );
 
-CREATE TABLE tool_cache (
-  key TEXT PRIMARY KEY,
-  provider TEXT NOT NULL,
-  payload TEXT NOT NULL,
-  fetched_at TEXT NOT NULL,
-  expires_at TEXT NOT NULL
-);
-
 CREATE TABLE daily_budget (
   day TEXT PRIMARY KEY,             -- YYYY-MM-DD по Владивостоку
   prompt_tokens INTEGER NOT NULL DEFAULT 0,
@@ -1176,7 +1168,7 @@ pub async fn reserve(&self, estimated_tokens: u32) -> Result<Reservation, Budget
 ### 15.3 Кэш
 
 - In-memory `moka`: hot-путь, TTL, single-flight.
-- SQLite `tool_cache`: переживает рестарт, нужен для демо и эвала.
+- SQLite `tool_cache` — в бэклоге; сейчас кэш in-memory (`src/tools/cache.rs`), TTL 10 минут.
 - Кэш LLM-ответов **не** включаем в эвал (иначе метрики врут); в прод-демо — включаем только для preflight по нормализованному запросу.
 - Прогрев: 5 демо-запросов прогоняются за час до защиты, кэш сохраняется; в trace видно `cached: true`.
 
