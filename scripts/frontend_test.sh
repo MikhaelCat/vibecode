@@ -71,7 +71,11 @@ async def main():
                 tabs: [...document.querySelectorAll('#tabs .tab')].map(x => x.textContent),
                 stages: [...document.querySelectorAll('#stages li')].map(x => x.textContent),
                 stops: document.querySelectorAll('#stops .stop').length,
+                lodging: document.querySelectorAll('.lodge').length,
                 checks: document.getElementById('checks').innerText,
+                mapReady: !!document.querySelector('.leaflet-container'),
+                mapWidth: document.getElementById('map')?.clientWidth || 0,
+                mapHeight: document.getElementById('map')?.clientHeight || 0,
                 tiles: document.querySelectorAll('.leaflet-tile-loaded').length,
                 attribution: !!document.querySelector('.leaflet-control-attribution')
               });
@@ -102,8 +106,12 @@ async def main():
                     raise SystemExit(f"raw stage label: {data['stages']}")
                 if data.get("attribution"):
                     raise SystemExit("leaflet attribution control must be hidden")
+                if not data.get("mapReady") or data.get("mapWidth", 0) < 100 or data.get("mapHeight", 0) < 100:
+                    raise SystemExit(f"map container did not render: {data}")
                 if not data.get("tiles"):
-                    raise SystemExit("map tiles did not render")
+                    print("WARN: map tiles not loaded yet (network); container is ready")
+                if not data.get("lodging"):
+                    raise SystemExit("lodging recommendations did not render")
                 print(json.dumps({"plan": data}, ensure_ascii=False))
                 break
 
