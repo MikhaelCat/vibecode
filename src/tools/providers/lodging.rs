@@ -58,6 +58,8 @@ impl Tool for LodgingTool {
             .collect();
         if !filtered.is_empty() {
             options = filtered;
+        } else {
+            options.clear();
         }
         options.truncate(limit);
 
