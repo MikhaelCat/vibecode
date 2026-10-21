@@ -42,15 +42,19 @@ let map = null;
 let layer = null;
 let markers = [];
 let mapTilesLoaded = false;
-if (window.L) {
-  // Wheel zoom hijacks page scrolling and touch drags trap users on tablets and
-  // landscape phones too. Keep zoom buttons and let one-finger gestures scroll.
+
+function fitMap() {
+  if (map) map.invalidateSize();
+}
+
+function initMap() {
+  if (map || !window.L) return;
+  // Touch devices keep one-finger page scrolling; the map is panned with the
+  // zoom buttons. Desktop wheel zoom works only while the cursor is over it.
   const touchMap = navigator.maxTouchPoints > 0 || window.matchMedia('(any-pointer: coarse)').matches;
   map = L.map('map', {
     zoomControl: true,
     attributionControl: false,
-    // Desktop: wheel zooms the map only while the cursor is over it. Touch:
-    // one-finger gestures keep scrolling the page.
     scrollWheelZoom: true,
     wheelDebounceTime: 40,
     wheelPxPerZoomLevel: 90,
@@ -60,10 +64,25 @@ if (window.L) {
     boxZoom: false,
     keyboard: false,
     tapHold: false,
+    preferCanvas: true,
   }).setView([44.0, 133.0], 7);
   if (touchMap) map.getContainer().style.touchAction = 'pan-y';
+
   const mapLoading = $('map-loading');
-  const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 });
+  const tiles = L.tileLayer('https://{s}.basemaps.cartocdn.com/rastertiles/voyager/{z}/{x}/{y}.png', {
+    maxZoom: 18,
+    subdomains: 'abcd',
+    keepBuffer: 1,
+    updateWhenIdle: true,
+    detectRetina: false,
+  });
+  let tileErrors = 0;
+  tiles.on('tileerror', () => {
+    tileErrors += 1;
+    if (tileErrors === 3) {
+      tiles.setUrl('https://tile.openstreetmap.org/{z}/{x}/{y}.png');
+    }
+  });
   tiles.on('tileload', () => {
     if (mapTilesLoaded) return;
     mapTilesLoaded = true;
@@ -71,6 +90,7 @@ if (window.L) {
   });
   tiles.addTo(map);
   layer = L.layerGroup().addTo(map);
+  map.whenReady(fitMap);
   setTimeout(() => {
     if (!mapTilesLoaded && mapLoading) {
       mapLoading.textContent = 'Карта недоступна — точки маршрута загружены';
@@ -78,13 +98,19 @@ if (window.L) {
   }, 6000);
 }
 
-function fitMap() {
-  if (map) map.invalidateSize();
-}
-if (map) {
-  // Leaflet tracks window resizes itself. Extra invalidateSize calls on every
-  // scrollbar/address-bar resize cause repaint jank, so only size once on ready.
-  map.whenReady(fitMap);
+// Do not download tiles or create Leaflet layers until the map is near the
+// viewport. This removes the biggest initial-load and scroll cost.
+const mapCard = document.querySelector('.map-card');
+if (mapCard && 'IntersectionObserver' in window) {
+  const observer = new IntersectionObserver((entries) => {
+    if (entries.some((entry) => entry.isIntersecting)) {
+      observer.disconnect();
+      initMap();
+    }
+  }, { rootMargin: '500px' });
+  observer.observe(mapCard);
+} else {
+  setTimeout(initMap, 0);
 }
 
 // ---------- состояние ----------
@@ -337,6 +363,7 @@ function reset() {
   $('refusal').hidden = true;
   $('refusal').innerHTML = '';
   $('error').hidden = true;
+  $('results').hidden = true;
   $('result').hidden = true;
   $('lodging-box').hidden = true;
   $('lodging').innerHTML = '';
@@ -345,7 +372,7 @@ function reset() {
   $('day-name').textContent = '';
   $('day-facts').innerHTML = '';
   $('day-kicker').textContent = 'День 1';
-  $('map-caption').textContent = 'Приморский край · карта OSM';
+  $('map-caption').textContent = 'Приморский край · карта';
   stageMap.clear();
   if (layer) layer.clearLayers();
   markers = [];
@@ -383,6 +410,7 @@ function refuse(data) {
 }
 
 function showError(message) {
+  $('results').hidden = true;
   $('result').hidden = true;
   $('error').hidden = false;
   $('error-text').textContent = message;
@@ -400,6 +428,7 @@ function legText(leg) {
 
 function renderPlan() {
   if (!plan) return;
+  $('results').hidden = false;
   $('result').hidden = false;
   $('p-title').textContent = plan.title || 'Ваш маршрут';
   $('p-sum').textContent = plan.summary || '';
@@ -428,6 +457,7 @@ function renderPlan() {
     `<button class="tab" role="tab" data-i="${index}" aria-selected="${index === day}">
       <span>День ${index + 1}</span><small>${esc(fmtDate(item.date))}</small>
     </button>`).join('');
+  if (!map) initMap();
   renderDay();
   renderLodging();
 }
@@ -497,7 +527,7 @@ function renderDay() {
   }
   $('map-caption').textContent = items.length
     ? `День ${day + 1} · ${items.length} ${items.length === 1 ? 'точка' : 'точки'}`
-    : 'Приморский край · карта OSM';
+    : 'Приморский край · карта';
 }
 
 function sourceInfo(placeId) {
