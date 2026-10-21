@@ -14,7 +14,7 @@ use crate::domain::SourceKind;
 use crate::tools::cache::Cache;
 use crate::tools::providers::{
     EventsTool, FuelTool, GeocodeTool, LodgingTool, PlacesTool, RouteTool, TransportTool,
-    WeatherTool,
+    WeatherTool, WikipediaTool,
 };
 
 #[derive(Debug, thiserror::Error)]
@@ -62,6 +62,7 @@ impl Registry {
         let implementations: Vec<Arc<dyn Tool>> = vec![
             Arc::new(WeatherTool),
             Arc::new(PlacesTool),
+            Arc::new(WikipediaTool),
             Arc::new(GeocodeTool),
             Arc::new(RouteTool),
             Arc::new(LodgingTool),
