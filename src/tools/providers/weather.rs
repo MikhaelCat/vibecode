@@ -2,7 +2,6 @@ use async_trait::async_trait;
 use chrono::NaiveDate;
 use serde_json::{json, Value};
 
-use crate::domain::dates::add_days;
 use crate::domain::facts::{SourceKind, ToolOutput};
 use crate::domain::plan::parse_time;
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
@@ -79,11 +78,12 @@ impl Tool for WeatherTool {
             }
         }
 
-        let days = mock_days(start, end);
+        // Never invent weather: an unavailable forecast is reported as missing
+        // data, and the validator marks those days as "not confirmed".
         Ok(ToolOutput::ok(
-            json!({"days": days, "forecast_available": false}),
-            SourceKind::Mock,
-            "Погода: демо-данные (провайдер недоступен)",
+            json!({"days": [], "forecast_available": false}),
+            SourceKind::Stale,
+            "Погода: прогноз недоступен",
         ))
     }
 }
@@ -138,24 +138,4 @@ fn text_at<'a>(value: &'a Value, key: &str, index: usize) -> Option<&'a str> {
         .and_then(Value::as_array)
         .and_then(|array| array.get(index))
         .and_then(Value::as_str)
-}
-
-fn mock_days(start: NaiveDate, end: NaiveDate) -> Vec<Value> {
-    let mut days = Vec::new();
-    let mut date = start;
-    let mut guard = 0;
-    while date <= end && guard < 7 {
-        days.push(json!({
-            "date": date,
-            "precip_prob": 10.0,
-            "wind_max": 5.0,
-            "temp_min": 8.0,
-            "temp_max": 16.0,
-            "sunrise": "07:30:00",
-            "sunset": "18:30:00"
-        }));
-        date = add_days(date, 1);
-        guard += 1;
-    }
-    days
 }

@@ -1,9 +1,9 @@
 use std::env;
-use std::net::SocketAddr;
+use std::net::{IpAddr, SocketAddr};
 use std::path::PathBuf;
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 
 #[derive(Debug, Clone)]
 pub struct Config {
@@ -51,6 +51,10 @@ impl Config {
             .map(ToOwned::to_owned)
             .collect();
 
+        let llm_proxy_url = env::var("LLM_PROXY_URL")
+            .unwrap_or_else(|_| "https://llm-proxy.spirit.t-education.com/v1".to_string());
+        validate_public_url(&llm_proxy_url)?;
+
         let cfg = Self {
             bind,
             openrouter_api_key: non_empty(env::var("OPENROUTER_API_KEY").ok()),
@@ -58,8 +62,7 @@ impl Config {
                 .unwrap_or_else(|| "openrouter/auto".to_string()),
             fallback_models,
             llm_proxy_token: non_empty(env::var("LLM_PROXY_TOKEN").ok()),
-            llm_proxy_url: env::var("LLM_PROXY_URL")
-                .unwrap_or_else(|_| "https://llm-proxy.spirit.t-education.com/v1".to_string()),
+            llm_proxy_url,
             llm_proxy_model: non_empty(env::var("LLM_PROXY_MODEL").ok()),
             daily_budget_usd: parse_f64("DAILY_BUDGET_USD", 25.0),
             daily_token_budget: parse_u64("DAILY_TOKEN_BUDGET", 1_000_000),
@@ -152,4 +155,72 @@ fn parse_bool(key: &str, default: bool) -> bool {
         .ok()
         .map(|v| matches!(v.as_str(), "1" | "true" | "TRUE" | "yes" | "on"))
         .unwrap_or(default)
+}
+
+/// Outbound proxy URLs come from the environment, so validate scheme and host
+/// before any request is made. Loopback, private, link-local and metadata
+/// addresses are rejected to keep the server from becoming an SSRF proxy.
+fn validate_public_url(raw: &str) -> Result<()> {
+    let url = reqwest::Url::parse(raw).with_context(|| format!("invalid URL: {raw}"))?;
+    if !matches!(url.scheme(), "http" | "https") {
+        bail!("LLM_PROXY_URL must use http or https");
+    }
+    let host = url
+        .host_str()
+        .context("LLM_PROXY_URL must contain a host")?
+        .to_ascii_lowercase();
+    if host == "localhost"
+        || host.ends_with(".localhost")
+        || host.ends_with(".local")
+        || host.ends_with(".internal")
+    {
+        bail!("LLM_PROXY_URL must not point to a local host");
+    }
+    if let Ok(ip) = host.parse::<IpAddr>() {
+        let forbidden = match ip {
+            IpAddr::V4(ip) => {
+                ip.is_private()
+                    || ip.is_loopback()
+                    || ip.is_link_local()
+                    || ip.is_broadcast()
+                    || ip.is_documentation()
+                    || ip.is_unspecified()
+                    || ip.octets()[0] >= 240
+            }
+            IpAddr::V6(ip) => {
+                let segments = ip.segments();
+                ip.is_loopback()
+                    || ip.is_unspecified()
+                    || (segments[0] & 0xfe00) == 0xfc00
+                    || (segments[0] & 0xffc0) == 0xfe80
+            }
+        };
+        if forbidden {
+            bail!("LLM_PROXY_URL must not point to a private or reserved address");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn rejects_local_and_private_proxy_urls() {
+        for url in [
+            "http://127.0.0.1:8080/v1",
+            "http://localhost:8080/v1",
+            "http://192.168.1.10/v1",
+            "http://169.254.169.254/latest/meta-data",
+            "ftp://example.com/v1",
+        ] {
+            assert!(validate_public_url(url).is_err(), "{url} must be rejected");
+        }
+    }
+
+    #[test]
+    fn accepts_public_proxy_url() {
+        assert!(validate_public_url("https://llm-proxy.spirit.t-education.com/v1").is_ok());
+    }
 }

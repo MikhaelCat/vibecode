@@ -69,6 +69,10 @@ async def main():
                 title: document.getElementById('p-title').textContent,
                 meta,
                 tabs: [...document.querySelectorAll('#tabs .tab')].map(x => x.textContent),
+                dayDates: [...document.querySelectorAll('#tabs .tab small')].map(x => x.textContent.trim()),
+                stopIds: [...document.querySelectorAll('#stops .stop code')].map(x => x.textContent.trim()),
+                errorHidden: document.getElementById('error').hidden,
+                refusalHidden: document.getElementById('refusal').hidden,
                 stages: [...document.querySelectorAll('#stages li')].map(x => x.textContent),
                 stops: document.querySelectorAll('#stops .stop').length,
                 lodging: document.querySelectorAll('.lodge').length,
@@ -77,11 +81,24 @@ async def main():
                 mapWidth: document.getElementById('map')?.clientWidth || 0,
                 mapHeight: document.getElementById('map')?.clientHeight || 0,
                 tiles: document.querySelectorAll('.leaflet-tile-loaded').length,
-                attribution: !!document.querySelector('.leaflet-control-attribution')
+                attribution: !!document.querySelector('.leaflet-control-attribution'),
+                errorText: document.getElementById('error-text')?.textContent || '',
+                refusalText: document.getElementById('refusal')?.innerText || '',
+                readyState: document.readyState,
+                chips: document.querySelectorAll('.chip').length,
+                healthText: document.getElementById('health')?.textContent || ''
               });
             }
           }
-          return JSON.stringify({ok: false, stages: [...document.querySelectorAll('#stages li')].map(x => x.textContent)});
+          return JSON.stringify({
+            ok: false,
+            stages: [...document.querySelectorAll('#stages li')].map(x => x.textContent),
+            errorText: document.getElementById('error-text')?.textContent || '',
+            refusalText: document.getElementById('refusal')?.innerText || '',
+            readyState: document.readyState,
+            chips: document.querySelectorAll('.chip').length,
+            healthText: document.getElementById('health')?.textContent || ''
+          });
         })()"""
         await ws.send(json.dumps({"id": 1, "method": "Runtime.evaluate", "params": {
             "expression": js, "awaitPromise": True, "returnByValue": True}}))
@@ -96,12 +113,20 @@ async def main():
                     raise SystemExit(f"plan did not render: {data}")
                 if "Проверки пройдены" not in data["checks"]:
                     raise SystemExit(f"validation not rendered: {data['checks']}")
-                if "осадки" not in data["meta"]:
-                    raise SystemExit(f"weather not rendered: {data['meta']}")
+                if "осадки" not in data["meta"] and "недоступна" not in data["meta"] and "недоступен" not in data["meta"]:
+                    raise SystemExit(f"weather is neither rendered nor marked unavailable: {data['meta']}")
                 if "мок" in data["meta"].lower() or "mock-llm" in data["title"].lower():
                     raise SystemExit(f"mock labels must be hidden: {data}")
                 if any("День 1: День 1" in t for t in data["tabs"]):
                     raise SystemExit(f"duplicate day label: {data['tabs']}")
+                if len(data["tabs"]) != 2:
+                    raise SystemExit(f"requested two days, got {len(data['tabs'])}: {data['tabs']}")
+                if len(set(data["dayDates"])) != len(data["dayDates"]):
+                    raise SystemExit(f"duplicate day dates: {data['dayDates']}")
+                if len(set(data["stopIds"])) != len(data["stopIds"]):
+                    raise SystemExit(f"duplicate stops on the active day: {data['stopIds']}")
+                if not data["errorHidden"] or not data["refusalHidden"]:
+                    raise SystemExit(f"stale notices are visible: {data}")
                 if "guard" in data["stages"]:
                     raise SystemExit(f"raw stage label: {data['stages']}")
                 if data.get("attribution"):

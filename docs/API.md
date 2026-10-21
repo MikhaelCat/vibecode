@@ -39,7 +39,7 @@
 | `done` | успех: `run_id`, `latency_ms`, `outcome`, `generation`, `usage`; отказ: `run_id`, `latency_ms`, `outcome:"refusal"` | всегда последнее событие, затем поток закрывается |
 | `error` | — | **не отправляется**: в коде такого события нет |
 
-Типы: `stage.status` — строка у `guard`/`intent`, boolean у `fallback`. `generation` — `llm`, `repaired` или `fallback`; `repaired` сейчас не выставляется. `outcome` — `plan`, `degraded` или `refusal`. Отказ — это HTTP 200 и событие `refusal`, а не 4xx/5xx.
+Типы: `stage.status` — строка у `guard`/`intent`, boolean у `fallback`. `generation` — `llm`, `repaired` или `fallback`; `repaired` выставляется, если план был принят после ремонта. `outcome` — `plan`, `degraded` или `refusal`. Отказ — это HTTP 200 и событие `refusal`, а не 4xx/5xx.
 
 ### Порядок событий
 
@@ -207,7 +207,7 @@ plan("Хочу один день по Приморью", (event, data) => consol
 - Бейдж mock/live стройте по `plan.sources[].kind` (`live`, `cache`, `mock`, `stale`, `estimated`); `provider` — имя тула (`search_places`, `get_weather`, ...), а не провайдер. `tool_result.source` — тот же `kind`, а не имя источника.
 - `plan.warnings[]` — `{code,message}`: `unknown_place`, `lodging_auto`, `demo_data`, `fallback`. Показывайте все; `fallback` — признак degraded.
 - `report.violations[]` — `{code,severity,message,hint,place_id}`; `severity` — `hard`/`soft`, `hard_failed` — блокирующий флаг. `hint` и `place_id` могут быть `null`.
-- `generation:"fallback"` или `done.outcome:"degraded"` — плашка «план собран без LLM». `generation:"repaired"` код сейчас не выставляет.
+- `generation:"fallback"` или `done.outcome:"degraded"` — плашка «план собран без LLM». `generation:"repaired"` — план был принят после ремонта.
 - `tool_result.cached:true` — попадание в кэш; `source` при этом может стать `cache` (только если был `live`). `cached` не означает mock/live и не заменяет `source`.
 - Не считайте `usage.cost_usd` признаком live: при mock и при `PRICE_*_PER_M=0` он равен `0`.
 

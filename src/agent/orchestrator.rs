@@ -110,11 +110,16 @@ impl Orchestrator {
         true
     }
 
-    pub async fn run(&self, query: String, sink: Option<mpsc::Sender<StreamEvent>>) -> RunOutcome {
-        self.run_with(query, sink, RunOverrides::default()).await
+    pub async fn execute(
+        &self,
+        query: String,
+        sink: Option<mpsc::Sender<StreamEvent>>,
+    ) -> RunOutcome {
+        self.execute_with(query, sink, RunOverrides::default())
+            .await
     }
 
-    pub async fn run_with(
+    pub async fn execute_with(
         &self,
         query: String,
         sink: Option<mpsc::Sender<StreamEvent>>,
@@ -241,6 +246,20 @@ impl Orchestrator {
                 llm_ms: llm_started.elapsed().as_millis() as u64,
                 tool_names,
             });
+
+            if matches!(
+                response.finish_reason.as_deref(),
+                Some("length" | "content_filter")
+            ) {
+                let reason = format!(
+                    "LLM response stopped early: {}",
+                    response.finish_reason.as_deref().unwrap_or("unknown")
+                );
+                tracing::warn!(run_id = %run_id, %reason, "LLM response truncated");
+                last_error = Some(reason.clone());
+                trace.error = Some(reason);
+                break 'agent;
+            }
 
             if response.tool_calls.is_empty() {
                 if let Some(content) = response.content {
@@ -652,7 +671,8 @@ fn plan_window(intent: &Intent) -> String {
          по одному разу, в этом порядке. Не добавляй дни вне периода и не пропускай даты. \
          Каждый place_id используй в плане не более одного раза: дубликаты, один и тот же \
          объект под разными id и повторные события недопустимы. Данные инструментов могут \
-         содержать повторы — отфильтруй их самостоятельно.",
+         содержать повторы — отфильтруй их самостоятельно. Если find_events вернул события \
+         на даты поездки, упомяни 1–2 уместных в summary или note.",
         start = intent.start_date,
         end = intent.end_date,
         count = dates.len(),

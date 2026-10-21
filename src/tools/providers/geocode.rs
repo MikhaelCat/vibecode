@@ -1,9 +1,15 @@
+use std::time::{Duration, Instant};
+
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
+use crate::domain::geo::in_primorye;
 use crate::tools::providers::{fallback_places, limit_from, load_mock};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
+
+/// Nominatim asks clients to send at most one request per second.
+static NOMINATIM_LIMIT: tokio::sync::Mutex<Option<Instant>> = tokio::sync::Mutex::const_new(None);
 
 pub struct GeocodeTool;
 
@@ -35,6 +41,17 @@ impl Tool for GeocodeTool {
             .ok_or_else(|| ToolError::BadArgs("query is required".to_string()))?;
         let limit = limit_from(&args, 3, 10);
 
+        {
+            let mut last = NOMINATIM_LIMIT.lock().await;
+            if let Some(last_request) = *last {
+                let elapsed = last_request.elapsed();
+                if elapsed < Duration::from_secs(1) {
+                    tokio::time::sleep(Duration::from_secs(1) - elapsed).await;
+                }
+            }
+            *last = Some(Instant::now());
+        }
+
         let url = format!(
             "https://nominatim.openstreetmap.org/search?format=jsonv2&q={}&limit={limit}\
              &countrycodes=ru&viewbox=130.0,48.5,139.1,42.2&bounded=1&accept-language=ru",
@@ -55,6 +72,9 @@ impl Tool for GeocodeTool {
                         .filter_map(|item| {
                             let lat = item.get("lat")?.as_str()?.parse::<f64>().ok()?;
                             let lon = item.get("lon")?.as_str()?.parse::<f64>().ok()?;
+                            if !in_primorye(lat, lon) {
+                                return None;
+                            }
                             let name = item.get("display_name")?.as_str()?;
                             let id = format!(
                                 "nominatim:{}/{}",
@@ -108,6 +128,8 @@ impl Tool for GeocodeTool {
             }
         }
 
+        // Never return unrelated coordinates for a geocoding query. The local
+        // catalogue is used only when a place name actually matches.
         let mock = load_mock(ctx.data_dir.as_path(), "places.json", fallback_places());
         let needle = query.to_lowercase();
         let mut places: Vec<Value> = mock
@@ -124,19 +146,17 @@ impl Tool for GeocodeTool {
                     .unwrap_or(false)
             })
             .collect();
-        if places.is_empty() {
-            places = mock
-                .get("places")
-                .and_then(Value::as_array)
-                .cloned()
-                .unwrap_or_default();
-        }
         places.truncate(limit);
 
+        let summary = if places.is_empty() {
+            "Nominatim недоступен: в локальном справочнике нет совпадений"
+        } else {
+            "Nominatim недоступен: совпадения из локального справочника"
+        };
         Ok(ToolOutput::ok(
             json!({"places": places}),
             SourceKind::Mock,
-            "Nominatim недоступен: локальный справочник",
+            summary,
         ))
     }
 }
@@ -166,6 +186,9 @@ fn parse_photon(value: &Value) -> Vec<Value> {
         ) else {
             continue;
         };
+        if !in_primorye(lat, lon) {
+            continue;
+        }
         let osm_type = props.get("osm_type").and_then(Value::as_str).unwrap_or("N");
         let osm_id = props.get("osm_id").and_then(Value::as_u64).unwrap_or(0);
         places.push(json!({

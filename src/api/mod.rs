@@ -73,7 +73,7 @@ async fn plan_sse(
     let orchestrator = state.orchestrator.clone();
     tokio::spawn(async move {
         let _permit = permit;
-        orchestrator.run_with(query, Some(tx), overrides).await;
+        orchestrator.execute_with(query, Some(tx), overrides).await;
     });
 
     Ok(plan_stream(rx).into_response())
@@ -100,7 +100,7 @@ async fn plan_sync(
         .map_err(|_| ApiError::rate_limited("Слишком много одновременных запросов"))?;
     let outcome = tokio::time::timeout(
         Duration::from_secs(120),
-        state.orchestrator.run_with(query, None, overrides),
+        state.orchestrator.execute_with(query, None, overrides),
     )
     .await
     .map_err(|_| ApiError {

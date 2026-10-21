@@ -90,6 +90,7 @@ impl LlmClient for MockLlm {
                 tool_calls: calls,
                 usage: estimate_usage(&request.messages, 300),
                 model: self.model.clone(),
+                finish_reason: Some("tool_calls".to_string()),
             });
         }
 
@@ -108,6 +109,7 @@ impl LlmClient for MockLlm {
             tool_calls: vec![LlmToolCall::new(self.call_id(), "submit_plan", arguments)],
             usage: estimate_usage(&request.messages, 400),
             model: self.model.clone(),
+            finish_reason: Some("tool_calls".to_string()),
         })
     }
 
@@ -307,10 +309,16 @@ fn build_draft(intent: &Intent, places: &[MockPlace], lodging_ids: &[String]) ->
     let mut days = Vec::new();
     let mut date: NaiveDate = intent.start_date;
     let mut used = std::collections::HashSet::new();
+    let mut remaining_days = (intent.end_date - intent.start_date).num_days() as usize + 1;
 
     while date <= intent.end_date {
         let mut items = Vec::new();
-        for slot in 0..2 {
+        let available = places
+            .iter()
+            .filter(|place| !used.contains(&place.id))
+            .count();
+        let slots = ((available + remaining_days - 1) / remaining_days.max(1)).clamp(1, 3);
+        for slot in 0..slots {
             let Some(place) = places.iter().find(|place| !used.contains(&place.id)) else {
                 break;
             };
@@ -330,6 +338,7 @@ fn build_draft(intent: &Intent, places: &[MockPlace], lodging_ids: &[String]) ->
             });
         }
         days.push(DayDraft { date, items });
+        remaining_days = remaining_days.saturating_sub(1);
         date = add_days(date, 1);
     }
 

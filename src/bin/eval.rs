@@ -138,6 +138,8 @@ async fn main() -> Result<()> {
     if args.live {
         if let Some(model) = &eval_config.model {
             cfg.model = model.clone();
+            // The proxy path reads llm_proxy_model, not the OpenRouter model.
+            cfg.llm_proxy_model = Some(model.clone());
         }
     }
     let cfg = Arc::new(cfg);
@@ -164,7 +166,7 @@ async fn main() -> Result<()> {
 
     let mut results = Vec::new();
     for case in &cases {
-        let outcome = orchestrator.run(case.query.clone(), None).await;
+        let outcome = orchestrator.execute(case.query.clone(), None).await;
         let in_scope_actual = outcome.refusal.is_none();
 
         let hard_pass = outcome.report.as_ref().map(|report| !report.hard_failed);

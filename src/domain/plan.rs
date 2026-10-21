@@ -346,31 +346,34 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
         .map(|leg| leg.distance_km)
         .sum::<f64>();
     let nights = days.len().saturating_sub(1);
-    let cost = if lodging.is_empty() {
+    let cost = if lodging.is_empty() || nights == 0 {
         None
     } else {
         Some(
-            lodging
-                .iter()
-                .take(nights.max(1))
-                .map(|option| option.price_per_night)
+            (0..nights)
+                .map(|index| {
+                    lodging
+                        .get(index)
+                        .or_else(|| lodging.last())
+                        .map(|option| option.price_per_night)
+                        .unwrap_or(0)
+                })
                 .sum(),
         )
     };
 
-    if facts
-        .places
-        .values()
-        .any(|place| place.source != SourceKind::Live)
-        || facts.weather.values().next().is_some()
-            && facts
-                .sources
-                .iter()
-                .any(|source| source.kind != SourceKind::Live)
+    let is_demo = |kind: SourceKind| matches!(kind, SourceKind::Mock | SourceKind::Stale);
+    if facts.places.values().any(|place| is_demo(place.source))
+        || facts
+            .lodging
+            .values()
+            .any(|lodging| is_demo(lodging.source))
+        || facts.sources.iter().any(|source| is_demo(source.kind))
     {
         warnings.push(Warning {
             code: "demo_data".to_string(),
-            message: "Часть данных демонстрационная — проверьте перед выездом".to_string(),
+            message: "Часть данных недоступна или демонстрационная — проверьте перед выездом"
+                .to_string(),
         });
     }
 
@@ -550,6 +553,27 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.code == "duplicates_removed"));
+    }
+
+    #[test]
+    fn lodging_cost_counts_every_night() {
+        let mut intent = intent();
+        intent.end_date = NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        intent.max_days = 3;
+        let mut facts = Facts::default();
+        facts.ensure_minimal(intent.start_date, intent.end_date);
+        let lodging_id = facts.lodging.keys().next().unwrap().clone();
+        let price = facts.lodging[&lodging_id].price_per_night;
+        let draft = PlanDraft {
+            title: "Тест".to_string(),
+            summary: "Тест".to_string(),
+            days: vec![],
+            lodging_ids: vec![lodging_id],
+            transport: Some(TransportMode::Car),
+        };
+
+        let plan = enrich(draft, &intent, &facts);
+        assert_eq!(plan.cost_estimate_rub, Some(price * 2));
     }
 
     #[test]

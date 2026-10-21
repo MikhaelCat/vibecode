@@ -1,7 +1,10 @@
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
+use crate::domain::geo::haversine_km;
 use crate::tools::providers::{fallback_fuel, load_mock, PRIMORYE_BBOX};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
@@ -28,7 +31,14 @@ impl Tool for FuelTool {
         })
     }
 
-    async fn call(&self, _args: Value, ctx: &ToolCtx) -> Result<ToolOutput, ToolError> {
+    async fn call(&self, args: Value, ctx: &ToolCtx) -> Result<ToolOutput, ToolError> {
+        let route = parse_route_points(&args)?;
+        let radius_km = args
+            .get("radius_km")
+            .and_then(Value::as_f64)
+            .unwrap_or(30.0)
+            .clamp(1.0, 100.0);
+
         let query = format!(
             "[out:json][timeout:10];node[\"amenity\"=\"fuel\"]({PRIMORYE_BBOX});out center 30;"
         );
@@ -41,12 +51,12 @@ impl Tool for FuelTool {
         {
             if response.status().is_success() {
                 if let Ok(value) = response.json::<Value>().await {
-                    let stations = parse_stations(&value);
+                    let stations = near_route(parse_stations(&value), &route, radius_km);
                     if !stations.is_empty() {
                         return Ok(ToolOutput::ok(
                             json!({"stations": stations}),
                             SourceKind::Live,
-                            "АЗС из OpenStreetMap",
+                            format!("АЗС из OpenStreetMap: {} рядом с маршрутом", stations.len()),
                         ));
                     }
                 }
@@ -54,17 +64,57 @@ impl Tool for FuelTool {
         }
 
         let mock = load_mock(ctx.data_dir.as_path(), "fuel.json", fallback_fuel());
-        let stations = mock
-            .get("stations")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
+        let stations = near_route(
+            mock.get("stations")
+                .and_then(Value::as_array)
+                .cloned()
+                .unwrap_or_default(),
+            &route,
+            radius_km,
+        );
+        let summary = if stations.is_empty() {
+            "АЗС: рядом с маршрутом нет станций в локальном справочнике"
+        } else {
+            "АЗС: локальный справочник"
+        };
         Ok(ToolOutput::ok(
             json!({"stations": stations}),
             SourceKind::Mock,
-            "АЗС: демо-данные",
+            summary,
         ))
     }
+}
+
+fn parse_route_points(args: &Value) -> Result<Vec<(f64, f64)>, ToolError> {
+    let Some(points) = args.get("route_points").and_then(Value::as_array) else {
+        return Err(ToolError::BadArgs("route_points is required".to_string()));
+    };
+    let route: Vec<(f64, f64)> = points
+        .iter()
+        .filter_map(|point| Some((point.get("lat")?.as_f64()?, point.get("lon")?.as_f64()?)))
+        .collect();
+    if route.is_empty() {
+        return Err(ToolError::BadArgs(
+            "route_points must contain at least one {lat, lon}".to_string(),
+        ));
+    }
+    Ok(route)
+}
+
+fn near_route(mut stations: Vec<Value>, route: &[(f64, f64)], radius_km: f64) -> Vec<Value> {
+    stations.retain(|station| {
+        let (Some(lat), Some(lon)) = (
+            station.get("lat").and_then(Value::as_f64),
+            station.get("lon").and_then(Value::as_f64),
+        ) else {
+            return false;
+        };
+        route
+            .iter()
+            .any(|point| haversine_km((lat, lon), *point) <= radius_km)
+    });
+    stations.truncate(10);
+    stations
 }
 
 fn parse_stations(value: &Value) -> Vec<Value> {
@@ -72,6 +122,7 @@ fn parse_stations(value: &Value) -> Vec<Value> {
         return Vec::new();
     };
     let mut stations = Vec::new();
+    let mut seen = HashSet::new();
     for element in elements {
         let Some(lat) = element.get("lat").and_then(Value::as_f64) else {
             continue;
@@ -84,6 +135,9 @@ fn parse_stations(value: &Value) -> Vec<Value> {
             .and_then(Value::as_u64)
             .map(|id| format!("osm:node/{id}"))
             .unwrap_or_else(|| "osm:node/fuel".to_string());
+        if !seen.insert(id.clone()) {
+            continue;
+        }
         let name = element
             .get("tags")
             .and_then(|tags| tags.get("name"))
@@ -98,4 +152,20 @@ fn parse_stations(value: &Value) -> Vec<Value> {
         }));
     }
     stations
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn keeps_only_stations_near_the_route() {
+        let stations = vec![
+            json!({"id": "near", "lat": 43.12, "lon": 131.89}),
+            json!({"id": "far", "lat": 44.55, "lon": 135.57}),
+        ];
+        let filtered = near_route(stations, &[(43.1155, 131.8855)], 30.0);
+        assert_eq!(filtered.len(), 1);
+        assert_eq!(filtered[0]["id"], "near");
+    }
 }

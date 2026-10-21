@@ -125,6 +125,7 @@ pub struct ChatResponse {
     pub tool_calls: Vec<LlmToolCall>,
     pub usage: TokenUsage,
     pub model: String,
+    pub finish_reason: Option<String>,
 }
 
 #[derive(Debug, thiserror::Error)]

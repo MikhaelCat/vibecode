@@ -2,11 +2,11 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
+use crate::domain::geo::haversine_km;
 use crate::tools::providers::{fallback_places, load_mock};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
-/// Real attractions from Russian Wikipedia geosearch (the source Matvey prototyped
-/// in the `matvey/tools.py` branch).
+/// Real attractions from Russian Wikipedia geosearch.
 pub struct WikipediaTool;
 
 #[async_trait]
@@ -71,19 +71,35 @@ impl Tool for WikipediaTool {
             }
         }
 
+        // Only return local catalogue entries that are actually near the point.
         let mock = load_mock(ctx.data_dir.as_path(), "places.json", fallback_places());
-        let places = mock
+        let radius_km = radius as f64 / 1000.0;
+        let places: Vec<Value> = mock
             .get("places")
             .and_then(Value::as_array)
             .cloned()
             .unwrap_or_default()
             .into_iter()
-            .take(4)
-            .collect::<Vec<_>>();
+            .filter(|place| {
+                let Some(place_lat) = place.get("lat").and_then(Value::as_f64) else {
+                    return false;
+                };
+                let Some(place_lon) = place.get("lon").and_then(Value::as_f64) else {
+                    return false;
+                };
+                haversine_km((lat, lon), (place_lat, place_lon)) <= radius_km
+            })
+            .take(8)
+            .collect();
+        let summary = if places.is_empty() {
+            "Википедия недоступна: рядом нет локальных данных"
+        } else {
+            "Википедия недоступна: локальные места рядом"
+        };
         Ok(ToolOutput::ok(
             json!({"places": places}),
             SourceKind::Mock,
-            "Википедия недоступна: демонстрационные места",
+            summary,
         ))
     }
 }

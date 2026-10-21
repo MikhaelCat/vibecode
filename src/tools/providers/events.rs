@@ -5,9 +5,14 @@ use chrono::NaiveDate;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
-use crate::tools::providers::{fallback_events, load_mock};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
+const EVENTS_URL: &str = "https://www.vl.ru/afisha/vladivostok";
+const EVENTS_USER_AGENT: &str =
+    "Mozilla/5.0 (compatible; vibecode-travel-ai/0.1; +https://github.com/MikhaelCat/vibecode)";
+
+/// Live events from the VL.ru city poster. The page exposes schema.org Event
+/// objects as JSON-LD, so we parse structured data instead of scraping markup.
 pub struct EventsTool;
 
 #[async_trait]
@@ -17,7 +22,7 @@ impl Tool for EventsTool {
     }
 
     fn description(&self) -> &'static str {
-        "События и экскурсии в районе на даты поездки. Демо-данные."
+        "Живые события и мероприятия Владивостока из афиши VL.ru на даты поездки. Возвращает id, название, дату, место и ссылку."
     }
 
     fn parameters(&self) -> Value {
@@ -25,8 +30,8 @@ impl Tool for EventsTool {
             "type": "object",
             "properties": {
                 "area": {"type": "string"},
-                "start_date": {"type": "string"},
-                "end_date": {"type": "string"}
+                "start_date": {"type": "string", "description": "YYYY-MM-DD"},
+                "end_date": {"type": "string", "description": "YYYY-MM-DD"}
             },
             "required": ["area", "start_date", "end_date"]
         })
@@ -36,54 +41,214 @@ impl Tool for EventsTool {
         let area = args
             .get("area")
             .and_then(Value::as_str)
-            .unwrap_or("Приморский край");
-        let start = args
-            .get("start_date")
-            .and_then(Value::as_str)
-            .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok());
-        let end = args
-            .get("end_date")
-            .and_then(Value::as_str)
-            .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok());
-
-        let mock = load_mock(ctx.data_dir.as_path(), "events.json", fallback_events());
-        let mut seen = HashSet::new();
-        let mut events: Vec<Value> = Vec::new();
-        for event in mock
-            .get("events")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-        {
-            let event_date = event
-                .get("date")
-                .and_then(Value::as_str)
-                .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok());
-            if let (Some(start), Some(end), Some(date)) = (start, end, event_date) {
-                if date < start || date > end {
-                    continue;
-                }
-            }
-            let title = event
-                .get("title")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_lowercase();
-            let id = event
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or_default()
-                .to_string();
-            if !seen.insert((id, title.clone())) {
-                continue;
-            }
-            events.push(event);
+            .unwrap_or("Владивосток");
+        let start = parse_date_arg(&args, "start_date").unwrap_or(ctx.intent.start_date);
+        let end = parse_date_arg(&args, "end_date").unwrap_or(ctx.intent.end_date);
+        if end < start {
+            return Err(ToolError::BadArgs(
+                "end_date не может быть раньше start_date".to_string(),
+            ));
         }
-        events.truncate(5);
+
+        let response = ctx
+            .http
+            .get(EVENTS_URL)
+            .header("User-Agent", EVENTS_USER_AGENT)
+            .header("Accept", "text/html,application/xhtml+xml")
+            .send()
+            .await
+            .map_err(|error| ToolError::Upstream(format!("VL.ru: {error}")))?;
+        if !response.status().is_success() {
+            return Err(ToolError::Upstream(format!(
+                "VL.ru вернул HTTP {}",
+                response.status()
+            )));
+        }
+        let html = response
+            .text()
+            .await
+            .map_err(|error| ToolError::Upstream(format!("VL.ru: {error}")))?;
+
+        let mut events = parse_events(&html, start, end);
+        events.truncate(12);
+        let summary = if events.is_empty() {
+            format!("VL.ru: событий на {} — {} не найдено", start, end)
+        } else {
+            format!("VL.ru: {} событий на даты поездки", events.len())
+        };
         Ok(ToolOutput::ok(
             json!({"events": events, "area": area}),
-            SourceKind::Mock,
-            format!("События: {} (демо-данные)", events.len()),
+            SourceKind::Live,
+            summary,
         ))
+    }
+}
+
+fn parse_date_arg(args: &Value, key: &str) -> Option<NaiveDate> {
+    args.get(key)
+        .and_then(Value::as_str)
+        .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+}
+
+fn parse_events(html: &str, start: NaiveDate, end: NaiveDate) -> Vec<Value> {
+    let mut events = Vec::new();
+    let mut seen = HashSet::new();
+    for block in json_ld_blocks(html) {
+        let Ok(value) = serde_json::from_str::<Value>(&block) else {
+            continue;
+        };
+        let items = match value {
+            Value::Array(items) => items,
+            object => vec![object],
+        };
+        for item in items {
+            let Some(event) = event_from_json(&item) else {
+                continue;
+            };
+            let (Some(event_start), Some(event_end)) = (event.start, event.end) else {
+                continue;
+            };
+            if event_start > end || event_end < start {
+                continue;
+            }
+            let key = format!("{}|{}|{}", event.title, event_start, event.place);
+            if !seen.insert(key) {
+                continue;
+            }
+            events.push(json!({
+                "id": event.id,
+                "title": event.title,
+                "date": event_start,
+                "end_date": event_end,
+                "place": event.place,
+                "url": event.url,
+                "source": "live"
+            }));
+        }
+    }
+    events.sort_by(|a, b| {
+        let left = a.get("date").and_then(Value::as_str).unwrap_or("");
+        let right = b.get("date").and_then(Value::as_str).unwrap_or("");
+        left.cmp(right)
+    });
+    events
+}
+
+struct ParsedEvent {
+    id: String,
+    title: String,
+    start: Option<NaiveDate>,
+    end: Option<NaiveDate>,
+    place: String,
+    url: Option<String>,
+}
+
+fn event_from_json(value: &Value) -> Option<ParsedEvent> {
+    let is_event = match value.get("@type") {
+        Some(Value::String(kind)) => kind == "Event",
+        Some(Value::Array(kinds)) => kinds.iter().any(|kind| kind.as_str() == Some("Event")),
+        _ => false,
+    };
+    if !is_event {
+        return None;
+    }
+    let title = value
+        .get("name")
+        .and_then(Value::as_str)?
+        .trim()
+        .to_string();
+    if title.is_empty() {
+        return None;
+    }
+    let start = parse_iso_date(value.get("startDate").and_then(Value::as_str));
+    let end = parse_iso_date(value.get("endDate").and_then(Value::as_str)).or(start);
+    let place = value
+        .get("location")
+        .and_then(|location| {
+            location
+                .get("name")
+                .and_then(Value::as_str)
+                .or_else(|| location.get("address").and_then(Value::as_str))
+        })
+        .unwrap_or("Владивосток")
+        .trim()
+        .to_string();
+    let url = value.get("url").and_then(Value::as_str).map(str::to_string);
+    let id = url.clone().unwrap_or_else(|| {
+        format!(
+            "vl:event:{}:{}",
+            start.map(|d| d.to_string()).unwrap_or_default(),
+            title
+        )
+    });
+    Some(ParsedEvent {
+        id,
+        title,
+        start,
+        end,
+        place,
+        url,
+    })
+}
+
+fn parse_iso_date(value: Option<&str>) -> Option<NaiveDate> {
+    let value = value?;
+    let date = value.get(..10)?;
+    NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()
+}
+
+fn json_ld_blocks(html: &str) -> Vec<String> {
+    let mut blocks = Vec::new();
+    let mut rest = html;
+    while let Some(script_start) = rest.find("application/ld+json") {
+        rest = &rest[script_start..];
+        let Some(tag_end) = rest.find('>') else {
+            break;
+        };
+        rest = &rest[tag_end + 1..];
+        let Some(script_end) = rest.find("</script>") else {
+            break;
+        };
+        blocks.push(rest[..script_end].trim().to_string());
+        rest = &rest[script_end + 9..];
+    }
+    blocks
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_json_ld_event_and_filters_dates() {
+        let html = r#"
+        <script type="application/ld+json">
+        {"@context":"https://schema.org","@type":"Event","name":"Концерт",
+         "startDate":"2026-10-24","endDate":"2026-10-24",
+         "location":{"@type":"Place","name":"Концерт Холл"},"url":"https://www.vl.ru/afisha/vladivostok/event/1"}
+        </script>
+        <script type="application/ld+json">
+        {"@context":"https://schema.org","@type":"Event","name":"Позже",
+         "startDate":"2026-12-19","endDate":"2026-12-19","location":{"name":"Арена"}}
+        </script>
+        "#;
+        let start = NaiveDate::from_ymd_opt(2026, 10, 24).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        let events = parse_events(html, start, end);
+        assert_eq!(events.len(), 1);
+        assert_eq!(events[0]["title"], "Концерт");
+        assert_eq!(events[0]["place"], "Концерт Холл");
+        assert_eq!(events[0]["date"], "2026-10-24");
+        assert_eq!(events[0]["source"], "live");
+    }
+
+    #[test]
+    fn deduplicates_same_event() {
+        let block = r#"<script type="application/ld+json">
+        {"@type":"Event","name":"Спектакль","startDate":"2026-10-24","location":{"name":"Театр"}}
+        </script>"#;
+        let html = format!("{block}{block}");
+        let date = NaiveDate::from_ymd_opt(2026, 10, 24).unwrap();
+        assert_eq!(parse_events(&html, date, date).len(), 1);
     }
 }

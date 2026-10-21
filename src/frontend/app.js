@@ -69,8 +69,10 @@ if (map) {
 // ---------- состояние ----------
 let plan = null;
 let day = 0;
-let datesTouched = true;
+let autoStart = '';
+let autoEnd = '';
 let running = false;
+let sawDone = false;
 const stageMap = new Map();
 
 function isoDate(date) {
@@ -96,18 +98,28 @@ function fmtRange(start, end) {
 function fmtTime(value) {
   return value ? String(value).slice(0, 5) : '';
 }
-function dayTitle(title) {
-  if (!title) return 'Маршрут дня';
-  return title.replace(/^День\s+\d+\s*[—–-]\s*/i, '') || title;
+function dayTitle(title, firstStop) {
+  const fallback = 'Маршрут дня';
+  if (!title) return fallback;
+  const stripped = title.replace(/^День\s+\d+\s*[—–-]\s*/i, '').trim();
+  if (!stripped) return fallback;
+  if (firstStop && stripped.toLowerCase() === String(firstStop).toLowerCase()) return fallback;
+  return stripped;
 }
 
 function defaultDates() {
   const start = addDays(new Date(), 1);
   const end = addDays(start, 2);
-  $('start_date').value = isoDate(start);
-  $('end_date').value = isoDate(end);
+  autoStart = isoDate(start);
+  autoEnd = isoDate(end);
+  $('start_date').value = autoStart;
+  $('end_date').value = autoEnd;
   $('start_date').min = isoDate(new Date());
   syncDateBounds();
+}
+
+function datesAreCustom() {
+  return $('start_date').value !== autoStart || $('end_date').value !== autoEnd;
 }
 
 function syncDateBounds() {
@@ -123,7 +135,6 @@ function syncDateBounds() {
 }
 
 function clampDates() {
-  datesTouched = true;
   syncDateBounds();
   updateDateHint();
 }
@@ -131,14 +142,19 @@ function clampDates() {
 function updateDateHint() {
   const hint = document.querySelector('.hint');
   if (!hint) return;
-  hint.textContent = datesTouched
-    ? 'Даты из формы главнее текста запроса — план будет ровно на этот период.'
-    : 'Даты не тронуты — возьмём их из текста запроса. Выбрали вручную — форма главнее.';
+  const dates = datesAreCustom()
+    ? 'Даты из формы главнее текста запроса.'
+    : 'Даты не тронуты — возьмём их из текста запроса.';
+  const transport = $('transport').value
+    ? 'Транспорт выбран в форме.'
+    : 'Транспорт тоже возьмём из текста.';
+  hint.textContent = `${dates} ${transport}`;
 }
 
 defaultDates();
 $('start_date').addEventListener('change', clampDates);
 $('end_date').addEventListener('change', clampDates);
+$('transport').addEventListener('change', updateDateHint);
 
 // ---------- старт ----------
 $('chips').innerHTML = EXAMPLES.map((t) => `<button type="button" class="chip">${esc(t)}</button>`).join('');
@@ -159,17 +175,16 @@ updateCounter();
 $('token').value = localStorage.getItem('app_token') || '';
 $('form').addEventListener('submit', (e) => {
   e.preventDefault();
-  run($('q').value.trim());
+  requestPlan($('q').value.trim());
 });
-$('retry').addEventListener('click', () => run($('q').value.trim()));
+$('retry').addEventListener('click', () => requestPlan($('q').value.trim()));
 
-// ?query=...&autorun=1 — shareable query and headless UI test hook.
+// ?query=... — prefill the field only. Sending always requires an explicit click.
 const params = new URLSearchParams(location.search);
 const prefill = params.get('query');
 if (prefill) {
-  $('q').value = prefill;
+  $('q').value = prefill.slice(0, 1000);
   updateCounter();
-  if (params.get('autorun') === '1') setTimeout(() => run(prefill), 0);
 }
 
 fetch('/api/health')
@@ -187,7 +202,7 @@ fetch('/api/health')
   });
 
 // ---------- запуск ----------
-async function run(query) {
+async function requestPlan(query) {
   if (!query || running) return;
   running = true;
   localStorage.setItem('app_token', $('token').value);
@@ -197,8 +212,9 @@ async function run(query) {
   try {
     const headers = { 'content-type': 'application/json' };
     if ($('token').value) headers['x-app-token'] = $('token').value;
-    const payload = { query, transport: $('transport').value };
-    if (datesTouched) {
+    const payload = { query };
+    if ($('transport').value) payload.transport = $('transport').value;
+    if (datesAreCustom()) {
       payload.start_date = $('start_date').value || null;
       payload.end_date = $('end_date').value || null;
     }
@@ -213,6 +229,9 @@ async function run(query) {
       throw new Error(message);
     }
     await readSSE(res.body, handle);
+    if (!sawDone && !plan && $('refusal').hidden) {
+      showError('Соединение с сервером прервалось до готового плана. Попробуйте ещё раз.');
+    }
   } catch (err) {
     console.warn(err);
     showError(err && err.message ? err.message : 'Проверьте соединение с сервером и попробуйте ещё раз.');
@@ -264,10 +283,13 @@ function handle(event, data) {
   }
   if (event === 'intent') {
     stage(STAGES.intent, 'done');
-    if (!datesTouched && data.start_date && data.end_date) {
-      $('start_date').value = data.start_date;
-      $('end_date').value = data.end_date;
+    if (!datesAreCustom() && data.start_date && data.end_date) {
+      autoStart = data.start_date;
+      autoEnd = data.end_date;
+      $('start_date').value = autoStart;
+      $('end_date').value = autoEnd;
       syncDateBounds();
+      updateDateHint();
     }
     trace(
       'Разбор запроса',
@@ -304,10 +326,14 @@ function handle(event, data) {
     $('usage').textContent = usage.join(' · ');
   }
   if (event === 'refusal') {
+    sawDone = true;
     stage(STAGES.done, 'done');
     refuse(data);
   }
-  if (event === 'done') stage(STAGES.done, 'done');
+  if (event === 'done') {
+    sawDone = true;
+    stage(STAGES.done, 'done');
+  }
 }
 
 // ---------- UI ----------
@@ -333,6 +359,7 @@ function reset() {
   markers = [];
   plan = null;
   day = 0;
+  sawDone = false;
 }
 
 function stage(text, state = 'live') {
@@ -366,7 +393,7 @@ function refuse(data) {
   if (example) example.addEventListener('click', () => {
     $('q').value = EXAMPLES[0];
     updateCounter();
-    run(EXAMPLES[0]);
+    requestPlan(EXAMPLES[0]);
   });
 }
 
@@ -434,7 +461,7 @@ function renderDay() {
   const legs = current.legs || [];
 
   $('day-kicker').textContent = `День ${day + 1} · ${fmtDate(current.date)}`;
-  $('day-name').textContent = dayTitle(current.title);
+  $('day-name').textContent = dayTitle(current.title, items[0]?.name);
 
   const facts = [];
   if (items.length) facts.push(`${items.length} ${items.length === 1 ? 'точка' : items.length < 5 ? 'точки' : 'точек'}`);

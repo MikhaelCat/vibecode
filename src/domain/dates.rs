@@ -47,12 +47,15 @@ pub fn is_weekend(date: NaiveDate) -> bool {
 }
 
 pub fn parse_month_phrase(query: &str, today: NaiveDate) -> Option<NaiveDate> {
-    const MONTHS: [(&str, u32); 12] = [
+    const MONTHS: [(&str, u32); 15] = [
         ("январ", 1),
         ("феврал", 2),
         ("март", 3),
         ("апрел", 4),
+        ("май", 5),
+        ("мая", 5),
         ("мае", 5),
+        ("маю", 5),
         ("июн", 6),
         ("июл", 7),
         ("август", 8),
@@ -61,10 +64,22 @@ pub fn parse_month_phrase(query: &str, today: NaiveDate) -> Option<NaiveDate> {
         ("ноябр", 11),
         ("декабр", 12),
     ];
+    let words: Vec<&str> = query
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|word| !word.is_empty())
+        .collect();
 
     let month = MONTHS
         .iter()
-        .find(|(stem, _)| query.contains(stem))
+        .find(|(stem, _)| {
+            words.iter().any(|word| {
+                if matches!(*stem, "май" | "мая" | "мае" | "маю") {
+                    *word == *stem
+                } else {
+                    word.starts_with(*stem)
+                }
+            })
+        })
         .map(|(_, month)| *month)?;
 
     let day = if query.contains("конец") || query.contains("конце") {
@@ -112,5 +127,15 @@ mod tests {
         let today = NaiveDate::from_ymd_opt(2026, 10, 21).unwrap();
         let date = parse_month_phrase("в конце ноября", today).unwrap();
         assert_eq!(date, NaiveDate::from_ymd_opt(2026, 11, 25).unwrap());
+    }
+
+    #[test]
+    fn may_phrase_works_but_mayak_is_not_a_month() {
+        let today = NaiveDate::from_ymd_opt(2026, 10, 21).unwrap();
+        assert_eq!(
+            parse_month_phrase("в конце мая", today),
+            Some(NaiveDate::from_ymd_opt(2027, 5, 25).unwrap())
+        );
+        assert_eq!(parse_month_phrase("хочу к маяку", today), None);
     }
 }

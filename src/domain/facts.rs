@@ -1,10 +1,10 @@
 use std::collections::HashMap;
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
+use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::domain::dates::add_days;
 use crate::domain::geo::haversine_km;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
@@ -318,29 +318,23 @@ impl Facts {
     }
 
     /// Guarantees that a plan can be assembled even if every external provider failed.
-    pub fn ensure_minimal(&mut self, start: NaiveDate, end: NaiveDate) {
+    /// All local fallback data comes from the same `data/mock/*.json` files.
+    pub fn ensure_minimal(&mut self, _start: NaiveDate, _end: NaiveDate) {
         if self.places.is_empty() {
-            for place in sample_places() {
+            for place in mock_places() {
                 self.places.insert(place.id.clone(), place);
             }
         }
         if self.lodging.is_empty() {
-            for option in sample_lodging() {
+            for option in mock_lodging() {
                 self.lodging.insert(option.id.clone(), option);
             }
         }
         if self.transport.is_empty() {
-            self.transport = sample_transport();
+            self.transport = mock_transport();
         }
         if self.fuel.is_empty() {
-            self.fuel = sample_fuel();
-        }
-        let mut date = start;
-        while date <= end {
-            self.weather
-                .entry(date)
-                .or_insert_with(|| sample_weather(date));
-            date = add_days(date, 1);
+            self.fuel = mock_fuel();
         }
         if self.sources.is_empty() {
             self.sources.push(SourceRef {
@@ -369,168 +363,40 @@ fn parse_latlon(value: &str) -> Option<(f64, f64)> {
     Some((lat.trim().parse().ok()?, lon.trim().parse().ok()?))
 }
 
-fn sample_weather(date: NaiveDate) -> WeatherDay {
-    WeatherDay {
-        date,
-        precip_prob: 10.0,
-        wind_max: 5.0,
-        temp_min: 8.0,
-        temp_max: 16.0,
-        sunrise: NaiveTime::from_hms_opt(7, 30, 0),
-        sunset: NaiveTime::from_hms_opt(18, 30, 0),
-    }
+const MOCK_PLACES: &str = include_str!("../../data/mock/places.json");
+const MOCK_LODGING: &str = include_str!("../../data/mock/lodging.json");
+const MOCK_TRANSPORT: &str = include_str!("../../data/mock/transport.json");
+const MOCK_FUEL: &str = include_str!("../../data/mock/fuel.json");
+
+/// Single source of local mock data: the committed `data/mock/*.json` files.
+pub fn mock_places() -> Vec<PlaceFact> {
+    parse_mock(MOCK_PLACES, "places")
 }
 
-fn sample_places() -> Vec<PlaceFact> {
-    vec![
-        PlaceFact {
-            id: "mock:place:oceanarium".to_string(),
-            name: "Приморский океанариум".to_string(),
-            lat: 43.1406,
-            lon: 131.9276,
-            kind: "museum".to_string(),
-            opening_hours: Some("Tu-Su 10:00-18:00".to_string()),
-            source: SourceKind::Mock,
-        },
-        PlaceFact {
-            id: "mock:place:fortress".to_string(),
-            name: "Владивостокская крепость".to_string(),
-            lat: 43.1155,
-            lon: 131.8855,
-            kind: "historic".to_string(),
-            opening_hours: Some("Tu-Su 10:00-18:00".to_string()),
-            source: SourceKind::Mock,
-        },
-        PlaceFact {
-            id: "mock:place:tokarevskaya".to_string(),
-            name: "Токаревская кошка".to_string(),
-            lat: 43.0739,
-            lon: 131.8431,
-            kind: "viewpoint".to_string(),
-            opening_hours: None,
-            source: SourceKind::Mock,
-        },
-        PlaceFact {
-            id: "mock:place:novik".to_string(),
-            name: "Бухта Новик".to_string(),
-            lat: 43.0050,
-            lon: 131.7500,
-            kind: "nature".to_string(),
-            opening_hours: None,
-            source: SourceKind::Mock,
-        },
-        PlaceFact {
-            id: "mock:place:russky-bridge".to_string(),
-            name: "Смотровая площадка «Русский мост»".to_string(),
-            lat: 43.0884,
-            lon: 131.9045,
-            kind: "viewpoint".to_string(),
-            opening_hours: None,
-            source: SourceKind::Mock,
-        },
-        PlaceFact {
-            id: "mock:place:eagle-nest".to_string(),
-            name: "Смотровая площадка «Орлиное гнездо»".to_string(),
-            lat: 43.1195,
-            lon: 131.8982,
-            kind: "viewpoint".to_string(),
-            opening_hours: Some("24/7".to_string()),
-            source: SourceKind::Mock,
-        },
-        PlaceFact {
-            id: "mock:place:andreevka".to_string(),
-            name: "Пляж Андреевки".to_string(),
-            lat: 42.6162,
-            lon: 131.1180,
-            kind: "nature".to_string(),
-            opening_hours: None,
-            source: SourceKind::Mock,
-        },
-        PlaceFact {
-            id: "mock:place:gamov".to_string(),
-            name: "Полуостров Гамова".to_string(),
-            lat: 42.6124,
-            lon: 131.1843,
-            kind: "nature".to_string(),
-            opening_hours: None,
-            source: SourceKind::Mock,
-        },
-        PlaceFact {
-            id: "mock:place:ussuriysky-park".to_string(),
-            name: "Парк Дружбы в Уссурийске".to_string(),
-            lat: 43.7992,
-            lon: 131.9495,
-            kind: "park".to_string(),
-            opening_hours: Some("24/7".to_string()),
-            source: SourceKind::Mock,
-        },
-        PlaceFact {
-            id: "mock:place:arsenyev-museum".to_string(),
-            name: "Арсеньевский историко-краеведческий музей".to_string(),
-            lat: 44.1662,
-            lon: 133.2702,
-            kind: "museum".to_string(),
-            opening_hours: Some("Tu-Sa 10:00-18:00".to_string()),
-            source: SourceKind::Mock,
-        },
-        PlaceFact {
-            id: "mock:place:sportharbor".to_string(),
-            name: "Рыбный рынок «Спортивная гавань»".to_string(),
-            lat: 43.1189,
-            lon: 131.8818,
-            kind: "food".to_string(),
-            opening_hours: Some("Mo-Su 08:00-19:00".to_string()),
-            source: SourceKind::Mock,
-        },
-    ]
+pub fn mock_lodging() -> Vec<Lodging> {
+    parse_mock(MOCK_LODGING, "options")
 }
 
-fn sample_lodging() -> Vec<Lodging> {
-    vec![
-        Lodging {
-            id: "mock:lodge:vladivostok".to_string(),
-            name: "Гостевой дом у Золотого Рога".to_string(),
-            settlement: "Владивосток".to_string(),
-            lat: 43.1160,
-            lon: 131.8850,
-            price_per_night: 4500,
-            kind: "guesthouse".to_string(),
-            source: SourceKind::Mock,
-        },
-        Lodging {
-            id: "mock:lodge:andreevka".to_string(),
-            name: "База отдыха «Бухта»".to_string(),
-            settlement: "Андреевка".to_string(),
-            lat: 42.6500,
-            lon: 130.9000,
-            price_per_night: 3800,
-            kind: "guesthouse".to_string(),
-            source: SourceKind::Mock,
-        },
-    ]
+pub fn mock_transport() -> Vec<TransportOption> {
+    parse_mock(MOCK_TRANSPORT, "options")
 }
 
-fn sample_transport() -> Vec<TransportOption> {
-    vec![TransportOption {
-        id: "mock:trip:vlad-uss".to_string(),
-        from: "Владивосток".to_string(),
-        to: "Уссурийск".to_string(),
-        mode: "bus".to_string(),
-        depart: "08:00".to_string(),
-        arrive: "10:30".to_string(),
-        price_rub: 600,
-        source: SourceKind::Mock,
-    }]
+pub fn mock_fuel() -> Vec<FuelStation> {
+    parse_mock(MOCK_FUEL, "stations")
 }
 
-fn sample_fuel() -> Vec<FuelStation> {
-    vec![FuelStation {
-        id: "mock:fuel:1".to_string(),
-        name: "АЗС на трассе".to_string(),
-        lat: 43.3000,
-        lon: 131.9500,
-        source: SourceKind::Mock,
-    }]
+fn parse_mock<T: DeserializeOwned>(raw: &str, key: &str) -> Vec<T> {
+    let value: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
+    value
+        .get(key)
+        .and_then(Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| serde_json::from_value(item.clone()).ok())
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 #[cfg(test)]

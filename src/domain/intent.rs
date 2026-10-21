@@ -1,4 +1,4 @@
-use chrono::NaiveDate;
+use chrono::{Datelike, NaiveDate};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::dates::{add_days, next_saturday, parse_month_phrase};
@@ -140,7 +140,7 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
     if is_other_region(&lower) {
         return Err(Refusal::other_region());
     }
-    if is_off_topic(&lower) && !is_travel(&lower) {
+    if is_off_topic(&lower) && !is_travel_action(&lower) {
         return Err(Refusal::off_topic());
     }
     if !is_travel(&lower) {
@@ -149,23 +149,34 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
 
     let mut assumptions = Vec::new();
 
-    let (start_date, date_is_explicit) = parse_start_date(&lower, today);
+    // An explicit date range ("с 5 по 8 ноября", "5–8 ноября") is the strongest
+    // signal and must win over "не больше N дней" and other heuristics.
+    let explicit_period = parse_explicit_period(&lower, today);
+    let (start_date, date_is_explicit) = match explicit_period {
+        Some((start, _)) => (start, true),
+        None => parse_start_date(&lower, today),
+    };
     if !date_is_explicit {
         assumptions.push("даты не указаны — взял ближайшие выходные".to_string());
     }
 
     let explicit_day_count = parse_day_count(&lower);
-    let mut max_days = explicit_day_count.unwrap_or(2);
-    if explicit_day_count.is_none() && is_single_day_query(&lower) {
-        max_days = 1;
-    }
-    if lower.contains("без ночёвки")
-        || lower.contains("без ночевки")
-        || lower.contains("одним днём")
-    {
-        max_days = 1;
-    } else if lower.contains("с ночёвкой") || lower.contains("с ночевкой") {
-        max_days = max_days.max(2);
+    let mut max_days = explicit_period
+        .map(|(start, end)| (end - start).num_days() as u8 + 1)
+        .or(explicit_day_count)
+        .unwrap_or(2);
+    if explicit_period.is_none() {
+        if explicit_day_count.is_none() && is_single_day_query(&lower) {
+            max_days = 1;
+        }
+        if lower.contains("без ночёвки")
+            || lower.contains("без ночевки")
+            || lower.contains("одним днём")
+        {
+            max_days = 1;
+        } else if lower.contains("с ночёвкой") || lower.contains("с ночевкой") {
+            max_days = max_days.max(2);
+        }
     }
     if max_days > MAX_TRIP_DAYS {
         max_days = MAX_TRIP_DAYS;
@@ -242,6 +253,104 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
     })
 }
 
+/// Parses an explicit calendar range such as "с 5 по 8 ноября", "5–8 ноября"
+/// or "с 30 декабря по 2 января". Returns `None` when the query only has a
+/// month phrase without day numbers or a duration.
+fn parse_explicit_period(lower: &str, today: NaiveDate) -> Option<(NaiveDate, NaiveDate)> {
+    let tokens: Vec<String> = lower
+        .split(|c: char| !c.is_alphanumeric())
+        .filter(|token| !token.is_empty())
+        .map(str::to_string)
+        .collect();
+
+    let months: Vec<(usize, u32)> = tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(index, token)| month_number(token).map(|month| (index, month)))
+        .collect();
+    if months.is_empty() {
+        return None;
+    }
+
+    let numbers: Vec<(usize, u32)> = tokens
+        .iter()
+        .enumerate()
+        .filter_map(|(index, token)| {
+            token
+                .parse::<u32>()
+                .ok()
+                .filter(|day| (1..=31).contains(day))
+                .map(|day| (index, day))
+        })
+        .collect();
+    let (first_index, first_day) = numbers.first().copied()?;
+    let second = numbers.get(1).copied();
+
+    let start_month = months
+        .iter()
+        .find(|(index, _)| *index > first_index)
+        .or_else(|| months.first())
+        .map(|(_, month)| *month)?;
+    let end_month = second
+        .and_then(|(index, _)| {
+            months
+                .iter()
+                .find(|(month_index, _)| *month_index > index)
+                .map(|(_, month)| *month)
+        })
+        .unwrap_or(start_month);
+
+    let mut start = build_date(today.year(), start_month, first_day)?;
+    if start < today {
+        start = build_date(today.year() + 1, start_month, first_day)?;
+    }
+
+    let end = match second {
+        Some((_, day)) => {
+            let mut end = build_date(start.year(), end_month, day)?;
+            if end < start {
+                end = build_date(start.year() + 1, end_month, day)?;
+            }
+            end
+        }
+        None => start,
+    };
+
+    Some((start, end))
+}
+
+fn build_date(year: i32, month: u32, day: u32) -> Option<NaiveDate> {
+    NaiveDate::from_ymd_opt(year, month, day)
+}
+
+fn month_number(token: &str) -> Option<u32> {
+    const MONTHS: [(&str, u32); 14] = [
+        ("январ", 1),
+        ("феврал", 2),
+        ("март", 3),
+        ("апрел", 4),
+        ("июн", 6),
+        ("июл", 7),
+        ("август", 8),
+        ("сентябр", 9),
+        ("октябр", 10),
+        ("ноябр", 11),
+        ("декабр", 12),
+        // May needs exact forms: prefix matching would turn "3 маяка" into 3 May.
+        ("май", 5),
+        ("мая", 5),
+        ("мае", 5),
+    ];
+    if matches!(token, "май" | "мая" | "мае" | "маю") {
+        return Some(5);
+    }
+    MONTHS
+        .iter()
+        .filter(|(stem, _)| *stem != "май" && *stem != "мая" && *stem != "мае")
+        .find(|(stem, _)| token.starts_with(stem))
+        .map(|(_, month)| *month)
+}
+
 fn parse_start_date(lower: &str, today: NaiveDate) -> (NaiveDate, bool) {
     if lower.contains("послезавтра") {
         return (add_days(today, 2), true);
@@ -281,14 +390,14 @@ fn is_single_day_query(lower: &str) -> bool {
 }
 
 fn parse_transport(lower: &str) -> (TransportMode, bool) {
-    if lower.contains("без машины") || lower.contains("без авто") {
-        return (TransportMode::Transit, true);
-    }
-    if lower.contains("велосипед") {
+    if lower.contains("велосипед") || lower.contains("вело") {
         return (TransportMode::Bike, true);
     }
-    if lower.contains("пешком") || lower.contains("пешк") {
+    if lower.contains("пешком") || lower.contains("пешк") || lower.contains("пеш") {
         return (TransportMode::Foot, true);
+    }
+    if lower.contains("без машины") || lower.contains("без авто") {
+        return (TransportMode::Transit, true);
     }
     if lower.contains("автобус")
         || lower.contains("на поезде")
@@ -407,8 +516,37 @@ fn parse_budget(lower: &str) -> Option<u32> {
     None
 }
 
+/// A concrete travel action, not just a place name. Used to reject off-topic
+/// requests that mention Primorye only as a prop ("анекдот про Владивосток").
+fn is_travel_action(lower: &str) -> bool {
+    const ACTIONS: &[&str] = &[
+        "поехать",
+        "поездк",
+        "поездка",
+        "съездить",
+        "маршрут",
+        "путешеств",
+        "отпуск",
+        "посмотреть",
+        "смотрет",
+        "прогул",
+        "поход",
+        "тропа",
+        "пляж",
+        "музе",
+        "достопримечательн",
+        "экскурс",
+        "выходн",
+        "тур",
+        "отдых",
+        "ночёвк",
+        "ночевк",
+    ];
+    ACTIONS.iter().any(|word| lower.contains(word))
+}
+
 fn is_travel(lower: &str) -> bool {
-    const WORDS: [&str; 44] = [
+    const WORDS: &[&str] = &[
         "поезд",
         "поехать",
         "поездк",
@@ -453,6 +591,15 @@ fn is_travel(lower: &str) -> bool {
         "тропа",
         "мыс",
         "полуостров",
+        "мор",
+        "маяк",
+        "озер",
+        "река",
+        "лес",
+        "сопк",
+        "водопад",
+        "заповедник",
+        "набережн",
     ];
     WORDS.iter().any(|word| lower.contains(word))
 }
@@ -553,6 +700,63 @@ mod tests {
     }
 
     #[test]
+    fn sea_and_lighthouse_queries_are_travel() {
+        assert!(parse("Хочу к морю на выходные", today()).is_ok());
+        assert!(parse("Хочу посмотреть маяки в Приморье", today()).is_ok());
+    }
+
+    #[test]
+    fn explicit_foot_wins_over_no_car_phrase() {
+        let intent = parse("Хочу пешком, без машины, по Приморью", today()).unwrap();
+        assert_eq!(intent.transport, TransportMode::Foot);
+    }
+
+    #[test]
+    fn pedestrian_route_is_foot() {
+        let intent = parse("Пеший маршрут к мысу Тобизина на один день", today()).unwrap();
+        assert_eq!(intent.transport, TransportMode::Foot);
+        assert_eq!(intent.max_days, 1);
+    }
+
+    #[test]
+    fn explicit_date_range_is_parsed() {
+        let intent = parse("Хочу с 5 по 8 ноября по Приморью на машине", today()).unwrap();
+        assert_eq!(
+            intent.start_date,
+            NaiveDate::from_ymd_opt(2026, 11, 5).unwrap()
+        );
+        assert_eq!(
+            intent.end_date,
+            NaiveDate::from_ymd_opt(2026, 11, 8).unwrap()
+        );
+        assert_eq!(intent.max_days, 4);
+    }
+
+    #[test]
+    fn explicit_range_crosses_new_year() {
+        let intent = parse("Хочу с 30 декабря по 2 января по Приморью", today()).unwrap();
+        assert_eq!(
+            intent.start_date,
+            NaiveDate::from_ymd_opt(2026, 12, 30).unwrap()
+        );
+        assert_eq!(
+            intent.end_date,
+            NaiveDate::from_ymd_opt(2027, 1, 2).unwrap()
+        );
+        assert_eq!(intent.max_days, 4);
+    }
+
+    #[test]
+    fn three_lighthouses_is_not_may() {
+        let intent = parse("Хочу посмотреть 3 маяка в Приморье", today()).unwrap();
+        assert_eq!(
+            intent.start_date,
+            NaiveDate::from_ymd_opt(2026, 10, 24).unwrap()
+        );
+        assert_eq!(intent.max_days, 2);
+    }
+
+    #[test]
     fn no_car_means_transit() {
         let intent = parse("На два дня в Арсеньев, без машины", today()).unwrap();
         assert_eq!(intent.transport, TransportMode::Transit);
@@ -594,5 +798,20 @@ mod tests {
                 .category,
             "off_topic"
         );
+    }
+
+    #[test]
+    fn refuses_off_topic_masked_with_a_city_name() {
+        assert_eq!(
+            parse("Расскажи анекдот про Владивосток", today())
+                .unwrap_err()
+                .category,
+            "off_topic"
+        );
+    }
+
+    #[test]
+    fn allows_travel_request_that_mentions_an_offtopic_word() {
+        assert!(parse("Хочу поехать в музей, а не решать уравнение", today()).is_ok());
     }
 }

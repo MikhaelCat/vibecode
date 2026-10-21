@@ -58,6 +58,7 @@
             <label class="field"><span>Дата конца</span><input id="end_date" type="date" required></label>
             <label class="field"><span>Транспорт</span>
               <select id="transport">
+                <option value="">Из текста запроса</option>
                 <option value="car">Автомобиль</option>
                 <option value="foot">Пешком</option>
                 <option value="bike">Велосипед</option>
@@ -65,7 +66,7 @@
               </select>
             </label>
           </div>
-          <p class="hint">Не трогали даты? Возьмём их из текста запроса. Выбрали вручную — форма главнее.</p>
+          <p class="hint">Даты и транспорт не тронуты? Возьмём их из текста запроса. Выбрали вручную — форма главнее.</p>
 
           <div class="row">
             <button id="go" class="btn" type="submit">

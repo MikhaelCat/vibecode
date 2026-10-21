@@ -156,6 +156,7 @@ impl LlmClient for OpenRouterClient {
             tool_calls: choice.message.tool_calls.unwrap_or_default(),
             usage,
             model: parsed.model.unwrap_or_else(|| self.model.clone()),
+            finish_reason: choice.finish_reason,
         })
     }
 
@@ -177,6 +178,8 @@ struct OpenRouterResponse {
 #[derive(Debug, Deserialize)]
 struct Choice {
     message: ResponseMessage,
+    #[serde(default)]
+    finish_reason: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]

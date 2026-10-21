@@ -48,10 +48,16 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
     let mut used = std::collections::HashSet::new();
     let mut days = Vec::new();
     let mut date = intent.start_date;
+    let mut remaining_days = (intent.end_date - intent.start_date).num_days() as usize + 1;
 
     while date <= intent.end_date {
         let mut items = Vec::new();
-        for slot in 0..2 {
+        let available = places
+            .iter()
+            .filter(|place| !used.contains(&place.id))
+            .count();
+        let slots = ((available + remaining_days - 1) / remaining_days.max(1)).clamp(1, 3);
+        for slot in 0..slots {
             let Some(place) = places.iter().find(|place| !used.contains(&place.id)) else {
                 break;
             };
@@ -76,6 +82,7 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
             });
         }
         days.push(DayDraft { date, items });
+        remaining_days = remaining_days.saturating_sub(1);
         date = add_days(date, 1);
     }
 
@@ -149,6 +156,35 @@ mod tests {
         assert!(!plan.days[0].items.is_empty());
         assert!(!plan.lodging.is_empty());
         assert_eq!(plan.generation, Generation::Fallback);
+    }
+
+    #[test]
+    fn fallback_fills_every_day_without_repeats() {
+        let mut facts = Facts::default();
+        let intent = Intent {
+            region: "primorye".to_string(),
+            start_date: NaiveDate::from_ymd_opt(2026, 10, 24).unwrap(),
+            end_date: NaiveDate::from_ymd_opt(2026, 10, 30).unwrap(),
+            max_days: 7,
+            transport: TransportMode::Car,
+            budget_rub: None,
+            party_size: 1,
+            with_children: false,
+            interests: vec![],
+            must_see: vec![],
+            avoid: vec![],
+            pace: Pace::Normal,
+            assumptions: vec![],
+        };
+        let plan = assemble(&mut facts, &intent);
+        let ids: Vec<&str> = plan
+            .all_items()
+            .map(|item| item.place_id.as_str())
+            .collect();
+        let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
+        assert_eq!(plan.days.len(), 7);
+        assert!(plan.days.iter().all(|day| !day.items.is_empty()));
+        assert_eq!(ids.len(), unique.len(), "duplicate places: {ids:?}");
     }
 
     #[test]

@@ -1,7 +1,7 @@
 {
   "places": [
     {
-      "id": "mock:place:1",
+      "id": "mock:place:oceanarium",
       "name": "Приморский океанариум",
       "lat": 43.0009,
       "lon": 131.9437,
@@ -10,7 +10,7 @@
       "source": "mock"
     },
     {
-      "id": "mock:place:2",
+      "id": "mock:place:fortress",
       "name": "Музей «Владивостокская крепость»",
       "lat": 43.1188,
       "lon": 131.8833,
