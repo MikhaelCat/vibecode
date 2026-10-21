@@ -23,6 +23,34 @@ let markers = [];
 // ---------- состояние ----------
 let plan = null, day = 0;
 
+function isoDate(date) {
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+}
+function defaultDates() {
+  const start = new Date();
+  start.setDate(start.getDate() + 1);
+  const end = new Date(start);
+  end.setDate(end.getDate() + 2);
+  $('start_date').value = isoDate(start);
+  $('end_date').value = isoDate(end);
+}
+defaultDates();
+
+function clampDates(changed) {
+  const start = $('start_date').value;
+  const end = $('end_date').value;
+  if (!start || !end) return;
+  const s = new Date(start + 'T00:00:00');
+  const e = new Date(end + 'T00:00:00');
+  const max = new Date(s); max.setDate(max.getDate() + 2);
+  if (e < s) { $('end_date').value = start; return; }
+  if (e > max) { $('end_date').value = isoDate(max); return; }
+  if (changed === 'start') { $('end_date').min = start; }
+}
+$('start_date').addEventListener('change', () => clampDates('start'));
+$('end_date').addEventListener('change', () => clampDates('end'));
+
 // ---------- старт ----------
 $('chips').innerHTML = EXAMPLES.map((t) => `<button type="button" class="chip">${esc(t)}</button>`).join('');
 $('chips').addEventListener('click', (e) => {
@@ -39,7 +67,8 @@ if (prefill) {
   if (params.get('autorun') === '1') setTimeout(() => run(prefill), 0);
 }
 fetch(API + '/api/health').then((r) => r.json()).then((h) => {
-  const el = $('health'); el.textContent = `${h.model || 'онлайн'}`; el.classList.add('ok');
+  const el = $('health'); el.textContent = 'онлайн'; el.classList.add('ok');
+  if (h.auth_required) $('token-box').hidden = false;
 }).catch(() => {});
 
 // ---------- запуск ----------
@@ -50,7 +79,13 @@ async function run(query) {
   try {
     const headers = { 'content-type': 'application/json' };
     if ($('token').value) headers['x-app-token'] = $('token').value;
-    const res = await fetch(API + '/api/plan', { method: 'POST', headers, body: JSON.stringify({ query }) });
+    const payload = {
+      query,
+      start_date: $('start_date').value || null,
+      end_date: $('end_date').value || null,
+      transport: $('transport').value,
+    };
+    const res = await fetch(API + '/api/plan', { method: 'POST', headers, body: JSON.stringify(payload) });
     if (!res.ok) throw new Error(res.status === 401 ? 'Нужен токен доступа (APP_TOKEN).' : `Сервер ответил ${res.status}.`);
     await readSSE(res.body, handle);
   } catch (err) {
@@ -114,8 +149,7 @@ function refuse(d) {
   const r = $('refusal'); r.hidden = false;
   r.innerHTML = `<b>Запрос не по теме.</b> ${esc(d.message || d.reason || 'Я планирую только поездки по Приморскому краю.')}`;
 }
-const isMock = (o) => !!(o && (o.source === 'mock' || o.source === 'stale' || o.mock || o.is_mock));
-const mockTag = (o) => (isMock(o) ? '<span class="mock">мок</span>' : '');
+const mockTag = () => '';
 const fmtTime = (t) => (t ? String(t).slice(0, 5) : '');
 const transportRu = { car: 'машина', foot: 'пешком', bike: 'велосипед', transit: 'автобус/поезд' };
 const legText = (leg) => leg
@@ -226,7 +260,7 @@ async function demo() {
         { name: 'Токаревский маяк', lat: 43.0225, lon: 131.8625, time: '15:30', note: 'Узкая коса, лучший закат дня.', place_id: 'osm:demo-3' }] },
       { title: 'Остров Русский', stops: [
         { name: 'Русский мост', lat: 43.0239, lon: 131.9139, time: '10:30', note: 'Остановка у подножия вантов.', place_id: 'osm:demo-4', leg: '🚗 20 мин · 12 км' },
-        { name: 'Приморский океанариум', lat: 43.0225, lon: 131.9217, time: '12:00', note: 'Билеты по расписанию — данные мок.', place_id: 'mock:demo-5', mock: true }] }] });
+        { name: 'Приморский океанариум', lat: 43.0225, lon: 131.9217, time: '12:00', note: 'Билеты по расписанию — уточните перед выездом.', place_id: 'mock:demo-5', mock: true }] }] });
   handle('validation', { passed: true, checks: ['V01', 'V02', 'V03', 'V04', 'V05'].map((id) => ({ id, ok: true })) });
   handle('usage', { total_tokens: 0, cost_usd: 0 });
   handle('done', {});
