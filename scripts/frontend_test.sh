@@ -71,7 +71,9 @@ async def main():
                 tabs: [...document.querySelectorAll('#tabs .tab')].map(x => x.textContent),
                 stages: [...document.querySelectorAll('#stages li')].map(x => x.textContent),
                 stops: document.querySelectorAll('#stops .stop').length,
-                checks: document.getElementById('checks').innerText
+                checks: document.getElementById('checks').innerText,
+                tiles: document.querySelectorAll('.leaflet-tile-loaded').length,
+                attribution: !!document.querySelector('.leaflet-control-attribution')
               });
             }
           }
@@ -98,6 +100,10 @@ async def main():
                     raise SystemExit(f"duplicate day label: {data['tabs']}")
                 if "guard" in data["stages"]:
                     raise SystemExit(f"raw stage label: {data['stages']}")
+                if data.get("attribution"):
+                    raise SystemExit("leaflet attribution control must be hidden")
+                if not data.get("tiles"):
+                    raise SystemExit("map tiles did not render")
                 print(json.dumps({"plan": data}, ensure_ascii=False))
                 break
 
