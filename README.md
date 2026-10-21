@@ -165,7 +165,7 @@ sudo journalctl -u travel-ai -f
 | `GET` | `/api/runs/{id}` | план + trace |
 | `GET` | `/api/stats` | запуски, токены, стоимость за сегодня |
 | `GET` | `/api/health` | статус, версия, модель, бюджет |
-| `GET` | `/` | SPA из `src/frontend/dist`; собирается `just web` / Docker
+| `GET` | `/` | SPA из `src/frontend/dist`; собирается `npm --prefix src/frontend run build` / Docker
 
 SSE-события: `stage`, `intent`, `tool_call`, `tool_result`, `plan`, `validation`, `usage`, `refusal`, `done`. Ошибки до открытия потока — JSON 4xx; внутри прогона — fallback или `tool_result` с `ok:false`.
 
