@@ -13,12 +13,17 @@ const EXAMPLES = [
 const STAGES = { guard: 'Проверяю тему', intent: 'Разбираю запрос', fallback: 'Упрощаю план', plan: 'Собираю план', validation: 'Проверяю план', done: 'Готово' };
 
 // ---------- карта ----------
-const map = L.map('map', { zoomControl: true }).setView([44.0, 133.0], 7);
-L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', {
-  maxZoom: 18, attribution: '© участники <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-}).addTo(map);
+const map = L.map('map', { zoomControl: true, attributionControl: false }).setView([44.0, 133.0], 7);
+L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 }).addTo(map);
 const layer = L.layerGroup().addTo(map);
 let markers = [];
+
+function fitMap() {
+  map.invalidateSize();
+}
+map.whenReady(fitMap);
+window.addEventListener('resize', fitMap);
+if (window.ResizeObserver) new ResizeObserver(fitMap).observe(document.querySelector('.mapwrap'));
 
 // ---------- состояние ----------
 let plan = null, day = 0;
