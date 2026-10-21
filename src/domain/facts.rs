@@ -200,7 +200,7 @@ impl Facts {
         }
 
         match tool {
-            "search_places" | "geocode" => {
+            "search_places" | "geocode" | "get_nearby_attractions" => {
                 for place in array_field(&out.data, "places") {
                     if let Ok(place) = serde_json::from_value::<PlaceFact>(place.clone()) {
                         self.places.insert(place.id.clone(), place);
