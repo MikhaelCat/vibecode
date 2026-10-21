@@ -57,6 +57,7 @@ POST-эндпоинта требуют `x-app-token`), а расход огра�
 ```text
 vibecode/
 ├── Cargo.toml
+├── parse_primorye.py       # parser: обновление реальных данных
 ├── src/                    # главная папка
 │   ├── main.rs             # сервер
 │   ├── api/                # axum, SSE, DTO
@@ -68,13 +69,14 @@ vibecode/
 │   ├── store/              # SQLite, runs, budget
 │   ├── bin/eval.rs         # QA: раннер эвалов
 │   ├── prompts/            # prompt engineer
-│   ├── parser/             # parser: заметки и нормализация
+│   ├── frontend/           # SPA: index.html, app.js, styles.css, dist
+│   ├── parser/             # parser: заметки по данным
 │   └── qa/                 # QA: сценарии и guardrails
 ├── data/                   # mock, geo, eval
 ├── configs/                # v1/v2/v3 для эвала
 ├── migrations/             # SQLite
 ├── deploy/                 # systemd, install.sh, Dockerfile
-├── scripts/                # smoke, eval_all, docker_smoke
+├── scripts/                # smoke, frontend_test, eval_all, docker_smoke
 ├── tests/                  # интеграционные тесты валидатора
 ├── .github/workflows/ci.yml
 ├── docs/
@@ -101,6 +103,7 @@ cargo run --release --bin eval -- \
 
 ```bash
 BASE_URL=http://127.0.0.1:8080 bash scripts/smoke.sh
+BASE_URL=http://127.0.0.1:8080 bash scripts/frontend_test.sh
 MOCK_LLM=1 bash scripts/eval_all.sh
 bash scripts/docker_smoke.sh
 curl -s http://127.0.0.1:8080/api/health
