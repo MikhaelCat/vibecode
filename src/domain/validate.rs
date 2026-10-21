@@ -125,6 +125,17 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
                 ),
             ));
         }
+        let expected_days = (intent.end_date - intent.start_date).num_days() + 1;
+        if plan.days.len() as i64 != expected_days {
+            violations.push(Violation::hard(
+                "V02",
+                format!(
+                    "В плане {} дн., а запрошен период из {} дн.",
+                    plan.days.len(),
+                    expected_days
+                ),
+            ));
+        }
         for day in &plan.days {
             if day.date < intent.start_date || day.date > intent.end_date {
                 violations.push(Violation::hard(
@@ -434,10 +445,8 @@ fn check_open(hours: &str, date: NaiveDate, time: NaiveTime) -> Option<bool> {
         let Some(days) = parse_days(days_spec) else {
             continue;
         };
-        parsed_any = true;
-        if !days.contains(&date.weekday()) {
-            continue;
-        }
+
+        let mut segment_has_valid_time = false;
         for range in times_spec.split(',') {
             let Some((from, to)) = range.split_once('-') else {
                 continue;
@@ -445,9 +454,13 @@ fn check_open(hours: &str, date: NaiveDate, time: NaiveTime) -> Option<bool> {
             let (Some(from), Some(to)) = (parse_time(from), parse_time(to)) else {
                 continue;
             };
-            if time >= from && time <= to {
+            segment_has_valid_time = true;
+            if days.contains(&date.weekday()) && time >= from && time <= to {
                 open = true;
             }
+        }
+        if segment_has_valid_time {
+            parsed_any = true;
         }
     }
 
