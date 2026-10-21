@@ -23,7 +23,7 @@ PRICE_OUT_PER_M=0
 DATABASE_URL=sqlite://travel-ai.db
 ```
 
-Токен — только в `.env` (он в `.gitignore`): не в git, не в `export`, не в истории команд, не на экране. `PRICE_*` — USD за 1M токенов, `0` = цена неизвестна; если знаешь прайс, поставь фактические. На VM `DATABASE_URL` — `/var/lib/travel-ai/app.db`. После демо верни `MOCK_LLM=1`.
+Токен — только в `.env` (он в `.gitignore`): не в git, не в `export`, не в истории команд, не на экране. `PRICE_*` — USD за 1M токенов, `0` = цена неизвестна; если знаешь прайс, поставь фактические. На VM `DATABASE_URL` — `/var/lib/travel-ai/app.db`. После демо верни `MOCK_LLM=1`. Для проверок нужен `jq` (`apt install jq`).
 
 ## 2. Смоук без LLM
 
@@ -37,7 +37,7 @@ curl -s -X POST http://127.0.0.1:8080/api/plan/sync -H 'content-type: applicatio
 
 Health: `status:"ok"`, `model:"mock-llm"`, `mock_llm:true`, `prompt_version:"system_v1"`, `budget:{daily_usd,spent_today_usd}`.
 
-Sync: HTTP 200, `days:2`, `hard_failed:false`, `generation:"llm"`, в `tools` — `search_places`/`get_route`/`find_fuel`/`find_lodging`, `tokens>0`, `cost_usd:0`.
+Sync: HTTP 200, `days:2`, `hard_failed:false`, `generation:"llm"`, в `tools` — `search_places`/`get_weather`/`find_lodging` (mock-цикл; live может добавить `get_route`/`find_fuel`), `tokens>0`, `cost_usd:0`.
 
 Refusal: HTTP 200, `refusal.category:"off_topic"`, `plan:null`, `tokens:0` — отказ локальный, LLM не вызывается.
 
@@ -55,9 +55,9 @@ RUN_ID=$(jq -r .run_id /tmp/live-plan.json)
 curl -s "http://127.0.0.1:8080/api/runs/$RUN_ID" | jq '{generation:.plan.generation, hard_failed:.trace.validation.hard_failed, steps:(.trace.steps|length), tools:(.trace.tool_calls|map(.name))}'
 ```
 
-Ориентир: 15–25 с и ~15 тыс. токенов. Успех: `days:2`, `hard_failed:false`, `generation:"llm"`. Если `generation:"fallback"` — LLM не довёл план (сбой прокси, лимит шагов или ремонтов), это не успешный live-прогон.
+Ориентир: 15–25 с и ~15 тыс. токенов. Успех: `days:2`, `hard_failed:false`, `generation:"llm"`. Если `model:"mock-llm"` — live не включился, запрос бесплатный, но это не проверка DeepSeek. Если `generation:"fallback"` — LLM не довёл план (сбой прокси, лимит шагов или ремонтов), это не успешный live-прогон.
 
-`usage.cost_usd` — стоимость от провайдера (`usage.cost`), если прокси её вернул; иначе оценка по `PRICE_*`. `0.0` не значит «бесплатно»: цена может быть неизвестна. Смотри также `prompt_tokens`/`completion_tokens` и `estimated`.
+`usage.cost_usd` — стоимость от провайдера (`usage.cost`), если прокси её вернул, иначе `0.0`; в `/api/stats` при нуле подставляется оценка по `PRICE_*`. Ноль не значит «бесплатно»: цена может быть неизвестна. Смотри также `prompt_tokens`/`completion_tokens` и `estimated`.
 
 ## 4. Бюджет
 
@@ -68,7 +68,7 @@ curl -s http://127.0.0.1:8080/api/health | jq '.budget'
 
 После каждого live-запроса. `DAILY_BUDGET_USD=1` (или `2`, если останется на live-эвал). Останавливайся на 70–80% лимита: проверка идёт до запроса (`spent < limit`), поэтому последний запрос может превысить бюджет.
 
-Если `cost_usd` равен 0, а `PRICE_*` тоже 0, расход не учитывается — считай live-запросы и токены вручную. При 429 `budget_exhausted` дальше только mock.
+Если `cost_usd` равен 0, а `PRICE_*` тоже 0, расход не учитывается — считай live-запросы и токены вручную. При 429 `budget_exhausted` — §7: mock и `DAILY_BUDGET_USD=0`.
 
 ## 5. Финальный эвал
 
@@ -82,7 +82,7 @@ done
 jq '.summary' results/v2.json
 ```
 
-Это 20 кейсов × 3 конфига, бесплатно (без `--live` эвал и так mock). Сервер для демо всегда берёт `system_v1.md`; конфиги эвала переключают `system_v1/v2/v3`.
+Это 20 кейсов × 3 конфига, бесплатно (без `--live` эвал и так mock; LLM-токены не тратятся, но внешние тулы могут ходить в сеть). Сервер для демо всегда берёт `system_v1.md`; конфиги эвала переключают `system_v1/v2/v3`.
 
 Опционально — один live-конфиг и только с `--limit`, не все 60:
 
@@ -93,22 +93,23 @@ MOCK_LLM=0 cargo run --release --bin eval -- --config configs/v2_compact.toml --
 
 Eval не читает `.env` сам, поэтому переменные экспортируются из файла (токен не печатается). Eval пишет в in-memory БД: `/api/stats` его не видит, `DAILY_BUDGET_USD` его не остановит — ограничивай `--limit`. Бюджета мало — пропусти этот шаг.
 
-## 6. Сценарий демо (максимум 3 live-запроса)
+## 6. Сценарий демо (максимум 3 live-запроса включая §3, ретраи считаются)
 
-1. **Машина, выходные (live).** «Хочу на выходные по Приморью на машине, не больше двух дней»: план на 2 дня, `hard_failed:false`, `generation:"llm"`, карта и trace.
+1. **Машина, выходные (live).** «Хочу на выходные по Приморью на машине, не больше двух дней»: план на 2 дня, `hard_failed:false`, `generation:"llm"`, trace (UI или `/api/runs`), карта — если SPA собрана. Если §3 уже был, не повторяй запрос — покажи сохранённый `/tmp/live-plan.json`.
 2. **Погода/пешком (live).** «Пеший маршрут к мысу Тобизина на один день — как пройти и что взять с собой?» (или велосипедный q07): `get_weather`/`get_route` и запасной вариант при дожде.
 3. **Отказ (бесплатно).** «Реши задачу по алгебре» → `refusal` без вызова LLM, 0 токенов.
 
-Trace: в UI открой «как собран план»; в JSON — `trace.steps` (≥2 шагов) и `tool_calls`; валидация — `report`/`trace.validation` с `hard_failed:false`.
+Trace: если SPA собрана, открой «как собран план»; иначе — `/api/runs/{run_id}` и `trace.steps` (≥2 шагов) + `tool_calls`; валидация — `report`/`trace.validation` с `hard_failed:false`.
 
 Что говорить: «Это не один промпт, а агент: он вызывает инструменты, проверяет план детерминированным валидатором и показывает trace. Один живой запрос DeepSeek занимает ~15–25 с и ~15 тыс. токенов, поэтому остальное мы гоняем на mock. Отказ обрабатывается локально и не тратит бюджет».
 
 ## 7. Прокси упал, квота или бюджет
 
-1. Поставь `MOCK_LLM=1` в `.env`.
+1. Поставь `MOCK_LLM=1` в `.env` и `unset MOCK_LLM` в shell.
 2. Перезапусти: локально Ctrl+C → `MOCK_LLM=1 cargo run`; на VM — `sudo systemctl restart travel-ai`; Docker — пересоздай контейнер (§8).
 3. Проверь `/api/health`: `mock_llm:true`; повтори тот же запрос — придёт mock-план.
 4. Скажи честно: «Провайдер/лимит недоступен, показываю офлайн-план; логика, тулы и валидатор те же, LLM заменён на mock». Если live-ответ уже пришёл с `generation:"fallback"`, это тоже повод перейти на mock.
+5. Если уже пришёл 429 `budget_exhausted`, одного `MOCK_LLM=1` мало: проверка бюджета стоит до guard и заблокирует даже бесплатный отказ. На время mock-демо поставь `DAILY_BUDGET_USD=0` (лимит выключен), после — верни `1`.
 
 ## 8. Docker
 
@@ -132,7 +133,7 @@ docker logs -f travel-ai-demo
 - [ ] Токен только в `.env`; `chmod 600`; в репозитории, логах, истории и на экране его нет.
 - [ ] `MOCK_LLM=1 cargo run` + health/sync/refusal из §2 проходят.
 - [ ] `.env` live: `mock_llm:false`, `DAILY_BUDGET_USD=1/2`, `/api/stats` проверен.
-- [ ] Бэкап БД: `sqlite3 travel-ai.db ".backup 'travel-ai-$(date +%F).db'"` (на VM — путь из `deploy/README.md`).
+- [ ] Бэкап БД: `sqlite3 travel-ai.db ".backup 'travel-ai-$(date +%F).db'"` (VM — `/var/lib/travel-ai/app.db`, Docker — volume `travel-ai-data`).
 - [ ] Порт 8080 открыт снаружи: `curl` с другого хоста, не только с localhost.
 - [ ] Резервное видео 2–3 минуты (mock-прогон) + скриншоты trace; проигрывается локально.
 - [ ] Проверен fallback: `MOCK_LLM=1`, рестарт, тот же запрос.
