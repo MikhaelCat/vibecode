@@ -335,7 +335,10 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
 }
 
 pub fn build_leg(from: &PlanItem, to: &PlanItem, intent: &Intent, facts: &Facts) -> Leg {
-    if let Some(route) = facts.route_between(&from.place_id, &to.place_id) {
+    if let Some(route) = facts
+        .route_between(&from.place_id, &to.place_id)
+        .or_else(|| facts.route_for_points((from.lat, from.lon), (to.lat, to.lon)))
+    {
         return Leg {
             from_place_id: from.place_id.clone(),
             to_place_id: to.place_id.clone(),
