@@ -121,15 +121,15 @@ impl Registry {
             .ok_or_else(|| ToolError::BadArgs(format!("unknown tool: {name}")))?;
 
         let cache_key = format!(
-            "{name}:{}",
+            "{name}:{}:{}",
+            intent.transport,
             serde_json::to_string(&args).unwrap_or_default()
         );
         if let Some(cached) = self.cache.get(&cache_key).await {
             if let Ok(mut output) = serde_json::from_value::<ToolOutput>(cached) {
                 output.meta.cached = true;
-                if output.meta.source == SourceKind::Live {
-                    output.meta.source = SourceKind::Cache;
-                }
+                output.meta.source = SourceKind::Cache;
+                mark_cached_sources(&mut output.data);
                 return Ok(output);
             }
         }
@@ -145,13 +145,27 @@ impl Registry {
             .await
             .map_err(|_| ToolError::Timeout)??;
 
-        if let Ok(value) = serde_json::to_value(&output) {
-            self.cache
-                .put(cache_key, value, Duration::from_secs(600))
-                .await;
+        if output.meta.source == SourceKind::Live {
+            if let Ok(value) = serde_json::to_value(&output) {
+                self.cache
+                    .put(cache_key, value, Duration::from_secs(600))
+                    .await;
+            }
         }
 
         Ok(output)
+    }
+}
+
+fn mark_cached_sources(data: &mut Value) {
+    for key in ["places", "options", "stations", "events"] {
+        if let Some(items) = data.get_mut(key).and_then(Value::as_array_mut) {
+            for item in items {
+                if item.get("source").is_some() {
+                    item["source"] = Value::String("cache".to_string());
+                }
+            }
+        }
     }
 }
 
