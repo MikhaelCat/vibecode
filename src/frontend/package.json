@@ -1,0 +1,9 @@
+{
+  "name": "vibecode-frontend",
+  "private": true,
+  "version": "0.1.0",
+  "scripts": {
+    "dev": "python3 -m http.server 5173",
+    "build": "mkdir -p dist && cp index.html styles.css app.js dist/"
+  }
+}
