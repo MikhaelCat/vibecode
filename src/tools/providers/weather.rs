@@ -106,10 +106,10 @@ fn parse_days(value: &Value) -> Vec<Value> {
         };
         let sunrise = text_at(daily, "sunrise", index)
             .and_then(|value| value.split('T').nth(1))
-            .and_then(|time| parse_time(&time[..5.min(time.len())]));
+            .and_then(|time| time.get(..5).and_then(parse_time));
         let sunset = text_at(daily, "sunset", index)
             .and_then(|value| value.split('T').nth(1))
-            .and_then(|time| parse_time(&time[..5.min(time.len())]));
+            .and_then(|time| time.get(..5).and_then(parse_time));
 
         days.push(json!({
             "date": date,
