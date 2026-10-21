@@ -93,11 +93,7 @@ impl Orchestrator {
         self.store.spent_today().await < self.cfg.daily_budget_usd
     }
 
-    pub async fn run(
-        &self,
-        query: String,
-        sink: Option<mpsc::Sender<StreamEvent>>,
-    ) -> RunOutcome {
+    pub async fn run(&self, query: String, sink: Option<mpsc::Sender<StreamEvent>>) -> RunOutcome {
         let started = Instant::now();
         let run_id = Uuid::new_v4();
         let mut trace = RunTrace::new(
@@ -108,8 +104,12 @@ impl Orchestrator {
         );
         let today = today_vladivostok();
 
-        self.emit(&sink, "stage", json!({"stage": "guard", "status": "running"}))
-            .await;
+        self.emit(
+            &sink,
+            "stage",
+            json!({"stage": "guard", "status": "running"}),
+        )
+        .await;
 
         let intent = match guard::check(&query, today, self.cfg.max_query_chars) {
             GuardDecision::Refuse(refusal) => {
@@ -158,12 +158,8 @@ impl Orchestrator {
             GuardDecision::Allow(intent) => intent,
         };
 
-        self.emit(
-            &sink,
-            "stage",
-            json!({"stage": "intent", "status": "ok"}),
-        )
-        .await;
+        self.emit(&sink, "stage", json!({"stage": "intent", "status": "ok"}))
+            .await;
         self.emit(
             &sink,
             "intent",
@@ -229,15 +225,17 @@ impl Orchestrator {
                 continue;
             }
 
-            messages.push(LlmMessage::assistant_tool_calls(response.tool_calls.clone()));
+            messages.push(LlmMessage::assistant_tool_calls(
+                response.tool_calls.clone(),
+            ));
 
             for call in &response.tool_calls {
                 let name = call.function.name.clone();
                 let args = match serde_json::from_str::<Value>(&call.function.arguments) {
                     Ok(args) => args,
                     Err(error) => {
-                        let content = json!({"error": format!("bad tool arguments: {error}")})
-                            .to_string();
+                        let content =
+                            json!({"error": format!("bad tool arguments: {error}")}).to_string();
                         messages.push(LlmMessage::tool(call.id.clone(), content));
                         trace.tool_calls.push(ToolCallTrace {
                             id: call.id.clone(),
@@ -263,7 +261,13 @@ impl Orchestrator {
                 if name == "submit_plan" {
                     let submit_started = Instant::now();
                     let (content, ok) = self
-                        .handle_submit(&args, &intent, &facts, &mut pending_submit, &mut submit_problem)
+                        .handle_submit(
+                            &args,
+                            &intent,
+                            &facts,
+                            &mut pending_submit,
+                            &mut submit_problem,
+                        )
                         .await;
                     trace.tool_calls.push(ToolCallTrace {
                         id: call.id.clone(),
@@ -487,13 +491,20 @@ impl Orchestrator {
         )
         .await;
 
-        let cost = self
-            .cfg
-            .estimate_cost(usage.prompt_tokens, usage.completion_tokens);
+        let cost = if usage.cost_usd > 0.0 {
+            usage.cost_usd
+        } else {
+            self.cfg
+                .estimate_cost(usage.prompt_tokens, usage.completion_tokens)
+        };
         self.persist(
             run_id,
             &query,
-            if generation == Generation::Fallback { "degraded" } else { "plan" },
+            if generation == Generation::Fallback {
+                "degraded"
+            } else {
+                "plan"
+            },
             Some(&plan),
             usage,
             cost,
@@ -564,4 +575,3 @@ impl Orchestrator {
 fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
-

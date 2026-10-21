@@ -4,7 +4,6 @@ use std::sync::Arc;
 
 use anyhow::{Context, Result};
 use clap::Parser;
-use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 
@@ -12,7 +11,7 @@ use travel_ai::agent::Orchestrator;
 use travel_ai::config::Config;
 use travel_ai::domain::intent::TransportMode;
 use travel_ai::domain::plan::Generation;
-use travel_ai::llm::{LlmClient, MockLlm, OpenRouterClient};
+use travel_ai::llm::MockLlm;
 use travel_ai::store::Store;
 use travel_ai::tools::Registry;
 
@@ -145,17 +144,13 @@ async fn main() -> Result<()> {
 
     let store = Store::connect(&cfg.database_url).await?;
     let registry = Registry::new(&cfg)?;
-    let llm: Arc<dyn LlmClient> = if args.live && cfg.has_real_llm() {
-        let http = Client::builder().timeout(cfg.request_timeout).build()?;
-        Arc::new(OpenRouterClient::new(
-            http,
-            cfg.openrouter_api_key.clone().unwrap_or_default(),
-            cfg.model.clone(),
-            cfg.fallback_models.clone(),
-            cfg.max_completion_tokens,
-        ))
+    if args.live && !cfg.has_real_llm() {
+        anyhow::bail!("--live requires LLM_PROXY_TOKEN or OPENROUTER_API_KEY");
+    }
+    let llm = if args.live {
+        travel_ai::build_llm(&cfg)?
     } else {
-        eprintln!("running with MockLlm; pass --live and set OPENROUTER_API_KEY for real calls");
+        eprintln!("running with MockLlm; pass --live to spend LLM tokens");
         Arc::new(MockLlm::new())
     };
 
@@ -172,10 +167,7 @@ async fn main() -> Result<()> {
         let outcome = orchestrator.run(case.query.clone(), None).await;
         let in_scope_actual = outcome.refusal.is_none();
 
-        let hard_pass = outcome
-            .report
-            .as_ref()
-            .map(|report| !report.hard_failed);
+        let hard_pass = outcome.report.as_ref().map(|report| !report.hard_failed);
         let tool_choice = case.tools.is_empty()
             || outcome
                 .tools_used
@@ -246,8 +238,8 @@ async fn main() -> Result<()> {
 }
 
 fn read_cases(path: &Path) -> Result<Vec<EvalCase>> {
-    let content = std::fs::read_to_string(path)
-        .with_context(|| format!("cannot read {}", path.display()))?;
+    let content =
+        std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
     let mut cases = Vec::new();
     for (index, line) in content.lines().enumerate() {
         let line = line.trim();
@@ -367,7 +359,9 @@ fn render_markdown(summary: &Summary, results: &[CaseResult]) -> String {
             "| {} | {} | {} | {} | {} | {} | {} | {} | {} |",
             case.id,
             case.in_scope_actual,
-            case.hard_pass.map(|value| value.to_string()).unwrap_or_else(|| "—".to_string()),
+            case.hard_pass
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "—".to_string()),
             case.tool_choice,
             case.intent_fit,
             case.refusal_ok,

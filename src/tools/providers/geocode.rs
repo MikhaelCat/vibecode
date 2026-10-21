@@ -58,7 +58,9 @@ impl Tool for GeocodeTool {
                             let name = item.get("display_name")?.as_str()?;
                             let id = format!(
                                 "nominatim:{}/{}",
-                                item.get("osm_type").and_then(Value::as_str).unwrap_or("node"),
+                                item.get("osm_type")
+                                    .and_then(Value::as_str)
+                                    .unwrap_or("node"),
                                 item.get("osm_id").and_then(Value::as_u64).unwrap_or(0)
                             );
                             Some(json!({

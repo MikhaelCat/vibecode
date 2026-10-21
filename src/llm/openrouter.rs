@@ -14,6 +14,8 @@ pub struct OpenRouterClient {
     model: String,
     fallbacks: Vec<String>,
     max_tokens: u32,
+    endpoint: String,
+    openrouter: bool,
 }
 
 impl OpenRouterClient {
@@ -30,17 +32,42 @@ impl OpenRouterClient {
             model,
             fallbacks,
             max_tokens,
+            endpoint: OPENROUTER_URL.to_string(),
+            openrouter: true,
+        }
+    }
+
+    /// OpenAI-compatible endpoint, e.g. T-Bank Spirit LLM Proxy.
+    pub fn new_compatible(
+        http: Client,
+        api_key: String,
+        endpoint: String,
+        model: String,
+        max_tokens: u32,
+    ) -> Self {
+        Self {
+            http,
+            api_key,
+            model,
+            fallbacks: Vec::new(),
+            max_tokens,
+            endpoint,
+            openrouter: false,
         }
     }
 
     async fn request(&self, body: &Value) -> Result<Value, LlmError> {
-        let response = self
+        let mut request = self
             .http
-            .post(OPENROUTER_URL)
+            .post(&self.endpoint)
             .header("Authorization", format!("Bearer {}", self.api_key))
-            .header("HTTP-Referer", "https://github.com/MikhaelCat/vibecode")
-            .header("X-Title", "vibecode travel assistant")
-            .json(body)
+            .json(body);
+        if self.openrouter {
+            request = request
+                .header("HTTP-Referer", "https://github.com/MikhaelCat/vibecode")
+                .header("X-Title", "vibecode travel assistant");
+        }
+        let response = request
             .send()
             .await
             .map_err(|error| LlmError::Upstream(error.to_string()))?;
@@ -58,12 +85,8 @@ impl OpenRouterClient {
             )));
         }
 
-        serde_json::from_str(&text).map_err(|error| {
-            LlmError::Parse(format!(
-                "{error}; body={}",
-                truncate(&text, 500)
-            ))
-        })
+        serde_json::from_str(&text)
+            .map_err(|error| LlmError::Parse(format!("{error}; body={}", truncate(&text, 500))))
     }
 }
 
@@ -76,17 +99,19 @@ impl LlmClient for OpenRouterClient {
             "tools": request.tools,
             "tool_choice": "auto",
             "temperature": 0.2,
-            "max_tokens": self.max_tokens,
-            "provider": { "require_parameters": true, "sort": "throughput" }
+            "max_tokens": self.max_tokens
         });
 
-        if !self.fallbacks.is_empty() {
-            body["models"] = json!(self.fallbacks);
+        if self.openrouter {
+            body["provider"] = json!({ "require_parameters": true, "sort": "throughput" });
+            if !self.fallbacks.is_empty() {
+                body["models"] = json!(self.fallbacks);
+            }
         }
 
         let value = self.request(&body).await?;
-        let parsed: OpenRouterResponse = serde_json::from_value(value)
-            .map_err(|error| LlmError::Parse(error.to_string()))?;
+        let parsed: OpenRouterResponse =
+            serde_json::from_value(value).map_err(|error| LlmError::Parse(error.to_string()))?;
 
         let usage = parsed
             .usage
@@ -94,6 +119,7 @@ impl LlmClient for OpenRouterClient {
                 prompt_tokens: usage.prompt_tokens,
                 completion_tokens: usage.completion_tokens,
                 total_tokens: usage.total_tokens,
+                cost_usd: usage.cost.unwrap_or(0.0),
                 estimated: false,
             })
             .unwrap_or_default();
@@ -148,9 +174,10 @@ struct Usage {
     completion_tokens: u32,
     #[serde(default)]
     total_tokens: u32,
+    #[serde(default)]
+    cost: Option<f64>,
 }
 
 fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
-

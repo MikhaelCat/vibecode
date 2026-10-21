@@ -11,6 +11,9 @@ pub struct Config {
     pub openrouter_api_key: Option<String>,
     pub model: String,
     pub fallback_models: Vec<String>,
+    pub llm_proxy_token: Option<String>,
+    pub llm_proxy_url: String,
+    pub llm_proxy_model: Option<String>,
     pub daily_budget_usd: f64,
     pub price_in_per_m: f64,
     pub price_out_per_m: f64,
@@ -49,9 +52,12 @@ impl Config {
         let cfg = Self {
             bind,
             openrouter_api_key: non_empty(env::var("OPENROUTER_API_KEY").ok()),
-            model: env::var("OPENROUTER_MODEL")
-                .unwrap_or_else(|_| "openrouter/auto".to_string()),
+            model: env::var("OPENROUTER_MODEL").unwrap_or_else(|_| "openrouter/auto".to_string()),
             fallback_models,
+            llm_proxy_token: non_empty(env::var("LLM_PROXY_TOKEN").ok()),
+            llm_proxy_url: env::var("LLM_PROXY_URL")
+                .unwrap_or_else(|_| "https://llm-proxy.spirit.t-education.com/v1".to_string()),
+            llm_proxy_model: non_empty(env::var("LLM_PROXY_MODEL").ok()),
             daily_budget_usd: parse_f64("DAILY_BUDGET_USD", 25.0),
             price_in_per_m: parse_f64("PRICE_IN_PER_M", 0.0),
             price_out_per_m: parse_f64("PRICE_OUT_PER_M", 0.0),
@@ -60,9 +66,7 @@ impl Config {
             prompts_dir: PathBuf::from(
                 env::var("PROMPTS_DIR").unwrap_or_else(|_| "./src/prompts".to_string()),
             ),
-            data_dir: PathBuf::from(
-                env::var("DATA_DIR").unwrap_or_else(|_| "./data".to_string()),
-            ),
+            data_dir: PathBuf::from(env::var("DATA_DIR").unwrap_or_else(|_| "./data".to_string())),
             web_dir: PathBuf::from(
                 env::var("WEB_DIR").unwrap_or_else(|_| "./src/frontend/dist".to_string()),
             ),
@@ -84,7 +88,7 @@ impl Config {
     }
 
     pub fn has_real_llm(&self) -> bool {
-        !self.mock_llm && self.openrouter_api_key.is_some()
+        !self.mock_llm && (self.llm_proxy_token.is_some() || self.openrouter_api_key.is_some())
     }
 
     pub fn estimate_cost(&self, prompt_tokens: u32, completion_tokens: u32) -> f64 {

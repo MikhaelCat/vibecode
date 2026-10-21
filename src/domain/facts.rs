@@ -310,7 +310,9 @@ impl Facts {
         }
         let mut date = start;
         while date <= end {
-            self.weather.entry(date).or_insert_with(|| sample_weather(date));
+            self.weather
+                .entry(date)
+                .or_insert_with(|| sample_weather(date));
             date = add_days(date, 1);
         }
         if self.sources.is_empty() {

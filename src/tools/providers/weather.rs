@@ -52,7 +52,9 @@ impl Tool for WeatherTool {
             .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
             .unwrap_or(ctx.intent.end_date);
         if end < start {
-            return Err(ToolError::BadArgs("end_date is before start_date".to_string()));
+            return Err(ToolError::BadArgs(
+                "end_date is before start_date".to_string(),
+            ));
         }
 
         let url = format!(

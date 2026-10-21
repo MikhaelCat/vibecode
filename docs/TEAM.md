@@ -11,7 +11,7 @@
 
 | Роль | Владелец | Зона | Папки и файлы |
 |---|---|---|---|
-| **Backend + deploy** | Mikhael | API/SSE, orchestrator, агентный цикл, валидатор, store, бюджет, OpenRouter, VM и systemd | `src/api/`, `src/agent/`, `src/domain/`, `src/llm/`, `src/store/`, `src/main.rs`, `src/lib.rs`, `deploy/` |
+| **Backend + deploy** | Mikhael | API/SSE, orchestrator, агентный цикл, валидатор, store, бюджет, Spirit LLM Proxy/OpenRouter, VM и systemd | `src/api/`, `src/agent/`, `src/domain/`, `src/llm/`, `src/store/`, `src/main.rs`, `src/lib.rs`, `deploy/` |
 | **Frontend** | @frontend | SPA, SSE-клиент, карта, план, trace-панель | `src/frontend/` |
 | **Parser** | @parser | OSM/Open-Meteo/OSRM, нормализация, моки, fixtures, кэш | `src/tools/providers/`, `src/parser/`, `data/mock/`, `fixtures/` |
 | **QA** | @qa | эвал, тесты, guardrails, метрики | `src/bin/eval.rs`, `src/qa/`, `data/eval/`, `tests/` |
@@ -64,7 +64,7 @@ src/
 ### 3.1 API для фронта (кратко)
 
 - `POST /api/plan` — тело `{"query": "..."}`, ответ `text/event-stream`.
-- События: `stage`, `intent`, `tool_call`, `tool_result`, `plan`, `validation`, `usage`, `refusal`, `error`, `done`.
+- События: `stage`, `intent`, `tool_call`, `tool_result`, `plan`, `validation`, `usage`, `refusal`, `done`. Ошибки до потока — JSON 4xx; внутри — fallback.
 - `GET /api/health` — статус, версия, модель, бюджет.
 - `GET /api/runs/{id}` — план и trace.
 - `GET /api/stats` — запуски, токены, стоимость, hard-pass.
@@ -132,7 +132,7 @@ ToolOutput {
 ### Frontend
 
 - [ ] Ввод запроса → этапы → план → карта → блок проверок.
-- [ ] SSE-клиент переживает `refusal`, `error`, `done`.
+- [ ] SSE-клиент переживает `refusal`, `fallback`, `done`.
 - [ ] Бейджи `live` / `mock` / `stale` видны.
 - [ ] Мобильная ширина 360 px не ломается.
 - [ ] Нет прямых вызовов LLM и ключей в браузере.

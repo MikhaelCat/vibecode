@@ -6,13 +6,9 @@ use serde_json::{json, Value};
 
 use crate::domain::dates::{add_days, next_saturday, today_vladivostok};
 use crate::domain::intent::{Intent, Pace, TransportMode};
-use crate::domain::plan::{
-    DayDraft, ItemDraft, ItemKind, PlanDraft,
-};
+use crate::domain::plan::{DayDraft, ItemDraft, ItemKind, PlanDraft};
 use crate::domain::trace::TokenUsage;
-use crate::llm::{
-    ChatRequest, ChatResponse, LlmClient, LlmError, LlmToolCall,
-};
+use crate::llm::{ChatRequest, ChatResponse, LlmClient, LlmError, LlmToolCall};
 
 /// Deterministic offline LLM used for tests, local demo and when no API key is set.
 pub struct MockLlm {
@@ -62,7 +58,7 @@ impl LlmClient for MockLlm {
                 "check_out": intent.end_date.to_string(),
                 "party": intent.party_size
             });
-            let calls = vec![
+            let mut calls = vec![
                 LlmToolCall::new(
                     self.call_id(),
                     "search_places",
@@ -76,6 +72,18 @@ impl LlmClient for MockLlm {
                 LlmToolCall::new(self.call_id(), "get_weather", weather_args.to_string()),
                 LlmToolCall::new(self.call_id(), "find_lodging", lodging_args.to_string()),
             ];
+            if intent.transport == TransportMode::Transit {
+                calls.push(LlmToolCall::new(
+                    self.call_id(),
+                    "find_transport",
+                    json!({
+                        "from": "Владивосток",
+                        "to": "Приморский край",
+                        "date": intent.start_date.to_string()
+                    })
+                    .to_string(),
+                ));
+            }
             return Ok(ChatResponse {
                 content: None,
                 tool_calls: calls,
@@ -87,16 +95,12 @@ impl LlmClient for MockLlm {
         let places = collect_places(&request.messages);
         let lodging_ids = collect_lodging(&request.messages, intent.nights() > 0);
         let draft = build_draft(&intent, &places, &lodging_ids);
-        let arguments = serde_json::to_string(&draft)
-            .map_err(|error| LlmError::Parse(error.to_string()))?;
+        let arguments =
+            serde_json::to_string(&draft).map_err(|error| LlmError::Parse(error.to_string()))?;
 
         Ok(ChatResponse {
             content: None,
-            tool_calls: vec![LlmToolCall::new(
-                self.call_id(),
-                "submit_plan",
-                arguments,
-            )],
+            tool_calls: vec![LlmToolCall::new(self.call_id(), "submit_plan", arguments)],
             usage: estimate_usage(&request.messages, 400),
             model: self.model.clone(),
         })
@@ -169,14 +173,8 @@ fn collect_places(messages: &[crate::llm::LlmMessage]) -> Vec<MockPlace> {
             let Some(id) = item.get("id").and_then(Value::as_str) else {
                 continue;
             };
-            let name = item
-                .get("name")
-                .and_then(Value::as_str)
-                .unwrap_or("Место");
-            let kind = item
-                .get("kind")
-                .and_then(Value::as_str)
-                .unwrap_or("sight");
+            let name = item.get("name").and_then(Value::as_str).unwrap_or("Место");
+            let kind = item.get("kind").and_then(Value::as_str).unwrap_or("sight");
             places.push(MockPlace {
                 id: id.to_string(),
                 name: name.to_string(),
@@ -279,6 +277,7 @@ fn estimate_usage(messages: &[crate::llm::LlmMessage], completion: u32) -> Token
         prompt_tokens,
         completion_tokens: completion,
         total_tokens: prompt_tokens + completion,
+        cost_usd: 0.0,
         estimated: true,
     }
 }

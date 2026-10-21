@@ -16,7 +16,7 @@ env:
 
 jobs:
   backend:
-    name: Rust: fmt, clippy, test, release build
+    name: "Rust: fmt, clippy, test, release build"
     runs-on: ubuntu-latest
     steps:
       - name: Checkout

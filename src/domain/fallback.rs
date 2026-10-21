@@ -1,9 +1,7 @@
 use crate::domain::dates::add_days;
 use crate::domain::facts::Facts;
 use crate::domain::intent::Intent;
-use crate::domain::plan::{
-    enrich, DayDraft, Generation, ItemDraft, ItemKind, Plan, PlanDraft,
-};
+use crate::domain::plan::{enrich, DayDraft, Generation, ItemDraft, ItemKind, Plan, PlanDraft};
 
 /// Deterministic plan from already collected facts. Never calls the LLM.
 pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
@@ -48,13 +46,7 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
     }
 
     let lodging_ids = if days.len() > 1 {
-        facts
-            .lodging
-            .keys()
-            .next()
-            .cloned()
-            .into_iter()
-            .collect()
+        facts.lodging.keys().next().cloned().into_iter().collect()
     } else {
         Vec::new()
     };
@@ -75,7 +67,9 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
     plan.generation = Generation::Fallback;
     plan.warnings.push(crate::domain::plan::Warning {
         code: "fallback".to_string(),
-        message: "LLM недоступен или план не прошёл проверку — использована детерминированная сборка".to_string(),
+        message:
+            "LLM недоступен или план не прошёл проверку — использована детерминированная сборка"
+                .to_string(),
     });
     plan
 }

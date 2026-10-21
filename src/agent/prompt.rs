@@ -36,8 +36,7 @@ impl PromptSet {
             .and_then(|stem| stem.to_str())
             .unwrap_or("v1")
             .to_string();
-        let system =
-            std::fs::read_to_string(path).unwrap_or_else(|_| FALLBACK_SYSTEM.to_string());
+        let system = std::fs::read_to_string(path).unwrap_or_else(|_| FALLBACK_SYSTEM.to_string());
         let repair = path
             .parent()
             .map(|parent| parent.join("repair_v1.md"))
@@ -51,6 +50,7 @@ impl PromptSet {
     }
 
     pub fn render_system(&self, today: NaiveDate) -> String {
-        self.system.replace("{{today}}", &today.format("%Y-%m-%d").to_string())
+        self.system
+            .replace("{{today}}", &today.format("%Y-%m-%d").to_string())
     }
 }

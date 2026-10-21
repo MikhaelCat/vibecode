@@ -23,6 +23,19 @@ pub struct RunRecord {
     pub trace_json: Option<String>,
 }
 
+type RunRow = (
+    String,
+    String,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+    f64,
+    Option<String>,
+    Option<String>,
+);
+
 #[derive(Clone)]
 pub struct Store {
     pool: SqlitePool,
@@ -118,8 +131,7 @@ impl Store {
         .ok()
         .flatten();
 
-        let (runs, prompt_tokens, completion_tokens, cost_usd) =
-            row.unwrap_or((0, 0, 0, 0.0));
+        let (runs, prompt_tokens, completion_tokens, cost_usd) = row.unwrap_or((0, 0, 0, 0.0));
         json!({
             "date": day,
             "runs": runs,
@@ -130,18 +142,7 @@ impl Store {
     }
 
     pub async fn get_run(&self, id: &str) -> Option<Value> {
-        let row: Option<(
-            String,
-            String,
-            String,
-            String,
-            i64,
-            i64,
-            i64,
-            f64,
-            Option<String>,
-            Option<String>,
-        )> = sqlx::query_as(
+        let row: Option<RunRow> = sqlx::query_as(
             "SELECT id, created_at, query, status, latency_ms,
                     prompt_tokens, completion_tokens, cost_usd, plan_json, trace_json
              FROM runs WHERE id = ?",

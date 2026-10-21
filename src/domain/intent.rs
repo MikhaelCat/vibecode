@@ -151,8 +151,14 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
         assumptions.push("даты не указаны — взял ближайшие выходные".to_string());
     }
 
-    let mut max_days = parse_day_count(&lower).unwrap_or(2);
-    if lower.contains("без ночёвки") || lower.contains("без ночевки") || lower.contains("одним днём")
+    let explicit_day_count = parse_day_count(&lower);
+    let mut max_days = explicit_day_count.unwrap_or(2);
+    if explicit_day_count.is_none() && is_single_day_query(&lower) {
+        max_days = 1;
+    }
+    if lower.contains("без ночёвки")
+        || lower.contains("без ночевки")
+        || lower.contains("одним днём")
     {
         max_days = 1;
     } else if lower.contains("с ночёвкой") || lower.contains("с ночевкой") {
@@ -247,10 +253,26 @@ fn parse_start_date(lower: &str, today: NaiveDate) -> (NaiveDate, bool) {
     if let Some(date) = parse_month_phrase(lower, today) {
         return (date, true);
     }
-    if lower.contains("выходн") || lower.contains("суббот") || lower.contains("воскресен") {
+    if lower.contains("воскресен") {
+        return (add_days(next_saturday(today), 1), true);
+    }
+    if lower.contains("выходн") || lower.contains("суббот") {
         return (next_saturday(today), true);
     }
     (next_saturday(today), false)
+}
+
+fn is_single_day_query(lower: &str) -> bool {
+    [
+        "завтра",
+        "сегодня",
+        "послезавтра",
+        "в субботу",
+        "в воскресенье",
+        "на день",
+    ]
+    .iter()
+    .any(|marker| lower.contains(marker))
 }
 
 fn parse_transport(lower: &str) -> (TransportMode, bool) {
@@ -271,7 +293,8 @@ fn parse_transport(lower: &str) -> (TransportMode, bool) {
     {
         return (TransportMode::Transit, true);
     }
-    if lower.contains("машин") || lower.contains("авто") || lower.contains("автомобил") {
+    if lower.contains("машин") || lower.contains("авто") || lower.contains("автомобил")
+    {
         return (TransportMode::Car, true);
     }
     (TransportMode::Car, false)
@@ -280,9 +303,11 @@ fn parse_transport(lower: &str) -> (TransportMode, bool) {
 fn parse_party(lower: &str) -> u8 {
     if lower.contains("вчетвером") || lower.contains("вчетвер") {
         4
-    } else if lower.contains("втроём") || lower.contains("втроем") || lower.contains("втро") {
+    } else if lower.contains("втроём") || lower.contains("втроем") || lower.contains("втро")
+    {
         3
-    } else if lower.contains("вдвоём") || lower.contains("вдвоем") || lower.contains("вдво") {
+    } else if lower.contains("вдвоём") || lower.contains("вдвоем") || lower.contains("вдво")
+    {
         2
     } else if lower.contains("с семьёй") || lower.contains("с семьей") {
         3
@@ -295,7 +320,13 @@ fn parse_day_count(lower: &str) -> Option<u8> {
     if lower.contains("неделю") || lower.contains("недели") {
         return Some(7);
     }
-    if lower.contains("на день") || lower.contains("одним днём") || lower.contains("один день") {
+    if lower.contains("на день")
+        || lower.contains("за день")
+        || lower.contains("одним днём")
+        || lower.contains("один день")
+        || lower.contains("пару часов")
+        || lower.contains("несколько часов")
+    {
         return Some(1);
     }
 
@@ -305,9 +336,8 @@ fn parse_day_count(lower: &str) -> Option<u8> {
             .chars()
             .filter(|c| c.is_alphanumeric())
             .collect::<String>();
-        let is_day_word = |s: &str| {
-            s.starts_with("дн") || s.starts_with("день") || s.starts_with("сут")
-        };
+        let is_day_word =
+            |s: &str| s.starts_with("дн") || s.starts_with("день") || s.starts_with("сут");
         let next_is_day = tokens
             .get(idx + 1)
             .map(|s| is_day_word(&s.to_lowercase()))
@@ -373,7 +403,7 @@ fn parse_budget(lower: &str) -> Option<u32> {
 }
 
 fn is_travel(lower: &str) -> bool {
-    const WORDS: [&str; 35] = [
+    const WORDS: [&str; 44] = [
         "поезд",
         "поехать",
         "поездк",
@@ -409,6 +439,15 @@ fn is_travel(lower: &str) -> bool {
         "travel",
         "weekend",
         "visit",
+        "погод",
+        "горе",
+        "гору",
+        "пидан",
+        "добраться",
+        "поход",
+        "тропа",
+        "мыс",
+        "полуостров",
     ];
     WORDS.iter().any(|word| lower.contains(word))
 }
@@ -492,7 +531,10 @@ mod tests {
         .unwrap();
         assert_eq!(intent.transport, TransportMode::Car);
         assert_eq!(intent.max_days, 2);
-        assert_eq!(intent.start_date, NaiveDate::from_ymd_opt(2026, 10, 24).unwrap());
+        assert_eq!(
+            intent.start_date,
+            NaiveDate::from_ymd_opt(2026, 10, 24).unwrap()
+        );
     }
 
     #[test]
@@ -504,18 +546,19 @@ mod tests {
 
     #[test]
     fn budget_and_children() {
-        let intent = parse(
-            "На выходные с ребёнком, уложиться в 5000 рублей",
-            today(),
-        )
-        .unwrap();
+        let intent = parse("На выходные с ребёнком, уложиться в 5000 рублей", today()).unwrap();
         assert_eq!(intent.budget_rub, Some(5000));
         assert!(intent.with_children);
     }
 
     #[test]
     fn refuses_other_region() {
-        assert_eq!(parse("Спланируй неделю в Сочи", today()).unwrap_err().category, "other_region");
+        assert_eq!(
+            parse("Спланируй неделю в Сочи", today())
+                .unwrap_err()
+                .category,
+            "other_region"
+        );
     }
 
     #[test]

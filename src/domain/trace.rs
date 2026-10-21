@@ -9,14 +9,19 @@ pub struct TokenUsage {
     pub completion_tokens: u32,
     pub total_tokens: u32,
     #[serde(default)]
+    pub cost_usd: f64,
+    #[serde(default)]
     pub estimated: bool,
 }
 
 impl TokenUsage {
     pub fn add(&mut self, other: TokenUsage) {
         self.prompt_tokens = self.prompt_tokens.saturating_add(other.prompt_tokens);
-        self.completion_tokens = self.completion_tokens.saturating_add(other.completion_tokens);
+        self.completion_tokens = self
+            .completion_tokens
+            .saturating_add(other.completion_tokens);
         self.total_tokens = self.total_tokens.saturating_add(other.total_tokens);
+        self.cost_usd += other.cost_usd;
         self.estimated |= other.estimated;
     }
 }

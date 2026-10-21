@@ -45,12 +45,7 @@ impl Tool for RouteTool {
         };
         let coords: Vec<(f64, f64)> = points
             .iter()
-            .filter_map(|point| {
-                Some((
-                    point.get("lat")?.as_f64()?,
-                    point.get("lon")?.as_f64()?,
-                ))
-            })
+            .filter_map(|point| Some((point.get("lat")?.as_f64()?, point.get("lon")?.as_f64()?)))
             .collect();
         if coords.len() < 2 {
             return Err(ToolError::BadArgs(
@@ -115,9 +110,7 @@ async fn osrm_route(coords: &[(f64, f64)], ctx: &ToolCtx) -> Option<(f64, u32)> 
         .map(|(lat, lon)| format!("{lon},{lat}"))
         .collect::<Vec<_>>()
         .join(";");
-    let url = format!(
-        "https://router.project-osrm.org/route/v1/driving/{path}?overview=false"
-    );
+    let url = format!("https://router.project-osrm.org/route/v1/driving/{path}?overview=false");
     let response = ctx.http.get(url).send().await.ok()?;
     if !response.status().is_success() {
         return None;

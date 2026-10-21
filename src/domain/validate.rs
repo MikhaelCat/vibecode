@@ -84,10 +84,7 @@ impl ValidationReport {
                 .as_deref()
                 .map(|hint| format!(" Подсказка: {hint}"))
                 .unwrap_or_default();
-            lines.push(format!(
-                "- {}: {}{hint}",
-                violation.code, violation.message
-            ));
+            lines.push(format!("- {}: {}{hint}", violation.code, violation.message));
         }
         if lines.is_empty() {
             return "План прошёл проверку.".to_string();
@@ -107,12 +104,9 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
     for item in plan.all_items() {
         if !in_primorye(item.lat, item.lon) {
             violations.push(
-                Violation::hard(
-                    "V01",
-                    format!("«{}» вне Приморского края", item.name),
-                )
-                .with_place(&item.place_id)
-                .with_hint("Уберите точку или замените на приморскую"),
+                Violation::hard("V01", format!("«{}» вне Приморского края", item.name))
+                    .with_place(&item.place_id)
+                    .with_hint("Уберите точку или замените на приморскую"),
             );
         }
     }
@@ -156,8 +150,7 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
                 "V03",
                 format!(
                     "Перегон указан как {}, а запрошен {}",
-                    leg.mode,
-                    intent.transport
+                    leg.mode, intent.transport
                 ),
             ));
         }
@@ -173,12 +166,9 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
                 match check_open(hours, day.date, start) {
                     Some(false) => {
                         violations.push(
-                            Violation::hard(
-                                "V04",
-                                format!("«{}» закрыто в это время", item.name),
-                            )
-                            .with_place(&item.place_id)
-                            .with_hint(format!("Часы работы: {hours}")),
+                            Violation::hard("V04", format!("«{}» закрыто в это время", item.name))
+                                .with_place(&item.place_id)
+                                .with_hint(format!("Часы работы: {hours}")),
                         );
                     }
                     None => {
@@ -348,7 +338,10 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
         if !facts.lodging.contains_key(&lodging.id) {
             violations.push(Violation::hard(
                 "V10",
-                format!("Ночёвка «{}» не найдена в данных инструментов", lodging.name),
+                format!(
+                    "Ночёвка «{}» не найдена в данных инструментов",
+                    lodging.name
+                ),
             ));
         }
     }

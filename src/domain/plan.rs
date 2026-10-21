@@ -214,7 +214,9 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
                 end: item_draft.end,
                 opening_hours: fact.and_then(|place| place.opening_hours.clone()),
                 price_rub: None,
-                source: fact.map(|place| place.source).unwrap_or(SourceKind::Estimated),
+                source: fact
+                    .map(|place| place.source)
+                    .unwrap_or(SourceKind::Estimated),
                 note: item_draft.note.clone(),
             });
         }
@@ -291,12 +293,11 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
         .places
         .values()
         .any(|place| place.source != SourceKind::Live)
-        || facts
-            .weather
-            .values()
-            .next()
-            .is_some()
-            && facts.sources.iter().any(|source| source.kind != SourceKind::Live)
+        || facts.weather.values().next().is_some()
+            && facts
+                .sources
+                .iter()
+                .any(|source| source.kind != SourceKind::Live)
     {
         warnings.push(Warning {
             code: "demo_data".to_string(),

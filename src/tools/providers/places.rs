@@ -97,14 +97,18 @@ fn parse_overpass(value: &Value) -> Vec<Value> {
         let Some(name) = name else {
             continue;
         };
-        let lat = element
-            .get("lat")
-            .and_then(Value::as_f64)
-            .or_else(|| element.get("center").and_then(|center| center.get("lat")).and_then(Value::as_f64));
-        let lon = element
-            .get("lon")
-            .and_then(Value::as_f64)
-            .or_else(|| element.get("center").and_then(|center| center.get("lon")).and_then(Value::as_f64));
+        let lat = element.get("lat").and_then(Value::as_f64).or_else(|| {
+            element
+                .get("center")
+                .and_then(|center| center.get("lat"))
+                .and_then(Value::as_f64)
+        });
+        let lon = element.get("lon").and_then(Value::as_f64).or_else(|| {
+            element
+                .get("center")
+                .and_then(|center| center.get("lon"))
+                .and_then(Value::as_f64)
+        });
         let (Some(lat), Some(lon)) = (lat, lon) else {
             continue;
         };

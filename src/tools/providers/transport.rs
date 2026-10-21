@@ -42,7 +42,11 @@ impl Tool for TransportTool {
             .unwrap_or("Уссурийск")
             .to_lowercase();
 
-        let mock = load_mock(ctx.data_dir.as_path(), "transport.json", fallback_transport());
+        let mock = load_mock(
+            ctx.data_dir.as_path(),
+            "transport.json",
+            fallback_transport(),
+        );
         let all: Vec<Value> = mock
             .get("options")
             .and_then(Value::as_array)
@@ -54,8 +58,7 @@ impl Tool for TransportTool {
             .filter(|option| {
                 let option_from = option.get("from").and_then(Value::as_str).unwrap_or("");
                 let option_to = option.get("to").and_then(Value::as_str).unwrap_or("");
-                option_from.to_lowercase().contains(&from)
-                    && option_to.to_lowercase().contains(&to)
+                option_from.to_lowercase().contains(&from) && option_to.to_lowercase().contains(&to)
             })
             .cloned()
             .collect();

@@ -39,7 +39,7 @@
 | **География** | Приморский край, часовой пояс Asia/Vladivostok (UTC+10) |
 | **Транспорт** | Автомобиль, пешком, велосипед, автобус/поезд |
 | **Ядро** | Агентный цикл tool calling + детерминированный валидатор плана |
-| **LLM** | OpenRouter, модель из `OPENROUTER_MODEL`, бюджет ~$30/день на ключ |
+| **LLM** | T-Bank Spirit LLM Proxy (DeepSeek) или OpenRouter; модель из env, бюджет дня |
 | **Деплой** | , один бинарник, SQLite, статика, адрес `http://IP:PORT` |
 | **Сдача** | Код + запущенное приложение, эвал 2–3 версий, презентация |
 
@@ -56,7 +56,7 @@
 **Контракты между ролями** (меняются только через PR и сообщение в чат):
 
 1. `Intent`, `Plan`, `PlanDraft` — Rust-типы в `src/domain/`.
-2. SSE-события `stage / intent / tool_call / tool_result / plan / validation / usage / refusal / error / done` — §13.2.
+2. SSE-события `stage / intent / tool_call / tool_result / plan / validation / usage / refusal / done` — §13.2.
 3. JSON-схемы тулов и `ToolOutput` — §8.6, §10.1.
 4. Тексты промптов и их версии — `src/prompts/*.md`, имя версии попадает в trace.
 5. Формат эвал-датасета `data/eval/*.jsonl` — §17.1.
@@ -311,7 +311,7 @@ vibecode/
 | Логи | `tracing`, `tracing-subscriber` | JSON-логи, request id |
 | Парсинг часов | `opening-hours` | `opening_hours` из OSM; unknown → не блокируем |
 | Геометрия | `geo`, `polyline` | Bbox/полигон, декод геометрии OSRM |
-| Отмена | `tokio-util::CancellationToken` | Обрыв SSE → отменить запросы и не жечь токены |
+| Отмена | `tokio-util` (зарезервировано) | Пока обрыв SSE не отменяет прогон; отмена — в бэклоге |
 | ID | `uuid` | run_id, tool_call_id |
 
 Версии — ориентир на момент написания. В первый час фиксируем через `cargo add`, проверяем, что `cargo check` зелёный, и больше не обновляемся до защиты.
@@ -475,6 +475,8 @@ pub struct ValidationReport {
 }
 ```
 
+Финальная реализация `RunTrace` хранит `run_id`, `query`, `prompt_version`, `model`, `steps`, `tool_calls`, `validation`, `outcome`, `latency_ms`, `error`; `usage` пишется рядом в `RunRecord`. `git_sha`/отдельные `timings` — в бэклоге.
+
 **Провенанс** — центральная идея. Каждая точка плана обязана ссылаться на `place_id`, который реально вернул тул. Валидатор сверяет план с `Facts`, собранными из `ToolOutput`, а не с текстом модели. Выдуманное место → hard-нарушение V10.
 
 ### 7.4 Пример плана (сокращённо)
@@ -538,7 +540,7 @@ stateDiagram-v2
 ### 8.2 Псевдокод
 
 ```rust
-pub async fn run(&self, query: &str, cancel: CancellationToken) -> RunResult {
+pub async fn run(&self, query: String, sink: Option<Sender<StreamEvent>>) -> RunOutcome {
     let pre = self.preflight.check(query, &cancel).await?;
     if !pre.in_scope {
         return RunResult::refused(pre.reason);
@@ -673,12 +675,14 @@ Fallback-сборщик — это ещё и страховка демо. Пиш
 
 ---
 
-## 9. LLM-слой (OpenRouter)
+## 9. LLM-слой (Spirit LLM Proxy / OpenRouter)
 
 ### 9.1 Клиент
 
-- База: `https://openrouter.ai/api/v1`.
-- Заголовки: `Authorization: Bearer ...`, `HTTP-Referer`, `X-Title` (для статистики), `Content-Type: application/json`.
+- **Основной путь:** T-Bank Spirit LLM Proxy, OpenAI-compatible. База `https://llm-proxy.spirit.t-education.com/v1`, endpoint `/chat/completions`, `Authorization: Bearer $LLM_PROXY_TOKEN`; модель по умолчанию `openrouter/deepseek/deepseek-v4.1-flash`.
+- **Резервный путь:** OpenRouter, `https://openrouter.ai/api/v1`, `$OPENROUTER_API_KEY`.
+- **Без ключа:** `MockLlm` — детерминированный офлайн-план, чтобы разработка и эвал не тратили деньги.
+- Заголовки: `Authorization: Bearer ...`, `Content-Type: application/json`; для OpenRouter дополнительно `HTTP-Referer`, `X-Title`.
 - Модель: `OPENROUTER_MODEL`; резерв — `OPENROUTER_FALLBACK_MODELS` (массив в `models`, OpenRouter сам переключит при недоступности).
 - `provider.require_parameters = true`, `sort = "throughput"` — чтобы не попасть на провайдера без поддержки tools.
 - `models` с резервом отправляем только если список не пуст: пустой массив некоторые провайдеры трактуют как ошибку.
@@ -736,7 +740,7 @@ while let Some(ev) = stream.next().await {
 - Ретраить: 408, 429, 500, 502, 503, 504. Не ретраить: 400, 401, 403, 404.
 - Максимум 3 попытки, экспонента 500 мс → 1 с → 2 с + jitter, уважать `Retry-After`.
 - Фолбэк модели — только на 429/5xx/недоступность, не на «модель ответила плохо».
-- Перед вызовом: проверка дневного бюджета по `store::budget`; после — запись `usage`.
+- Перед вызовом: проверка дневного бюджета по `store::budget`; после — запись `usage`. Если proxy вернул `usage.cost`, используем его; иначе считаем по `PRICE_IN_PER_M` / `PRICE_OUT_PER_M`.
 - Раз в 5 минут — `GET /api/v1/key`: `limit`, `usage`, `limit_remaining`. Если провайдерский лимит близок, переходим в экономный режим (дешёвая модель, без judge, кэш агрессивнее).
 - Если провайдер не вернул `usage` (бывает при стриминге), оцениваем токены по длине промпта и помечаем в trace `usage_estimated = true`; такие цифры не тянем в основную таблицу эвалов без пометки.
 - В логах и trace **никогда** не пишем ключ; заголовки редактируем.
@@ -993,10 +997,9 @@ L1 + L2 объединяем в один вызов на V3 (экономия т
 | `GET` | `/api/runs/{id}` | План + trace по run_id |
 | `GET` | `/api/stats` | Сегодня: запуски, токены, стоимость, hard-pass |
 | `GET` | `/api/health` | `{status, version, model, uptime, budget}` |
-| `GET` | `/api/evals/latest` | Последняя таблица эвалов (бонус) |
 | `GET` | `/` | `src/frontend/dist`, SPA-fallback |
 
-Ограничения: тело ≤ 8 КБ, `query` ≤ 1000 символов, глобальный семафор на 4 одновременных прогона, per-IP token bucket (например, 10 запросов/мин). Всё это защищает бюджет.
+Ограничения: тело ≤ 16 КБ, `query` ≤ 1000 символов, глобальный семафор на 4 одновременных SSE-прогона; per-IP token bucket — в бэклоге. Всё это защищает бюджет.
 
 ### 13.2 SSE-контракт
 
@@ -1044,24 +1047,19 @@ event: done
 data: {"run_id":"...","latency_ms":900}
 ```
 
-Ошибка:
+Ошибки до открытия потока (пустой/длинный запрос, бюджет, занятый семафор) возвращаются обычным JSON с 4xx. Внутри прогона отдельного `error`-события нет: LLM/тул может уйти в fallback, а ошибка тула приходит как `tool_result` с `ok:false`.
 
-```text
-event: error
-data: {"code":"budget_exhausted","message":"Дневной лимит исчерпан","retry_after":3600}
-```
-
-Правила: `KeepAlive` каждые 15 с; при обрыве клиента — `CancellationToken` и отмена всех запросов; все события — валидный JSON; фронт не падает на неизвестный тип события.
+Правила: `KeepAlive` каждые 15 с; все события — валидный JSON; фронт не падает на неизвестный тип события. Обрыв клиента закрывает поток, но серверный прогон доигрывает и сохраняется (отмена — в бэклоге).
 
 ### 13.3 Ошибки
 
 Единый формат:
 
 ```json
-{"error":{"code":"upstream_timeout","message":"Погода не ответила за 8 с","hint":"План собран без прогноза"}}
+{"code":"too_large","message":"query is longer than 1000 characters","hint":null}
 ```
 
-Коды: `bad_request`, `too_large`, `rate_limited`, `budget_exhausted`, `upstream_timeout`, `llm_unavailable`, `internal`. HTTP-статусы: 400/413/429/502/503/500. Внутренние детали — в лог, не в ответ.
+Фактические коды: `bad_request`, `too_large`, `rate_limited`, `budget_exhausted`, `not_found`, `internal`. HTTP-статусы: 400/413/429/404/500. Внутренние детали — в лог, не в ответ. Ошибки LLM/тулов внутри прогона не отдаются отдельным JSON: они уходят в fallback или `tool_result` с `ok:false`.
 
 ---
 
@@ -1421,6 +1419,10 @@ sudo journalctl -u travel-ai -f
 BIND=0.0.0.0:8080
 OPENROUTER_API_KEY=sk-or-...
 OPENROUTER_MODEL=...
+# T-Bank Spirit proxy (takes precedence when token is set)
+LLM_PROXY_TOKEN=
+LLM_PROXY_URL=https://llm-proxy.spirit.t-education.com/v1
+LLM_PROXY_MODEL=openrouter/deepseek/deepseek-v4.1-flash
 OPENROUTER_FALLBACK_MODELS=...
 DAILY_BUDGET_USD=25
 # USD за 1M токенов; 0 = цена неизвестна, стоимость не считаем
@@ -1650,6 +1652,9 @@ DATABASE_URL=sqlite:///var/lib/travel-ai/app.db
 OPENROUTER_API_KEY=
 OPENROUTER_MODEL=
 OPENROUTER_FALLBACK_MODELS=
+LLM_PROXY_TOKEN=
+LLM_PROXY_URL=https://llm-proxy.spirit.t-education.com/v1
+LLM_PROXY_MODEL=openrouter/deepseek/deepseek-v4.1-flash
 DAILY_BUDGET_USD=25
 # USD за 1M токенов; 0 = цена неизвестна, стоимость не считаем
 PRICE_IN_PER_M=0
@@ -1808,7 +1813,7 @@ demo:
 7. **`sqlx`:** использовать runtime-запросы (`sqlx::query`), чтобы не настраивать compile-time БД.
 8. **Схемы:** `schemars` + `serde` на одних типах; тест «схема принимает эталонный план» ловит рассинхрон.
 9. **`reqwest`:** один `Client` на приложение, таймауты на connect и total, `rustls` без OpenSSL.
-10. **Отмена:** `CancellationToken` в `tokio::select!` с обработкой SSE, чтобы обрыв браузера не жёг токены.
+10. **Отмена:** `CancellationToken` в `tokio::select!` с обработкой SSE — в бэклоге; сейчас прогон доигрывает после обрыва.
 11. **Дженерики в async-трейтах:** `async_trait` для `Tool`; реестр — `HashMap<String, Arc<dyn Tool>>`.
 12. **Компиляция:** `cargo check` в цикле, release — один раз на деплой; не тащить тяжёлые крейты ради одной функции.
 

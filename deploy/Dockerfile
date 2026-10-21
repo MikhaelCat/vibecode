@@ -5,6 +5,7 @@ FROM rust:1-slim AS builder
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock ./
+COPY migrations ./migrations
 COPY src ./src
 
 # The frontend is built outside Docker; keep an empty dist when it is absent.

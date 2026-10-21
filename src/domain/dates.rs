@@ -92,13 +92,19 @@ mod tests {
     #[test]
     fn weekend_from_wednesday() {
         let wed = NaiveDate::from_ymd_opt(2026, 10, 21).unwrap();
-        assert_eq!(next_saturday(wed), NaiveDate::from_ymd_opt(2026, 10, 24).unwrap());
+        assert_eq!(
+            next_saturday(wed),
+            NaiveDate::from_ymd_opt(2026, 10, 24).unwrap()
+        );
     }
 
     #[test]
     fn weekend_from_sunday_is_next_saturday() {
         let sun = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
-        assert_eq!(next_saturday(sun), NaiveDate::from_ymd_opt(2026, 10, 31).unwrap());
+        assert_eq!(
+            next_saturday(sun),
+            NaiveDate::from_ymd_opt(2026, 10, 31).unwrap()
+        );
     }
 
     #[test]

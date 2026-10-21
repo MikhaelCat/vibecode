@@ -10,7 +10,14 @@ sudo install -m 0640 .env.example /opt/travel-ai/.env
 sudoedit /opt/travel-ai/.env
 ```
 
-Заполните `OPENROUTER_API_KEY` и `OPENROUTER_MODEL`; без ключа ставьте `MOCK_LLM=1`.
+Заполните один из путей LLM:
+
+- **T-Bank Spirit LLM Proxy (приоритет):** `LLM_PROXY_TOKEN`, `LLM_PROXY_URL`
+  (`https://llm-proxy.spirit.t-education.com/v1`), `LLM_PROXY_MODEL`
+  (`openrouter/deepseek/deepseek-v4.1-flash`).
+- **OpenRouter:** `OPENROUTER_API_KEY` и `OPENROUTER_MODEL`.
+
+Без ключа поставьте `MOCK_LLM=1` — приложение работает офлайн.
 `DATABASE_URL` указывает на `/var/lib/travel-ai/app.db`; `PRICE_IN_PER_M` и
 `PRICE_OUT_PER_M` — цена за 1M токенов, `0` = неизвестна. Пути `PROMPTS_DIR`, `DATA_DIR` и `WEB_DIR` относительны `/opt/travel-ai`.
 
@@ -67,7 +74,60 @@ sudo ufw allow 8080/tcp
 `proxy_buffering off;`, `proxy_cache off;`, `proxy_read_timeout 3600s;`, иначе
 события придут пачками. Проверяйте через `curl -N`.
 
-## 7. Backup SQLite
+## 7. Docker локально
+
+```bash
+cp .env.example .env
+# без ключа можно оставить OPENROUTER_API_KEY пустым — включится mock LLM
+docker compose up --build -d   # нужен compose plugin; либо docker build/run ниже
+docker compose logs -f travel-ai
+curl -fsS http://127.0.0.1:8080/api/health
+```
+
+Образ собирается из `deploy/Dockerfile` (multi-stage: Rust builder → debian slim).
+SQLite лежит в named volume `travel-ai-data` (`/var/lib/travel-ai`), поэтому
+`docker compose down` не удаляет базу. Полный сброс — `docker compose down -v`.
+Порт задан в `docker-compose.yml` (`8080:8080`), healthcheck ходит в `/api/health`.
+
+Если compose-плагина нет:
+
+```bash
+docker build -f deploy/Dockerfile -t travel-ai:local .
+docker run -d --name travel-ai --env-file .env -p 8080:8080 \
+  -v travel-ai-data:/var/lib/travel-ai travel-ai:local
+```
+
+Обновление:
+
+```bash
+docker compose build --pull
+docker compose up -d
+```
+
+## 8. GitHub Actions и GHCR
+
+`.github/workflows/ci.yml` на каждый push/PR в `main`:
+
+1. `cargo fmt --check`, `cargo clippy --all-targets -- -D warnings`, `cargo test`,
+   `cargo build --release`.
+2. Docker build; на push в `main` образ публикуется в GHCR:
+   `ghcr.io/mikhaelcat/vibecode:latest`, плюс теги `sha-<commit>` и ветки.
+
+Права: `contents: read`, `packages: write`; используется встроенный
+`GITHUB_TOKEN`, отдельный секрет не нужен. Для приватного пакета добавьте
+`docker login ghcr.io -u <user>` с PAT `read:packages` на машине деплоя.
+
+Забрать опубликованный образ на VM:
+
+```bash
+docker pull ghcr.io/mikhaelcat/vibecode:latest
+docker run -d --name travel-ai \
+  --env-file .env -p 8080:8080 \
+  -v travel-ai-data:/var/lib/travel-ai \
+  ghcr.io/mikhaelcat/vibecode:latest
+```
+
+## 9. Backup SQLite
 ```bash
 sudo install -d /var/backups/travel-ai
 sudo sqlite3 /var/lib/travel-ai/app.db \
