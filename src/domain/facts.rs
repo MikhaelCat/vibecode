@@ -230,21 +230,33 @@ impl Facts {
             "find_transport" => {
                 for option in array_field(&out.data, "options") {
                     if let Ok(option) = serde_json::from_value::<TransportOption>(option.clone()) {
-                        self.transport.push(option);
+                        if !self.transport.iter().any(|known| known.id == option.id) {
+                            self.transport.push(option);
+                        }
                     }
                 }
             }
             "find_fuel" => {
                 for station in array_field(&out.data, "stations") {
                     if let Ok(station) = serde_json::from_value::<FuelStation>(station.clone()) {
-                        self.fuel.push(station);
+                        if !self.fuel.iter().any(|known| known.id == station.id) {
+                            self.fuel.push(station);
+                        }
                     }
                 }
             }
             "find_events" => {
                 for event in array_field(&out.data, "events") {
                     if let Ok(event) = serde_json::from_value::<EventFact>(event.clone()) {
-                        self.events.push(event);
+                        let duplicate = self.events.iter().any(|known| {
+                            known.id == event.id
+                                || (known.title.eq_ignore_ascii_case(&event.title)
+                                    && known.date == event.date
+                                    && known.place.eq_ignore_ascii_case(&event.place))
+                        });
+                        if !duplicate {
+                            self.events.push(event);
+                        }
                     }
                 }
             }
@@ -253,9 +265,10 @@ impl Facts {
     }
 
     fn push_source(&mut self, tool: &str, out: &ToolOutput) {
-        let already = self.sources.iter().any(|s| {
-            s.provider == tool && s.kind == out.meta.source && s.fetched_at == out.meta.fetched_at
-        });
+        let already = self
+            .sources
+            .iter()
+            .any(|s| s.provider == tool && s.kind == out.meta.source);
         if !already {
             self.sources.push(SourceRef {
                 provider: tool.to_string(),
@@ -404,6 +417,69 @@ fn sample_places() -> Vec<PlaceFact> {
             lon: 131.7500,
             kind: "nature".to_string(),
             opening_hours: None,
+            source: SourceKind::Mock,
+        },
+        PlaceFact {
+            id: "mock:place:russky-bridge".to_string(),
+            name: "Смотровая площадка «Русский мост»".to_string(),
+            lat: 43.0884,
+            lon: 131.9045,
+            kind: "viewpoint".to_string(),
+            opening_hours: None,
+            source: SourceKind::Mock,
+        },
+        PlaceFact {
+            id: "mock:place:eagle-nest".to_string(),
+            name: "Смотровая площадка «Орлиное гнездо»".to_string(),
+            lat: 43.1195,
+            lon: 131.8982,
+            kind: "viewpoint".to_string(),
+            opening_hours: Some("24/7".to_string()),
+            source: SourceKind::Mock,
+        },
+        PlaceFact {
+            id: "mock:place:andreevka".to_string(),
+            name: "Пляж Андреевки".to_string(),
+            lat: 42.6162,
+            lon: 131.1180,
+            kind: "nature".to_string(),
+            opening_hours: None,
+            source: SourceKind::Mock,
+        },
+        PlaceFact {
+            id: "mock:place:gamov".to_string(),
+            name: "Полуостров Гамова".to_string(),
+            lat: 42.6124,
+            lon: 131.1843,
+            kind: "nature".to_string(),
+            opening_hours: None,
+            source: SourceKind::Mock,
+        },
+        PlaceFact {
+            id: "mock:place:ussuriysky-park".to_string(),
+            name: "Парк Дружбы в Уссурийске".to_string(),
+            lat: 43.7992,
+            lon: 131.9495,
+            kind: "park".to_string(),
+            opening_hours: Some("24/7".to_string()),
+            source: SourceKind::Mock,
+        },
+        PlaceFact {
+            id: "mock:place:arsenyev-museum".to_string(),
+            name: "Арсеньевский историко-краеведческий музей".to_string(),
+            lat: 44.1662,
+            lon: 133.2702,
+            kind: "museum".to_string(),
+            opening_hours: Some("Tu-Sa 10:00-18:00".to_string()),
+            source: SourceKind::Mock,
+        },
+        PlaceFact {
+            id: "mock:place:sportharbor".to_string(),
+            name: "Рыбный рынок «Спортивная гавань»".to_string(),
+            lat: 43.1189,
+            lon: 131.8818,
+            kind: "food".to_string(),
+            opening_hours: Some("Mo-Su 08:00-19:00".to_string()),
             source: SourceKind::Mock,
         },
     ]

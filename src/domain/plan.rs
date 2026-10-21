@@ -1,3 +1,5 @@
+use std::collections::{BTreeMap, HashSet};
+
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde::{de, Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
@@ -194,14 +196,66 @@ pub fn parse_time(text: &str) -> Option<NaiveTime> {
     None
 }
 
+fn normalized_name(name: &str) -> String {
+    name.to_lowercase()
+        .replace('ё', "е")
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
     let mut warnings = Vec::new();
     let mut days = Vec::new();
 
-    for (index, day_draft) in draft.days.iter().enumerate() {
+    // The requested period is authoritative. Group model-provided days by date so
+    // duplicated dates are merged, out-of-range days are dropped and missing dates
+    // are inserted as free days instead of shifting the whole plan.
+    let mut items_by_date: BTreeMap<NaiveDate, Vec<ItemDraft>> = BTreeMap::new();
+    let mut out_of_range_days = 0usize;
+    for day_draft in &draft.days {
+        if day_draft.date < intent.start_date || day_draft.date > intent.end_date {
+            out_of_range_days += 1;
+            continue;
+        }
+        items_by_date
+            .entry(day_draft.date)
+            .or_default()
+            .extend(day_draft.items.iter().cloned());
+    }
+
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    let mut seen_places: Vec<(String, f64, f64)> = Vec::new();
+    let mut duplicate_items = 0usize;
+    let mut date = intent.start_date;
+
+    while date <= intent.end_date {
         let mut items = Vec::new();
-        for item_draft in &day_draft.items {
+        for item_draft in items_by_date.remove(&date).unwrap_or_default() {
             let fact = facts.place(&item_draft.place_id);
+
+            if !item_draft.place_id.is_empty() && !seen_ids.insert(item_draft.place_id.clone()) {
+                duplicate_items += 1;
+                continue;
+            }
+
+            // Internet providers may return the same object under different ids.
+            // Treat same normalized name within 500 m as the same place.
+            if let Some(place) = fact {
+                let key = normalized_name(&place.name);
+                let repeated = seen_places.iter().any(|(name, lat, lon)| {
+                    *name == key && haversine_km((place.lat, place.lon), (*lat, *lon)) < 0.5
+                });
+                if repeated {
+                    duplicate_items += 1;
+                    continue;
+                }
+                seen_places.push((key, place.lat, place.lon));
+            }
+
             if fact.is_none() {
                 warnings.push(Warning {
                     code: "unknown_place".to_string(),
@@ -239,33 +293,32 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
             legs.push(build_leg(&window[0], &window[1], intent, facts));
         }
 
+        let index = days.len();
         let lodging_id = draft.lodging_ids.get(index).cloned();
         days.push(DayPlan {
-            date: day_draft.date,
-            title: if day_draft.items.is_empty() {
-                "Свободный день".to_string()
-            } else {
-                format!("День {} — {}", index + 1, day_draft.items[0].name)
+            date,
+            title: match items.first() {
+                Some(item) => format!("День {} — {}", index + 1, item.name),
+                None => "Свободный день".to_string(),
             },
             items,
             legs,
             lodging_id,
         });
+        date = add_days(date, 1);
     }
 
-    if days.is_empty() {
-        let mut date = intent.start_date;
-        let last = intent.end_date;
-        while date <= last {
-            days.push(DayPlan {
-                date,
-                title: "Свободный день".to_string(),
-                items: Vec::new(),
-                legs: Vec::new(),
-                lodging_id: None,
-            });
-            date = add_days(date, 1);
-        }
+    if out_of_range_days > 0 {
+        warnings.push(Warning {
+            code: "days_normalized".to_string(),
+            message: "Модель предложила дни вне запрошенного периода — они убраны".to_string(),
+        });
+    }
+    if duplicate_items > 0 {
+        warnings.push(Warning {
+            code: "duplicates_removed".to_string(),
+            message: format!("Убрано повторяющихся точек: {duplicate_items}"),
+        });
     }
 
     let mut lodging = Vec::new();
@@ -435,6 +488,71 @@ mod tests {
     }
 
     #[test]
+    fn enrich_normalizes_period_and_removes_duplicates() {
+        let mut intent = intent();
+        intent.end_date = NaiveDate::from_ymd_opt(2026, 10, 26).unwrap();
+        intent.max_days = 3;
+        let mut facts = Facts::default();
+        facts.ensure_minimal(intent.start_date, intent.end_date);
+        let ids: Vec<String> = facts.places.keys().cloned().collect();
+        let item = |id: &str| ItemDraft {
+            place_id: id.to_string(),
+            name: String::new(),
+            kind: ItemKind::Sight,
+            start: None,
+            end: None,
+            note: None,
+        };
+        let draft = PlanDraft {
+            title: "Тест".to_string(),
+            summary: "Тест".to_string(),
+            days: vec![
+                DayDraft {
+                    date: intent.start_date,
+                    items: vec![item(&ids[0]), item(&ids[0])],
+                },
+                DayDraft {
+                    date: intent.start_date + chrono::Duration::days(1),
+                    items: vec![item(&ids[1])],
+                },
+                DayDraft {
+                    date: intent.start_date + chrono::Duration::days(2),
+                    items: vec![item(&ids[2])],
+                },
+                DayDraft {
+                    date: intent.start_date + chrono::Duration::days(3),
+                    items: vec![item(&ids[3])],
+                },
+            ],
+            lodging_ids: vec![],
+            transport: Some(TransportMode::Car),
+        };
+
+        let plan = enrich(draft, &intent, &facts);
+        let dates: Vec<NaiveDate> = plan.days.iter().map(|day| day.date).collect();
+        assert_eq!(
+            dates,
+            vec![
+                NaiveDate::from_ymd_opt(2026, 10, 24).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 10, 25).unwrap(),
+                NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
+            ]
+        );
+        let planned: Vec<&str> = plan
+            .all_items()
+            .map(|item| item.place_id.as_str())
+            .collect();
+        assert_eq!(
+            planned,
+            vec![ids[0].as_str(), ids[1].as_str(), ids[2].as_str()]
+        );
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "duplicates_removed"));
+    }
+
+    #[test]
     fn enrich_builds_legs() {
         let mut facts = Facts::default();
         facts.ensure_minimal(intent().start_date, intent().end_date);
@@ -461,7 +579,8 @@ mod tests {
             transport: Some(TransportMode::Car),
         };
         let plan = enrich(draft, &intent(), &facts);
-        assert_eq!(plan.days.len(), 1);
+        assert_eq!(plan.days.len(), 2);
         assert_eq!(plan.days[0].legs.len(), 1);
+        assert!(plan.days[1].items.is_empty());
     }
 }

@@ -3,6 +3,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::domain::dates::{add_days, next_saturday, parse_month_phrase};
 
+/// Product limit for a single trip. The form, API and prompts all use this value.
+pub const MAX_TRIP_DAYS: u8 = 7;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TransportMode {
@@ -164,11 +167,13 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
     } else if lower.contains("с ночёвкой") || lower.contains("с ночевкой") {
         max_days = max_days.max(2);
     }
-    if max_days > 3 {
-        max_days = 3;
-        assumptions.push("поездки длиннее трёх дней пока не планирую — взял три дня".to_string());
+    if max_days > MAX_TRIP_DAYS {
+        max_days = MAX_TRIP_DAYS;
+        assumptions.push(format!(
+            "поездки длиннее {MAX_TRIP_DAYS} дней пока не планирую — взял {MAX_TRIP_DAYS} дней"
+        ));
     }
-    max_days = max_days.clamp(1, 3);
+    max_days = max_days.clamp(1, MAX_TRIP_DAYS);
 
     let end_date = add_days(start_date, i64::from(max_days) - 1);
 
@@ -534,6 +539,16 @@ mod tests {
         assert_eq!(
             intent.start_date,
             NaiveDate::from_ymd_opt(2026, 10, 24).unwrap()
+        );
+    }
+
+    #[test]
+    fn keeps_user_requested_day_count() {
+        let intent = parse("Хочу на пять дней по Приморью, на машине", today()).unwrap();
+        assert_eq!(intent.max_days, 5);
+        assert_eq!(
+            intent.end_date,
+            NaiveDate::from_ymd_opt(2026, 10, 28).unwrap()
         );
     }
 

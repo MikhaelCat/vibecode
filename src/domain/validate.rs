@@ -375,14 +375,16 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
         ));
     }
 
-    // V13 — дубли
+    // V13 — дубли. `enrich` already drops repeats; this check keeps any future
+    // plan source honest: the same place must never be planned twice.
     let mut seen = HashSet::new();
     for item in plan.all_items() {
         if !seen.insert(item.place_id.clone()) {
-            violations.push(Violation::soft(
-                "V13",
-                format!("«{}» встречается в плане дважды", item.name),
-            ));
+            violations.push(
+                Violation::hard("V13", format!("«{}» встречается в плане дважды", item.name))
+                    .with_place(&item.place_id)
+                    .with_hint("Оставьте место только в одном дне"),
+            );
         }
     }
 

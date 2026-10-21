@@ -45,18 +45,17 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    let mut cursor = 0;
+    let mut used = std::collections::HashSet::new();
     let mut days = Vec::new();
     let mut date = intent.start_date;
 
     while date <= intent.end_date {
         let mut items = Vec::new();
         for slot in 0..2 {
-            if places.is_empty() || (slot > 0 && places.len() == 1) {
+            let Some(place) = places.iter().find(|place| !used.contains(&place.id)) else {
                 break;
-            }
-            let place = &places[cursor % places.len()];
-            cursor += 1;
+            };
+            used.insert(place.id.clone());
             let start = if slot == 0 {
                 chrono::NaiveTime::from_hms_opt(10, 0, 0)
             } else {
@@ -150,5 +149,33 @@ mod tests {
         assert!(!plan.days[0].items.is_empty());
         assert!(!plan.lodging.is_empty());
         assert_eq!(plan.generation, Generation::Fallback);
+    }
+
+    #[test]
+    fn fallback_does_not_repeat_places_across_days() {
+        let mut facts = Facts::default();
+        let intent = Intent {
+            region: "primorye".to_string(),
+            start_date: NaiveDate::from_ymd_opt(2026, 10, 24).unwrap(),
+            end_date: NaiveDate::from_ymd_opt(2026, 10, 26).unwrap(),
+            max_days: 3,
+            transport: TransportMode::Car,
+            budget_rub: None,
+            party_size: 1,
+            with_children: false,
+            interests: vec![],
+            must_see: vec![],
+            avoid: vec![],
+            pace: Pace::Normal,
+            assumptions: vec![],
+        };
+        let plan = assemble(&mut facts, &intent);
+        let ids: Vec<&str> = plan
+            .all_items()
+            .map(|item| item.place_id.as_str())
+            .collect();
+        let unique: std::collections::HashSet<&str> = ids.iter().copied().collect();
+        assert_eq!(plan.days.len(), 3);
+        assert_eq!(ids.len(), unique.len(), "duplicate places: {ids:?}");
     }
 }

@@ -17,6 +17,7 @@ use tower_http::trace::TraceLayer;
 
 use crate::agent::{Orchestrator, RunOverrides};
 use crate::config::Config;
+use crate::domain::intent::MAX_TRIP_DAYS;
 use crate::error::ApiError;
 use crate::store::Store;
 
@@ -194,8 +195,10 @@ fn validate_overrides(request: &PlanRequest) -> Result<RunOverrides, ApiError> {
             return Err(ApiError::bad_request("end_date раньше start_date"));
         }
         let days = (end - start).num_days() + 1;
-        if !(1..=3).contains(&days) {
-            return Err(ApiError::bad_request("план поддерживает от 1 до 3 дней"));
+        if !(1..=i64::from(MAX_TRIP_DAYS)).contains(&days) {
+            return Err(ApiError::bad_request(format!(
+                "план поддерживает от 1 до {MAX_TRIP_DAYS} дней"
+            )));
         }
     }
     Ok(RunOverrides {

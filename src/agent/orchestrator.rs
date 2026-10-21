@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::domain::dates::today_vladivostok;
 use crate::domain::facts::Facts;
 use crate::domain::fallback;
-use crate::domain::intent::{Intent, Refusal, TransportMode};
+use crate::domain::intent::{Intent, Refusal, TransportMode, MAX_TRIP_DAYS};
 use crate::domain::plan::{enrich, Generation, Plan, PlanDraft};
 use crate::domain::trace::{Outcome, RunTrace, TokenUsage, ToolCallTrace, TraceStep};
 use crate::domain::validate::{validate, ValidationReport};
@@ -199,6 +199,7 @@ impl Orchestrator {
                 "INTENT_JSON: {}",
                 serde_json::to_string(&intent).unwrap_or_else(|_| "{}".to_string())
             )),
+            LlmMessage::system(plan_window(&intent)),
             LlmMessage::user(query.clone()),
         ];
 
@@ -613,14 +614,15 @@ fn apply_overrides(mut intent: Intent, overrides: &RunOverrides) -> Intent {
     }
     if overrides.start_date.is_some() || overrides.end_date.is_some() {
         let days = (intent.end_date - intent.start_date).num_days() + 1;
-        if (1..=3).contains(&days) {
+        if (1..=i64::from(MAX_TRIP_DAYS)).contains(&days) {
             intent.max_days = days as u8;
-        } else if days > 3 {
-            intent.end_date = intent.start_date + chrono::Duration::days(2);
-            intent.max_days = 3;
+        } else if days > i64::from(MAX_TRIP_DAYS) {
+            intent.end_date =
+                intent.start_date + chrono::Duration::days(i64::from(MAX_TRIP_DAYS) - 1);
+            intent.max_days = MAX_TRIP_DAYS;
             intent
                 .assumptions
-                .push("период ограничен тремя днями".to_string());
+                .push(format!("период ограничен {MAX_TRIP_DAYS} днями"));
         }
     }
     if overrides.transport.is_some() {
@@ -629,6 +631,33 @@ fn apply_overrides(mut intent: Intent, overrides: &RunOverrides) -> Intent {
             .push("транспорт выбран в форме".to_string());
     }
     intent
+}
+
+/// Authoritative trip window. The form/API or the server-side query parser already
+/// resolved relative dates, so the model must not invent its own period.
+fn plan_window(intent: &Intent) -> String {
+    let mut dates = Vec::new();
+    let mut date = intent.start_date;
+    while date <= intent.end_date {
+        dates.push(date.to_string());
+        date += chrono::Duration::days(1);
+    }
+    format!(
+        "PLAN_WINDOW (авторитетно, уже вычислено сервером):\n\
+         start_date: {start}\n\
+         end_date: {end}\n\
+         days_count: {count}\n\
+         dates: {dates}\n\
+         В submit_plan должно быть ровно {count} элементов days — строго эти даты, \
+         по одному разу, в этом порядке. Не добавляй дни вне периода и не пропускай даты. \
+         Каждый place_id используй в плане не более одного раза: дубликаты, один и тот же \
+         объект под разными id и повторные события недопустимы. Данные инструментов могут \
+         содержать повторы — отфильтруй их самостоятельно.",
+        start = intent.start_date,
+        end = intent.end_date,
+        count = dates.len(),
+        dates = dates.join(", ")
+    )
 }
 
 fn truncate(value: &str, max: usize) -> String {

@@ -163,6 +163,7 @@ fn default_intent() -> Intent {
 
 fn collect_places(messages: &[crate::llm::LlmMessage]) -> Vec<MockPlace> {
     let mut places = Vec::new();
+    let mut seen = std::collections::HashSet::new();
     for message in messages {
         if message.role != "tool" {
             continue;
@@ -180,6 +181,9 @@ fn collect_places(messages: &[crate::llm::LlmMessage]) -> Vec<MockPlace> {
             let Some(id) = item.get("id").and_then(Value::as_str) else {
                 continue;
             };
+            if !seen.insert(id.to_string()) {
+                continue;
+            }
             let name = item.get("name").and_then(Value::as_str).unwrap_or("Место");
             let kind = item.get("kind").and_then(Value::as_str).unwrap_or("sight");
             let lat = item.get("lat").and_then(Value::as_f64).unwrap_or(0.0);
@@ -266,7 +270,7 @@ fn select_places(mut places: Vec<MockPlace>, intent: &Intent, rainy: bool) -> Ve
             .partial_cmp(&haversine_km(base, (b.lat, b.lon)))
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    places.truncate(12);
+    places.truncate(21);
     places
 }
 
@@ -302,16 +306,15 @@ fn collect_lodging(messages: &[crate::llm::LlmMessage], need_lodging: bool) -> V
 fn build_draft(intent: &Intent, places: &[MockPlace], lodging_ids: &[String]) -> PlanDraft {
     let mut days = Vec::new();
     let mut date: NaiveDate = intent.start_date;
-    let mut index = 0;
+    let mut used = std::collections::HashSet::new();
 
     while date <= intent.end_date {
         let mut items = Vec::new();
         for slot in 0..2 {
-            if places.is_empty() || (slot > 0 && places.len() == 1) {
+            let Some(place) = places.iter().find(|place| !used.contains(&place.id)) else {
                 break;
-            }
-            let place = &places[index % places.len()];
-            index += 1;
+            };
+            used.insert(place.id.clone());
             let (start, end) = if slot == 0 {
                 ("10:00:00", "12:00:00")
             } else {
