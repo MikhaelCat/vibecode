@@ -1,6 +1,6 @@
 # API-контракт travel-ai
 
-Контракт для фронтенда и QA, сверенный с кодом (`src/api/`, `src/agent/orchestrator.rs`, `src/domain/`). Базовый URL — `http://IP:PORT`, по умолчанию `BIND=0.0.0.0:8080`. Аутентификации на хакатоне нет, CORS разрешён для всех origin. Все ответы API, кроме SSE, — JSON UTF-8.
+Контракт для фронтенда и QA, сверенный с кодом (`src/api/`, `src/agent/orchestrator.rs`, `src/domain/`). Базовый URL — `http://IP:PORT`, по умолчанию `BIND=0.0.0.0:8080`. Аутентификация опциональна: если задан `APP_TOKEN`, `POST /api/plan` и `/api/plan/sync` требуют `x-app-token` или `Authorization: Bearer`. CORS не включён — фронт работает с того же origin или через dev-proxy. Все ответы API, кроме SSE, — JSON UTF-8.
 
 ## 1. Общие ограничения
 
@@ -9,10 +9,10 @@
 | Тело запроса | 16 КиБ (`16 * 1024`), на весь router | 413 от `RequestBodyLimitLayer`; тело не из `ApiError` |
 | `query` | 1–1000 символов после `trim()` (`MAX_QUERY_CHARS`) | пусто — 400 `bad_request`; длиннее — 413 `too_large` |
 | Одновременные SSE-прогоны | 4 (`CONCURRENT_RUNS`, минимум 1) | 429 `rate_limited`, слот не ждёт |
-| Дневной бюджет | 25 USD (`DAILY_BUDGET_USD`) | 429 `budget_exhausted` + `hint` |
-| `/api/plan/sync` | семафор не берёт | число параллельных sync-запросов кодом не ограничено |
+| Дневной бюджет | 25 USD (`DAILY_BUDGET_USD`) и 1M токенов (`DAILY_TOKEN_BUDGET`) | 429 `budget_exhausted` + `hint` |
+| `/api/plan/sync` | берёт тот же семафор, таймаут 120 с | 429 `rate_limited` или 504 `upstream_timeout` |
 
-`request_timeout` (90 с) ограничивает HTTP-запрос к LLM, а не весь прогон; таймаут одного тула — 8 с. Лимиты шагов: `MAX_STEPS=8`, `MAX_REPAIRS=2`.
+`request_timeout` (90 с) ограничивает HTTP-запрос к LLM; `/api/plan/sync` дополнительно ограничен 120 с. Таймаут одного тула — 8 с. Лимиты шагов: `MAX_STEPS=8`, `MAX_REPAIRS=2`.
 
 | Метод | Путь | Ответ |
 |---|---|---|
@@ -24,7 +24,7 @@
 
 ## 2. POST /api/plan — SSE
 
-Запрос: `Content-Type: application/json`, тело `{"query":"..."}`. Успех — `200 text/event-stream`, `Cache-Control: no-cache`; кадр — `event: <имя>\ndata: <json>\n\n`. Ошибки валидации, бюджета и занятости семафора приходят до открытия потока обычным JSON с 4xx.
+Запрос: `Content-Type: application/json`, тело `{"query":"..."}`. Успех — `200 text/event-stream`, `Cache-Control: no-cache`; кадр — `event: <имя>\ndata: <json>\n\n`. Ошибки валидации, бюджета, авторизации и занятости семафора приходят до открытия потока обычным JSON с 4xx.
 
 | Событие | Поля `data` | Когда |
 |---|---|---|
@@ -154,13 +154,15 @@ data: {"run_id":"b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e","latency_ms":18,"outcome"
 | HTTP | `code` | Когда |
 |---|---|---|
 | 400 | `bad_request` | пустой `query` после trim |
+| 401 | `unauthorized` | задан `APP_TOKEN`, но заголовок не совпал |
 | 413 | `too_large` | `query` длиннее лимита; тело >16 КиБ — 413 от layer, без этого кода |
 | 429 | `rate_limited` | нет свободного слота SSE-семафора |
 | 429 | `budget_exhausted` | дневной бюджет исчерпан; `hint` заполнен |
 | 404 | `not_found` | неизвестный `run_id` |
+| 504 | `upstream_timeout` | `/api/plan/sync` не уложился в 120 с |
 | 500 | `internal` | объявлен, но текущие обработчики его не возвращают |
 
-Битый JSON, отсутствие `query` или неверный `Content-Type` отсекает extractor axum: 400/422/415 с текстовым телом, **не** в конверте `ApiError`. Кодов `upstream_timeout` и `llm_unavailable` в коде нет; сбой LLM уводит прогон в fallback.
+Битый JSON, отсутствие `query` или неверный `Content-Type` отсекает extractor axum: 400/422/415 с текстовым телом, **не** в конверте `ApiError`. Сбой LLM внутри прогона уводит в fallback; `llm_unavailable` не используется.
 
 ## 6. SSE-клиент на fetch
 
@@ -234,10 +236,10 @@ curl -N -X POST "$BASE/api/plan" \
 curl -s "$BASE/api/runs/$RUN_ID" | python3 -m json.tool
 ```
 
-## 10. Расхождения docs ↔ код
+## 10. Осознанные упрощения
 
-- README, TEAM и ARCHITECTURE перечисляют SSE-событие `error`; код его не отправляет (ошибки до потока — JSON 4xx, внутри — fallback/`tool_result`).
-- ARCHITECTURE: тело ≤ 8 КБ и per-IP token bucket; код — 16 КиБ, токен-бакета нет. `/api/evals/latest` из ARCHITECTURE не смонтирован.
-- ARCHITECTURE: ошибки в формате `{"error":{...}}` и коды `upstream_timeout`/`llm_unavailable`; фактически плоский `{code,message,hint}` и других кодов нет.
-- README: `/api/stats` отдаёт hard-pass; в коде только `date`, `runs`, токены и `cost_usd`. В примере usage из ARCHITECTURE есть `steps` (в `TokenUsage` такого поля нет), а в примере validation — `checks_run:12` (в валидаторе 15 проверок).
-- ARCHITECTURE обещает `CancellationToken` и `usage/timings/git_sha` в trace; в коде отмены нет, а `RunTrace` содержит `latency_ms`/`error` и не содержит usage/timings/git_sha.
+- `RunTrace` не содержит `usage`/`timings`/`git_sha`; usage лежит в `RunRecord`. Валидатор выполняет 15 проверок (`checks_run=15`).
+- Отмены прогона по обрыву SSE нет: поток закрывается, серверный прогон доигрывает и сохраняется. Это в бэклоге.
+- `GET /api/evals/latest` не реализован; таблицы эвалов лежат в `results/` и README.
+- Фронтенд `src/frontend/dist` в репозитории отсутствует: `/` отдаёт 404, пока команда фронта не соберёт SPA. API и SSE работают независимо.
+- `empty`/`too_long` для `query` по HTTP перехватываются раньше (400/413), поэтому `refusal` с этими категориями через HTTP недостижим; он нужен для прямых вызовов guard.
