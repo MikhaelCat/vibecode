@@ -55,6 +55,17 @@ impl ApiError {
         }
     }
 
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: "unauthorized",
+            message: message.into(),
+            hint: Some(
+                "Передайте APP_TOKEN в заголовке x-app-token или Authorization: Bearer".to_string(),
+            ),
+        }
+    }
+
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
