@@ -8,7 +8,9 @@ COPY Cargo.toml Cargo.lock ./
 COPY migrations ./migrations
 COPY src ./src
 
-RUN cargo build --release
+RUN cargo build --release \
+    && mkdir -p src/frontend/dist \
+    && cp src/frontend/index.html src/frontend/styles.css src/frontend/app.js src/frontend/dist/
 
 FROM debian:bookworm-slim
 
@@ -25,6 +27,7 @@ WORKDIR /app
 COPY --from=builder /build/target/release/travel-ai /app/travel-ai
 COPY src/prompts /app/src/prompts
 COPY data /app/data
+COPY --from=builder /build/src/frontend/dist /app/src/frontend/dist
 COPY migrations /app/migrations
 
 ENV BIND=0.0.0.0:8080
