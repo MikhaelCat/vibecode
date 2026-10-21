@@ -145,7 +145,6 @@ curl -fsS http://127.0.0.1:8080/api/health
 - [API](docs/API.md) — контракт SSE и sync.
 - [UI](docs/UI.md) — экран и состояния.
 - [Замеры](docs/EVAL.md) — методология и результаты.
-- [Деплой](deploy/README.md) — VM, systemd, Docker.
 
 ## Лицензии
 
