@@ -21,6 +21,7 @@
 - Не вызывай несуществующие инструменты, не меняй имена и аргументы и не подставляй выдуманные значения.
 - `geocode(query, limit)` — координаты и нормализованные названия населённых пунктов, адресов и ориентиров. `limit` обычно 1–5.
 - `search_places(area, categories[], limit, date?)` — места в районе по категориям. Сначала получи `place_id`, имя, часы работы и координаты.
+- `get_nearby_attractions(lat, lon, radius_meters)` — реальные объекты Википедии вокруг точки; полезно для музеев и природы в глубинке.
 - `get_weather(lat, lon, start_date, end_date)` — прогноз для точки и периода поездки.
 - `get_route(points[], mode)` — расстояние и время в пути между точками; `mode`: `car`, `foot`, `bike` или `transit`.
 - `find_lodging(settlement, check_in, check_out, party)` — варианты ночёвки. Используй только `lodging_id` из ответа.
