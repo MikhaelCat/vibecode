@@ -8,8 +8,9 @@
 |---|---|---|
 | Тело запроса | 16 КиБ (`16 * 1024`), на весь router | 413 от `RequestBodyLimitLayer`; тело не из `ApiError` |
 | `query` | 1–1000 символов после `trim()` (`MAX_QUERY_CHARS`) | пусто — 400 `bad_request`; длиннее — 413 `too_large` |
-| Одновременные SSE-прогоны | 4 (`CONCURRENT_RUNS`, минимум 1) | 429 `rate_limited`, слот не ждёт |
+| Одновременные прогоны (`/api/plan` и `/api/plan/sync`) | 4 (`CONCURRENT_RUNS`, минимум 1) | 429 `rate_limited`, слот не ждёт |
 | Дневной бюджет | 25 USD (`DAILY_BUDGET_USD`) и 1M токенов (`DAILY_TOKEN_BUDGET`) | 429 `budget_exhausted` + `hint` |
+| `/api/plan` | жёсткий таймаут 120 с | `refusal` с `category:"timeout"` + `done` без деталей |
 | `/api/plan/sync` | берёт тот же семафор, таймаут 180 с | 429 `rate_limited` или 504 `upstream_timeout` |
 
 `request_timeout` (90 с) ограничивает HTTP-запрос к LLM; `/api/plan/sync` дополнительно ограничен 180 с. Таймаут одного тула — 15 с. Лимиты шагов: `MAX_STEPS=8`, `MAX_REPAIRS=2`.
@@ -36,7 +37,7 @@
 | `validation` | `ValidationReport` | один раз сразу после `plan` |
 | `usage` | `TokenUsage` | один раз после `validation` |
 | `refusal` | `category`, `message` | только ветка отказа, вместо `intent`/`plan` |
-| `done` | успех: `run_id`, `latency_ms`, `outcome`, `generation`, `usage`; отказ: `run_id`, `latency_ms`, `outcome:"refusal"` | всегда последнее событие, затем поток закрывается |
+| `done` | успех: `run_id`, `latency_ms`, `outcome`, `generation`, `usage`; отказ guard: `run_id`, `latency_ms`, `outcome:"refusal"`; таймаут: только `outcome:"refusal"` | всегда последнее событие, затем поток закрывается |
 | `error` | — | **не отправляется**: в коде такого события нет |
 
 Типы: `stage.status` — строка у `guard`/`intent`, boolean у `fallback`. `generation` — `llm`, `repaired` или `fallback`; `repaired` выставляется, если план был принят после ремонта. `outcome` — `plan`, `degraded` или `refusal`. Отказ — это HTTP 200 и событие `refusal`, а не 4xx/5xx.
@@ -50,7 +51,7 @@
 
 ### Keep-alive и отмена
 
-Каждые 15 с без событий приходит SSE-комментарий `: keep-alive\n\n`; клиент обязан его игнорировать. `CancellationToken` в коде нет: `AbortController.abort()` закрывает HTTP-поток, но прогон продолжается до конца, сохраняется в БД и держит слот семафора. Внутренняя ошибка LLM уводит прогон в fallback, ошибка тула видна как `tool_result` с `ok:false`; SSE-события `error` нет.
+Каждые 15 с без событий приходит SSE-комментарий `: keep-alive\n\n`; клиент обязан его игнорировать. `CancellationToken` в коде нет: `AbortController.abort()` закрывает HTTP-поток, но прогон продолжается до конца, сохраняется в БД и держит слот семафора. Если прогон не уложился в 120 с, сервер отправляет `refusal` с `category:"timeout"` и `done` только с `outcome:"refusal"`; такой прогон в БД не сохраняется. Внутренняя ошибка LLM уводит прогон в fallback, ошибка тула видна как `tool_result` с `ok:false`; SSE-события `error` нет.
 
 ### Пример потока
 
@@ -112,7 +113,7 @@ data: {"run_id":"b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e","latency_ms":18,"outcome"
 
 ## 3. POST /api/plan/sync
 
-Тело — то же, что у SSE: `query` + необязательные `start_date`, `end_date`, `transport`. Ответ — JSON без SSE; таймауты, бюджет и fallback те же, семафор не используется.
+Тело — то же, что у SSE: `query` + необязательные `start_date`, `end_date`, `transport`. Ответ — JSON без SSE; бюджет, fallback и семафор те же, что у SSE: sync занимает слот `CONCURRENT_RUNS` и при занятости получает 429 `rate_limited`. Таймаут sync — 180 с.
 
 | Поле | Тип |
 |---|---|
@@ -135,13 +136,13 @@ data: {"run_id":"b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e","latency_ms":18,"outcome"
 
 ## 4. GET /api/health, /api/stats, /api/runs/{id}
 
-`GET /api/health` всегда 200 и не проверяет БД: `{"status":"ok","version":"0.1.0","model":"mock-llm","mock_llm":true,"auth_required":false,"prompt_version":"system_v1","uptime_secs":312,"budget":{"daily_usd":25.0,"spent_today_usd":0.0}}`. `mock_llm` — признак отсутствия реального LLM; `auth_required` — задан ли `APP_TOKEN` (тогда UI показывает поле токена); `uptime_secs` — секунды с запуска.
+`GET /api/health` всегда 200 и не проверяет доступность LLM; ошибка чтения БД не меняет ответ: `{"status":"ok","version":"0.1.0","model":"mock-llm","mock_llm":true,"auth_required":false,"prompt_version":"system_v1","uptime_secs":312,"budget":{"daily_usd":25.0,"spent_today_usd":0.0}}`. `mock_llm` — признак отсутствия реального LLM; `auth_required` — задан ли `APP_TOKEN` (тогда UI показывает поле токена); `uptime_secs` — секунды с запуска.
 
 `GET /api/stats` — агрегат за текущий день Владивостока: `{"date":"2026-10-21","runs":3,"prompt_tokens":5400,"completion_tokens":900,"cost_usd":0.0}`. `hard-pass`, p50/p95 и разбивки по статусам в ответе **нет**; `runs` включает отказы и degraded. Фильтр в SQL идёт по UTC-дате из `created_at`, поэтому на границе суток возможны расхождения с `date`.
 
 `GET /api/runs/{id}`: `id` — UUID-строка из `done.run_id`; ищется как есть. Поля: `id`, `created_at` (RFC3339), `query`, `status` (`plan` / `refusal` / `degraded`), `latency_ms`, `prompt_tokens`, `completion_tokens`, `cost_usd`, `plan` (объект или `null`), `trace` (объект или `null`). Отдельного `usage` нет. Неизвестный id — 404 `not_found`.
 
-`RunTrace`: `run_id`, `query`, `prompt_version`, `model`, `steps[]` (`step`, `llm_ms`, `tool_names[]`), `tool_calls[]` (`id`, `name`, `args_summary`, `ms`, `ok`, `cached`, `source`, `summary`), `validation`, `outcome`, `latency_ms`, `error`. `steps` — по одной записи на успешный ответ LLM; `submit_plan` в trace имеет `source:"validator"`, ошибки аргументов — `source:"parse_error"`, ошибки тула — `source:"error"`.
+`RunTrace`: `run_id`, `query`, `prompt_version`, `model`, `steps[]` (`step`, `llm_ms`, `tool_names[]`), `tool_calls[]` (`id`, `name`, `args_summary`, `ms`, `ok`, `cached`, `source`, `summary`), `validation`, `outcome`, `latency_ms`, `error`. `steps` — по одной записи на успешный ответ LLM; `submit_plan` в trace имеет `source:"validator"`, ошибки аргументов — `source:"parse_error"`, ошибки тула — `source:"error"`, исчерпанный лимит поиска — `source:"budget"`.
 
 ## 5. Ошибки
 
@@ -156,7 +157,7 @@ data: {"run_id":"b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e","latency_ms":18,"outcome"
 | 400 | `bad_request` | пустой `query` после trim |
 | 401 | `unauthorized` | задан `APP_TOKEN`, но заголовок не совпал |
 | 413 | `too_large` | `query` длиннее лимита; тело >16 КиБ — 413 от layer, без этого кода |
-| 429 | `rate_limited` | нет свободного слота SSE-семафора |
+| 429 | `rate_limited` | нет свободного слота семафора (`CONCURRENT_RUNS`) |
 | 429 | `budget_exhausted` | дневной бюджет исчерпан; `hint` заполнен |
 | 404 | `not_found` | неизвестный `run_id` |
 | 504 | `upstream_timeout` | `/api/plan/sync` не уложился в 180 с |
@@ -213,12 +214,12 @@ plan("Хочу один день по Приморью", (event, data) => consol
 
 ## 8. Подсказки QA
 
-- `run_id` берите из `done` (SSE) или из sync-ответа, затем `GET /api/runs/{run_id}`. Отказы тоже сохраняются. После обрыва SSE прогон дописывается в БД, но слот занят до его завершения.
+- `run_id` берите из `done` (SSE) или из sync-ответа, затем `GET /api/runs/{run_id}`. Отказы guard тоже сохраняются, кроме `timeout`. После обрыва SSE прогон дописывается в БД, но слот занят до его завершения.
 - `trace.steps` фиксирует успешные раунды LLM (`step` с 0, `llm_ms`, `tool_names`); `args_summary` обрезан до 200 символов (обычный `summary` — нет, кроме feedback `submit_plan`). `trace.validation` есть только у plan/degraded; `trace.outcome` — `plan`/`refusal`/`degraded`, `error` в текущем потоке не появляется.
 - `usage.cost_usd` может быть `0` (mock или неизвестные цены); `usage.estimated` говорит, оценка ли это. В `done` объект `usage` дублирует событие `usage`.
 - `latency_ms` фиксируется до отправки `plan/validation/usage/done` и до записи в SQLite, поэтому меньше времени жизни SSE-соединения.
-- В HTTP достижимы только отказы `off_topic`, `other_region`, `injection`: `empty` и `too_long` перехватываются `validate_query` раньше (400/413).
-- Sync обходит семафор: `CONCURRENT_RUNS=4` не ограничивает параллельные `/api/plan/sync`.
+- В HTTP достижимы отказы `off_topic`, `other_region`, `injection` и `timeout` (120-секундный таймаут SSE); `empty` и `too_long` перехватываются `validate_query` раньше (400/413).
+- Sync использует тот же семафор, что и SSE: `CONCURRENT_RUNS=4` ограничивает суммарное число одновременных прогонов, а не только SSE.
 
 ## 9. curl
 

@@ -21,8 +21,8 @@
     {
       "id": "mock:place:3",
       "name": "Токаревский маяк",
-      "lat": 43.0764,
-      "lon": 131.8352,
+      "lat": 43.0731,
+      "lon": 131.84311,
       "kind": "viewpoint",
       "opening_hours": null,
       "source": "mock"
@@ -30,26 +30,17 @@
     {
       "id": "mock:place:4",
       "name": "Смотровая площадка «Русский мост»",
-      "lat": 43.0884,
-      "lon": 131.9045,
+      "lat": 43.0677064,
+      "lon": 131.9159453,
       "kind": "viewpoint",
-      "opening_hours": null,
-      "source": "mock"
-    },
-    {
-      "id": "mock:place:5",
-      "name": "Бухта Новик",
-      "lat": 43.0192,
-      "lon": 131.8568,
-      "kind": "nature",
       "opening_hours": null,
       "source": "mock"
     },
     {
       "id": "mock:place:6",
       "name": "Полуостров Гамова",
-      "lat": 42.6124,
-      "lon": 131.1843,
+      "lat": 42.5664,
+      "lon": 131.2,
       "kind": "nature",
       "opening_hours": null,
       "source": "mock"
@@ -75,8 +66,8 @@
     {
       "id": "mock:place:9",
       "name": "Смотровая площадка «Бухта Находка»",
-      "lat": 42.8103,
-      "lon": 132.8734,
+      "lat": 42.8163991,
+      "lon": 132.8892422,
       "kind": "viewpoint",
       "opening_hours": null,
       "source": "mock"
@@ -84,35 +75,26 @@
     {
       "id": "mock:place:10",
       "name": "Пляж Андреевки",
-      "lat": 42.6162,
-      "lon": 131.118,
+      "lat": 42.6478738,
+      "lon": 131.1270179,
       "kind": "nature",
       "opening_hours": null,
       "source": "mock"
     },
     {
-      "id": "mock:place:11",
-      "name": "Бухта Славянка",
-      "lat": 42.8605,
-      "lon": 131.3835,
-      "kind": "nature",
+      "id": "mock:place:slavyanka",
+      "name": "Славянка",
+      "lat": 42.8607,
+      "lon": 131.3924,
+      "kind": "sight",
       "opening_hours": null,
       "source": "mock"
     },
     {
       "id": "mock:place:12",
       "name": "Мыс Тобизина",
-      "lat": 43.0715,
-      "lon": 131.8275,
-      "kind": "nature",
-      "opening_hours": null,
-      "source": "mock"
-    },
-    {
-      "id": "mock:place:13",
-      "name": "Стеклянная бухта",
-      "lat": 43.078,
-      "lon": 131.824,
+      "lat": 42.945,
+      "lon": 131.87083,
       "kind": "nature",
       "opening_hours": null,
       "source": "mock"
@@ -136,11 +118,11 @@
       "source": "mock"
     },
     {
-      "id": "mock:place:16",
-      "name": "Озеро Ханка",
-      "lat": 44.95,
-      "lon": 132.4667,
-      "kind": "nature",
+      "id": "mock:place:khanka-shore",
+      "name": "Камень-Рыболов",
+      "lat": 44.740055,
+      "lon": 132.042187,
+      "kind": "sight",
       "opening_hours": null,
       "source": "mock"
     },
@@ -178,6 +160,24 @@
       "lon": 131.8818,
       "kind": "food",
       "opening_hours": "Mo-Su 08:00-19:00",
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:bar-nautilus",
+      "name": "Наутилус",
+      "lat": 43.1121594,
+      "lon": 131.8731153,
+      "kind": "bar",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:club-stealth",
+      "name": "Стэлс",
+      "lat": 43.1154133,
+      "lon": 131.9027473,
+      "kind": "club",
+      "opening_hours": null,
       "source": "mock"
     }
   ]

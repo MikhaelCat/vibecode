@@ -1,234 +1,155 @@
-# vibecode — AI-ассистент путешествий по Приморскому краю
+# vibecode — планировщик поездок по Приморскому краю
 
-Веб-ассистент: свободный запрос на русском → проверенный план поездки на 1–7 дней по Приморскому краю: места, маршрут, ночёвка, погода, ограничения, карта и trace того, как план собран.
+Свободный запрос на русском → проверенный план на 1–7 дней: места, переезды,
+ночёвка, погода, события и карта. Бэкенд на Rust, интерфейс — ванильный
+JavaScript + Leaflet без сборщика.
 
-**Хакатон:** Т-Банк × Сириус · 2 дня · защита 8 + 3 минуты  
-**Стек:** Rust (axum + tokio), T-Bank Spirit LLM Proxy (DeepSeek) / OpenRouter, OpenStreetMap / Open-Meteo / OSRM, SQLite, SPA (ванильный JS + Leaflet)  
-**Основная папка кода:** [`src/`](src/)
+## Из чего состоит проект
 
----
+Проект разделён на четыре независимых слоя. У каждого своя папка и своя
+ответственность; HTTP-обработчики не ходят во внешние API напрямую.
 
-## Документация
-
-- [Архитектура и план проекта](docs/ARCHITECTURE.md) — требования, компоненты, агентный цикл, тулы, валидатор, API, эвал, деплой, таймлайн.
-- [Команда и контракты](docs/TEAM.md) — роли, зоны ответственности, API для фронта/парсера/QA, git-процесс, Definition of Done.
-- [UI: элементы и состояния](docs/UI.md) — все кнопки/поля, что есть, чего нет и что должно быть.
-- [Замеры и методология](docs/EVAL.md) — mock-таблица, живой контрольный прогон и команды.
-- `scripts/qa.sh` — единый QA-прогон: fmt, clippy, тесты, mock-сервер, smoke, браузерный тест и проверки «ровно N дней / без дублей».
-
-Коротко о главном:
-
-- **Ядро** — агентный цикл tool calling + терминальный `submit_plan`, а не один вызов LLM.
-- **Качество** — детерминированный валидатор плана (V01–V15) и провенанс: каждая точка ссылается на `place_id` из тула.
-- **Данные** — места (OSM/Wikipedia), погода (Open-Meteo, fallback VL.ru), геокодинг, маршруты и события (VL.ru) живые; жильё, расписания и наличие топлива — локальные моки из `data/mock/*.json`, плюс отели из OSM для городов без локальных записей.
-- **География** — не только Владивосток: `search_places` резолвит любой город, село, озеро или реку через Nominatim/Photon и ищет еду, пляжи, воду, природу и отели вокруг.
-- **Дубликаты** — провайдеры и `enrich` удаляют повторные объекты до валидатора; V13 в валидаторе hard.
-- **Guardrails** — только Приморский край и путешествия; отказ на другие регионы, офтоп и инъекции.
-- **Замеры** — 20 запросов × 2–3 версии пайплайна: hard-pass, tool-choice, токены, p50/p95.
-
-## LLM
-
-Поддерживаются два OpenAI-совместимых пути, выбор автоматический:
-
-1. **T-Bank Spirit LLM Proxy** — приоритет, если задан `LLM_PROXY_TOKEN`.
-   Chat Completions: `https://llm-proxy.spirit.t-education.com/v1/chat/completions`
-   (без `/v1` прокси отвечает 404), модель по умолчанию
-   `openrouter/deepseek/deepseek-v4.1-flash`. Токен — только в `.env`, не в git.
-   URL из `LLM_PROXY_URL` проверяется на scheme/host: loopback, приватные и
-   link-local адреса отклоняются, чтобы сервер не стал SSRF-прокси.
-2. **OpenRouter** — если задан `OPENROUTER_API_KEY` и нет proxy-токена.
-
-Без ключа включается `MockLlm`: пайплайн, тулы, валидатор, SSE и эвал работают
-офлайн и не тратят деньги. Для публичного демо задайте `APP_TOKEN` (тогда оба
-POST-эндпоинта требуют `x-app-token`), а расход ограничивайте `DAILY_BUDGET_USD`
-и `DAILY_TOKEN_BUDGET`. DeepSeek через proxy используйте экономно — только
-на финальных прогонах и демо; повседневные тесты гоняйте на mock.
-
-## Хранилище и Redis
-
-- **SQLite** (`DATABASE_URL`, по умолчанию `sqlite://travel-ai.db`, в Docker — `/var/lib/travel-ai/app.db`) — источник истины:
-  - `runs` — каждый прогон: запрос, статус, latency, токены, стоимость, `plan_json`, `trace_json`;
-  - `daily_budget` — счётчики токенов/стоимости/запусков на день по Владивостоку;
-  - `GET /api/runs/{id}`, `GET /api/stats` и остаток бюджета в `/api/health` читают эти таблицы.
-  - Пользователей, паролей и бронирований в БД нет.
-- **Redis** (`REDIS_URL`, необязательно) — общий кэш результатов инструментов на 10 минут. Нужен, чтобы несколько инстансов не дёргали OSM/погоду повторно; при недоступном Redis приложение автоматически работает с in-memory кэшем.
-  - Docker Compose поднимает Redis и передаёт `redis://redis:6379/0`.
-  - Локально: `redis-server --daemonize yes --bind 127.0.0.1 --port 6379`, затем `REDIS_URL=redis://127.0.0.1:6379/0` в `.env`.
-  - Eval принудительно отключает Redis, чтобы замеры не переиспользовали чужие результаты.
-
----
-
-## Команда
-
-| Роль | Зона | Папки |
+| Слой | Папка | Что делает |
 |---|---|---|
-| **Backend + deploy** | API/SSE, orchestrator, агентный цикл, валидатор, store, бюджет, VM и systemd | `src/api/`, `src/agent/`, `src/domain/`, `src/llm/`, `src/store/`, `src/main.rs`, `deploy/` |
-| **Frontend** | SPA, SSE-клиент, карта, план, trace | `src/frontend/` |
-| **Parser** | OSM/Open-Meteo/OSRM, нормализация, моки, кэш | `src/tools/providers/`, `src/parser/`, `data/mock/` |
-| **QA** | эвал, тесты, guardrails, метрики | `src/bin/eval.rs`, `src/qa/`, `data/eval/`, `tests/` |
-| **System prompt engineer** | system/preflight/repair-промпты, описания тулов, отказы | `src/prompts/`, `configs/` |
+| **Backend** | `src/api/`, `src/agent/`, `src/domain/`, `src/store/`, `src/llm/` | HTTP/SSE, агентный цикл, правила плана, SQLite |
+| **Parsing** | `src/tools/` | Провайдеры данных: OSM, Wikipedia, погода, маршруты, события, жильё, АЗС, кэш |
+| **Frontend** | `src/frontend/` | Форма, SSE-клиент, дни плана, жильё, ленивая карта Leaflet |
+| **QA** | `tests/`, `src/bin/eval.rs`, `data/eval/`, `scripts/` | Тесты, эвалы, guardrails, браузерные и живые проверки |
 
----
-
-## Структура репозитория
-
-```text
-vibecode/
-├── Cargo.toml
-├── src/                    # главная папка
-│   ├── main.rs             # сервер
-│   ├── api/                # axum, SSE, DTO
-│   ├── agent/              # orchestrator, guard, prompt, repair
-│   ├── domain/             # Intent, Plan, PlanDraft, validator
-│   ├── llm/                # OpenRouter client, mock LLM, messages
-│   ├── tools/              # trait Tool, registry, cache
-│   │   └── providers/      # parser: OSM, Open-Meteo, OSRM, mocks
-│   ├── store/              # SQLite, runs, budget
-│   ├── bin/eval.rs         # QA: раннер эвалов
-│   ├── prompts/            # prompt engineer
-│   ├── frontend/           # SPA: index.html, app.js, styles.css, dist
-│   ├── parser/             # parser: заметки по данным
-│   └── qa/                 # QA: сценарии и guardrails
-├── data/                   # mock, geo, eval
-├── configs/                # v1/v2/v3 для эвала
-├── migrations/             # SQLite
-├── deploy/                 # systemd, install.sh, Dockerfile
-├── scripts/                # smoke, frontend_test, eval_all, docker_smoke
-├── tests/                  # интеграционные тесты валидатора
-├── .github/workflows/ci.yml
-├── docs/
-└── README.md
+```
+src/
+├── main.rs              # запуск сервера
+├── lib.rs               # сборка состояния и LLM-клиента
+├── api/                 # axum: /api/plan, /api/plan/sync, health, stats
+├── agent/               # guard → tools → submit_plan → validate → repair
+├── domain/              # Intent, Plan, Facts, geo, validator V01–V15, fallback
+├── llm/                 # OpenAI-совместимый клиент + MockLlm
+├── store/               # SQLite: runs и дневной бюджет
+├── tools/               # registry, cache и providers/*
+├── prompts/             # system/preflight/repair-промпты
+└── frontend/            # index.html, app.js, styles.css, dist/
 ```
 
-`src/` — главная папка: Rust-бэкенд лежит в корне `src/`, parser/QA/prompts — в `src/parser/`, `src/qa/`, `src/prompts/`. Фронтенд — `src/frontend/` (ванильный JS + Leaflet), собирается в `dist`. Cargo собирает только Rust-модули.
+### Поток запроса
 
----
+1. `POST /api/plan` разбирает даты, транспорт и интересы (`domain::intent`).
+2. Guard отсекает офтоп, инъекции и другие регионы.
+3. Агент вызывает инструменты; результаты складываются в `Facts` с `place_id`
+   и источником. Независимые вызовы идут параллельно.
+4. Модель вызывает `submit_plan`; `domain::plan::enrich` раскладывает точки по
+   дням, убирает дубли и считает переезды.
+5. Валидатор проверяет регион, даты, погоду, часы работы, жильё и провенанс.
+   При ошибке — repair, затем безопасный fallback.
+6. Готовый план уходит в SSE; фронтенд рисует дни и маркеры.
+
+### Карта
+
+Маркер создаётся только для конечных координат внутри Приморья
+(`42.2…48.5`, `130.0…139.1`). Точки `(0,0)`, неизвестные места и центроиды
+водоёмов не попадают на карту: озёра и реки используются как районы поиска, а
+точки выбираются на берегу. Бары и клубы ищутся только по явному запросу.
 
 ## Быстрый старт
 
 ```bash
-cp .env.example .env       # ключ можно оставить пустым — включится mock LLM
-# optional: Redis для общего кэша тулов; без него используется память
-redis-server --daemonize yes --bind 127.0.0.1 --port 6379
-cargo run                  # сервер на http://127.0.0.1:8080
-cargo test
-cargo run --release --bin eval -- \
-  --config configs/v2_compact.toml \
-  --dataset data/eval/queries.jsonl \
-  --out results/v2.json --markdown results/v2.md
+cp .env.example .env          # без ключа включится MockLlm
+cargo run                     # http://127.0.0.1:8080
 ```
 
-Единый QA-прогон (сам поднимает mock-сервер, ничего не тратит):
+Порт и адрес задаются через `BIND` в `.env`. Если `src/frontend/dist` ещё нет:
 
 ```bash
-bash scripts/qa.sh
+npm --prefix src/frontend run build
+# без npm: mkdir -p src/frontend/dist && cp src/frontend/*.{html,css,js} src/frontend/dist/
 ```
 
-Отдельные проверки:
+Проверки:
 
 ```bash
-BASE_URL=http://127.0.0.1:8080 bash scripts/smoke.sh
-BASE_URL=http://127.0.0.1:8080 bash scripts/frontend_test.sh
-BASE_URL=http://127.0.0.1:8080 bash scripts/edge_cases.sh
-MOCK_LLM=1 bash scripts/eval_all.sh
-bash scripts/docker_smoke.sh
-curl -s http://127.0.0.1:8080/api/health
-curl -N -X POST http://127.0.0.1:8080/api/plan \
-  -H 'content-type: application/json' \
-  -d '{"query":"Хочу на выходные по Приморью на машине, не больше двух дней"}'
+cargo test --all-targets
+cargo clippy --all-targets -- -D warnings
+bash scripts/qa.sh            # mock-сервер, smoke, браузерный тест
 ```
 
-В форме — даты поездки, транспорт и необязательный токен. Если даты и транспорт
-не трогать, они разбираются из текста запроса; явный выбор в форме главнее.
-Поддерживаются поездки на 1–7 дней, включая диапазоны «с 5 по 8 ноября».
+## LLM
 
-`scripts/edge_cases.sh` — «злые» живые проверки: отель у маяка/аэропорта, пляжи
-и рестораны в Находке, озеро Ханка, несколько городов за одну поездку,
-замаскированный офтоп и инъекции. Скрипт печатает предупреждения, если модель
-не передала нужную категорию или не нашла жильё, но не скрывает ошибки.
+Поддерживаются два OpenAI-совместимых пути:
 
-Фронтенд собирается без npm-зависимостей:
+1. **T-Bank Spirit LLM Proxy** — если задан `LLM_PROXY_TOKEN`.
+   `LLM_PROXY_URL` должен включать `/v1`; модель по умолчанию
+   `openrouter/deepseek/deepseek-v4.1-flash`.
+2. **OpenRouter** — если задан `OPENROUTER_API_KEY` и нет proxy-токена.
 
-```bash
-bash -c 'cd src/frontend && mkdir -p dist && cp index.html styles.css app.js dist/'
-# или: npm --prefix src/frontend run build
-```
+Без ключа работает `MockLlm`: агент, инструменты, валидатор, SSE и эвалы
+проверяются офлайн. Ключи хранятся только в `.env` (файл в `.gitignore`);
+в репозитории есть только `.env.example`.
 
-Axum отдаёт `src/frontend/dist`; при локальном `cargo run` без сборки `/` вернёт 404.
+Для публичного демо задайте `APP_TOKEN` — оба POST-эндпоинта начнут требовать
+`x-app-token`. Расход ограничивают `DAILY_BUDGET_USD` и `DAILY_TOKEN_BUDGET`.
 
-## Docker и CI
+## Данные
 
-```bash
-cp .env.example .env
-docker compose up --build -d
-docker compose logs -f travel-ai
-curl -fsS http://127.0.0.1:8080/api/health
-```
+| Данные | Источник | Fallback |
+|---|---|---|
+| Места, еда, отели, АЗС | OpenStreetMap Overpass | `data/mock/*.json` |
+| Достопримечательности | Wikipedia geosearch | `data/mock/*.json` |
+| Города, озёра, реки | Nominatim / Photon | список известных районов |
+| Погода | Open-Meteo | VL.ru |
+| Маршруты | OSRM | расчёт по прямой |
+| События | VL.ru (JSON-LD) | пустой список |
+| Жильё | OSM + локальный справочник | `data/mock/lodging.json` |
 
-- `deploy/Dockerfile` — multi-stage Rust builder → debian slim, non-root `travel`,
-  SQLite в `/var/lib/travel-ai`.
-- `docker-compose.yml` — локальный запуск, named volume, healthcheck.
-- `.github/workflows/ci.yml` — fmt/clippy/test/release build; на push в `main`
-  публикует Docker-образ в GHCR (`ghcr.io/mikhaelcat/vibecode:latest` + `sha-*`).
+`data/mock` — единственный источник локальных заглушек. Живые данные
+помечаются `source: live`, fallback — `mock`/`stale`; валидатор не выдаёт
+непроверенную погоду за прогноз.
 
-Если compose-плагина нет:
-
-```bash
-docker build -f deploy/Dockerfile -t travel-ai:local .
-docker run -d --name travel-ai --env-file .env -p 8080:8080 \
-  -v travel-ai-data:/var/lib/travel-ai travel-ai:local
-```
-
-Подробнее: [deploy/README.md](deploy/README.md).
-
-## Деплой на VM
-
-```bash
-cargo build --release
-bash deploy/install.sh
-sudo journalctl -u travel-ai -f
-```
-
----
-
-## API (кратко)
+## API
 
 | Метод | Путь | Назначение |
 |---|---|---|
-| `POST` | `/api/plan` | запрос → SSE-поток плана |
-| `POST` | `/api/plan/sync` | то же без SSE (эвал, отладка) |
+| `POST` | `/api/plan` | запрос → SSE-поток |
+| `POST` | `/api/plan/sync` | тот же результат без SSE |
 | `GET` | `/api/runs/{id}` | план + trace |
 | `GET` | `/api/stats` | запуски, токены, стоимость за сегодня |
-| `GET` | `/api/health` | статус, версия, модель, бюджет |
-| `GET` | `/` | SPA из `src/frontend/dist`; собирается `npm --prefix src/frontend run build` / Docker
+| `GET` | `/api/health` | статус, модель, остаток бюджета |
 
-SSE-события: `stage`, `intent`, `tool_call`, `tool_result`, `plan`, `validation`, `usage`, `refusal`, `done`. Ошибки до открытия потока — JSON 4xx; внутри прогона — fallback или `tool_result` с `ok:false`.
+SSE-события: `stage`, `intent`, `tool_call`, `tool_result`, `plan`,
+`validation`, `usage`, `refusal`, `done`. Подробнее — [docs/API.md](docs/API.md).
 
----
+## SQLite и Redis
 
-## Правила работы
+- **SQLite** (`DATABASE_URL`) — источник истины: таблицы `runs` и
+  `daily_budget`. `/api/runs/{id}`, `/api/stats` и бюджет в `/api/health`
+  читают только её.
+- **Redis** (`REDIS_URL`, необязательно) — общий кэш результатов инструментов
+  на 10 минут. Если Redis недоступен, используется кэш в памяти. SQLite от
+  Redis не зависит.
 
-- Маленькие атомарные коммиты, push после каждого логического шага.
-- Контракты (`Intent`, `Plan`, `PlanDraft`, SSE, схемы тулов) меняются только через PR и сообщение в чат.
-- Секреты — только в `.env`; в репо `.env.example`.
-- Чужие зоны не переписываем без ревью.
-- `main` держим зелёным: `cargo fmt --check`, `cargo clippy -- -D warnings`, `cargo test`.
+## Docker и деплой
 
----
+```bash
+docker compose up --build -d
+curl -fsS http://127.0.0.1:8080/api/health
+```
 
-## Открытые вопросы (закрыть до кодинга)
+- `deploy/Dockerfile` — multi-stage сборка, non-root пользователь.
+- `docker-compose.yml` — приложение, Redis, volume для SQLite.
+- `deploy/install.sh` + `deploy/travel-ai.service` — установка на VM.
+- CI (`.github/workflows/ci.yml`) гоняет fmt, clippy, тесты и собирает образ.
 
-1. Эвал-набор выдаёт куратор или делаем свои 20 запросов?
-2. В деке примеры про Урал, а продукт — Приморье; считаем целевым **Приморский край**.
-3. Какая модель OpenRouter разрешена и какой дневной лимит считать целевым?
-4. HTTPS/домен не нужен — работаем по `http://IP:PORT`?
+Подробности: [deploy/README.md](deploy/README.md).
 
----
+## Документация
 
-## Данные и лицензии
+- [Архитектура](docs/ARCHITECTURE.md) — слои, поток данных, правила.
+- [API](docs/API.md) — контракт SSE и sync.
+- [UI](docs/UI.md) — экран и состояния.
+- [Замеры](docs/EVAL.md) — методология и результаты.
+- [Деплой](deploy/README.md) — VM, systemd, Docker.
 
-- © OpenStreetMap contributors (ODbL).
-- Open-Meteo (CC BY 4.0).
-- VL.ru — афиша Владивостока (JSON-LD на странице афиши, robots.txt разрешает страницу).
-- OSRM / OpenRouteService — по условиям провайдеров.
-- Жильё, расписания и наличие топлива на демо — локальные моки из `data/mock/*.json`; источник виден в API (`source`), в UI — общее предупреждение. Погода при недоступном провайдере не выдумывается: план помечает её как неподтверждённую.
+## Лицензии
+
+- © OpenStreetMap contributors, ODbL.
+- Open-Meteo, CC BY 4.0.
+- VL.ru — афиша (JSON-LD, robots.txt разрешает страницу).
+- OSRM — по условиям провайдера.

@@ -1,8 +1,15 @@
+//! HTTP-facing error type.
+//!
+//! Handlers return `ApiError`; `IntoResponse` serialises it as
+//! `{code, message, hint}` with the matching status. Messages are safe to show
+//! to users; internal details belong in logs, not in this body.
+
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
 use serde::Serialize;
 
+/// JSON error envelope returned to clients.
 #[derive(Debug, Clone, Serialize)]
 pub struct ApiErrorBody {
     pub code: &'static str,
@@ -10,6 +17,7 @@ pub struct ApiErrorBody {
     pub hint: Option<String>,
 }
 
+/// Error with an HTTP status and a stable machine-readable code.
 #[derive(Debug)]
 pub struct ApiError {
     pub status: StatusCode,
@@ -19,6 +27,7 @@ pub struct ApiError {
 }
 
 impl ApiError {
+    /// 400 for malformed input.
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -28,6 +37,7 @@ impl ApiError {
         }
     }
 
+    /// 413 for oversized queries.
     pub fn payload_too_large(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::PAYLOAD_TOO_LARGE,
@@ -37,6 +47,7 @@ impl ApiError {
         }
     }
 
+    /// 429 when concurrent-run capacity is exhausted.
     pub fn rate_limited(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::TOO_MANY_REQUESTS,
@@ -46,6 +57,7 @@ impl ApiError {
         }
     }
 
+    /// 429 when the daily token or USD budget is spent.
     pub fn budget_exhausted(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::TOO_MANY_REQUESTS,
@@ -55,6 +67,7 @@ impl ApiError {
         }
     }
 
+    /// 401 when `APP_TOKEN` is required but missing or wrong.
     pub fn unauthorized(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::UNAUTHORIZED,
@@ -66,6 +79,7 @@ impl ApiError {
         }
     }
 
+    /// 500 for unexpected server failures.
     pub fn internal(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::INTERNAL_SERVER_ERROR,
@@ -76,6 +90,7 @@ impl ApiError {
     }
 }
 
+/// Serialises the error as JSON with its status code.
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let body = ApiErrorBody {

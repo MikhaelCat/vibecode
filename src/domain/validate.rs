@@ -1,3 +1,12 @@
+//! Deterministic plan validation.
+//!
+//! `validate` runs the fixed V01–V15 checks over a `Plan`, the verified
+//! `Facts` and the parsed `Intent`. It performs no I/O and never calls the
+//! LLM, so the same inputs always produce the same `ValidationReport`. Hard
+//! violations block the plan and are fed back to the model for repair; soft
+//! violations only lower the score. V10 enforces provenance by requiring every
+//! `place_id` to exist in `Facts`.
+
 use std::collections::HashSet;
 
 use chrono::{Datelike, NaiveDate, NaiveTime, Weekday};
@@ -8,6 +17,7 @@ use crate::domain::geo::in_primorye;
 use crate::domain::intent::{Intent, TransportMode};
 use crate::domain::plan::{parse_time, Plan};
 
+/// Whether a violation blocks the plan (hard) or only lowers the score (soft).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Severity {
@@ -15,6 +25,7 @@ pub enum Severity {
     Soft,
 }
 
+/// One rule failure: stable Vxx code, Russian message and optional repair hint.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Violation {
     pub code: String,
@@ -56,6 +67,7 @@ impl Violation {
     }
 }
 
+/// Result of one validation pass: violations, aggregate flags and score.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ValidationReport {
     pub violations: Vec<Violation>,
@@ -66,16 +78,19 @@ pub struct ValidationReport {
 }
 
 impl ValidationReport {
+    /// True when no hard violation was found.
     pub fn hard_ok(&self) -> bool {
         !self.hard_failed
     }
 
+    /// Iterates only blocking violations.
     pub fn hard_violations(&self) -> impl Iterator<Item = &Violation> {
         self.violations
             .iter()
             .filter(|violation| violation.severity == Severity::Hard)
     }
 
+    /// Russian repair instructions for the model, capped at five violations.
     pub fn feedback(&self) -> String {
         let mut lines = Vec::new();
         for violation in self.hard_violations().take(5) {
@@ -96,6 +111,10 @@ impl ValidationReport {
     }
 }
 
+/// Runs all V01–V15 checks against the plan, tool facts and intent.
+///
+/// Deterministic and side-effect free: `Facts` is the only source of truth
+/// for places, weather, routes and schedules.
 pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport {
     let mut violations = Vec::new();
     const CHECKS: u32 = 15;
@@ -424,6 +443,8 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
     }
 }
 
+/// Returns `None` when no segment is parseable, otherwise whether the place
+/// is open. Accepts `Mo-Fr 09:00-18:00; Sa 10:00-14:00`, `24/7` and `off`.
 fn check_open(hours: &str, date: NaiveDate, time: NaiveTime) -> Option<bool> {
     let trimmed = hours.trim();
     if trimmed.is_empty() || trimmed.eq_ignore_ascii_case("off") {
@@ -473,6 +494,7 @@ fn check_open(hours: &str, date: NaiveDate, time: NaiveTime) -> Option<bool> {
     }
 }
 
+/// Parses `Mo-Fr,Sa` weekday specs; `None` if any code is unknown.
 fn parse_days(spec: &str) -> Option<Vec<Weekday>> {
     let mut days = Vec::new();
     for part in spec.split(',') {

@@ -1,3 +1,10 @@
+//! System and repair prompts.
+//!
+//! Prompts live in `prompts_dir` (or an explicit file for evals) and are
+//! versioned by file stem. A built-in Russian fallback keeps the service
+//! working when the files are missing. User text and tool output are data, not
+//! instructions; only `render_system` injects the current date.
+
 use std::path::Path;
 
 use chrono::NaiveDate;
@@ -21,6 +28,7 @@ search_places, get_nearby_attractions, get_weather, get_route, find_lodging, fin
 ЕСЛИ ДАННЫХ НЕТ
 Скажи об этом в note у точки; не подменяй отсутствие факта выдумкой."#;
 
+/// Loaded prompt files: version label, system prompt and repair hint.
 pub struct PromptSet {
     pub version: String,
     pub system: String,
@@ -28,10 +36,13 @@ pub struct PromptSet {
 }
 
 impl PromptSet {
+    /// Loads `system_v1.md` from a prompts directory, with built-in fallbacks.
     pub fn load(dir: &Path) -> Self {
         Self::load_file(&dir.join("system_v1.md"))
     }
 
+    /// Loads a system prompt from `path` and `repair_v1.md` from the same
+    /// directory; the version is the system file stem.
     pub fn load_file(path: &Path) -> Self {
         let version = path
             .file_stem()
@@ -51,6 +62,7 @@ impl PromptSet {
         }
     }
 
+    /// Substitutes `{{today}}` with the given date (YYYY-MM-DD).
     pub fn render_system(&self, today: NaiveDate) -> String {
         self.system
             .replace("{{today}}", &today.format("%Y-%m-%d").to_string())

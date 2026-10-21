@@ -1,3 +1,12 @@
+//! Nominatim/Photon geocoding and Primorye area resolution.
+//!
+//! Parsers normalise external place JSON into the tool schema and discard
+//! results outside the Primorye bounding box. `resolve_area` turns settlements,
+//! lakes and rivers into a center point plus an Overpass bbox: built-in
+//! gazetteer first, then Nominatim, then Photon, and never a silent default to
+//! Vladivostok. Nominatim is limited to 1 req/s and successful responses are
+//! memoized for 30 minutes. Results carry `live` provenance.
+
 use std::time::{Duration, Instant};
 
 use serde_json::{json, Value};
@@ -60,15 +69,18 @@ const KNOWN_AREAS: &[(&str, f64, f64)] = &[
 /// An area resolved to a center point and an Overpass-friendly bbox.
 #[derive(Debug, Clone)]
 pub struct Area {
+    /// Center point used for nearby searches.
     pub lat: f64,
     pub lon: f64,
     /// south, west, north, east
     pub bbox: (f64, f64, f64, f64),
+    /// Display label for the resolved area.
     pub label: String,
 }
 
 /// Nominatim is rate-limited to one request per second. Results are memoized
 /// for 30 minutes so repeated geocode/resolve_area calls stay off the limiter.
+/// Only Primorye results are returned; upstream errors yield an empty list.
 pub async fn nominatim(ctx: &ToolCtx, query: &str, limit: usize) -> Vec<Value> {
     let key = nominatim_cache_key(query, limit);
     {
@@ -171,6 +183,8 @@ fn nominatim_cache_key(query: &str, limit: usize) -> String {
     format!("{normalized}|{limit}")
 }
 
+/// Photon geocoder used as the last area fallback. It mirrors `nominatim`'s
+/// output shape, filters to Primorye, and returns an empty list on errors.
 pub async fn photon(ctx: &ToolCtx, query: &str, limit: usize) -> Vec<Value> {
     let limit_text = limit.to_string();
     let response = match ctx
@@ -260,6 +274,8 @@ pub async fn resolve_area(ctx: &ToolCtx, area: &str) -> Option<Area> {
     resolved
 }
 
+/// Gazetteer first, then online geocoders; `None` when nothing inside
+/// Primorye resolves.
 async fn resolve_area_uncached(ctx: &ToolCtx, area: &str, normalized: &str) -> Option<Area> {
     if normalized.contains("приморск") || normalized.contains("приморье") {
         return Some(Area {
@@ -309,6 +325,8 @@ async fn resolve_area_uncached(ctx: &ToolCtx, area: &str, normalized: &str) -> O
     None
 }
 
+/// Builds an `Area` from a geocoder item, expanding point-like or oversized
+/// bboxes into a usable search window.
 fn area_from_value(item: &Value) -> Option<Area> {
     let lat = item.get("lat")?.as_f64()?;
     let lon = item.get("lon")?.as_f64()?;
@@ -365,6 +383,7 @@ fn clean_name(value: &str) -> String {
         .join(" ")
 }
 
+/// Maps OSM tags and Russian name hints to the plan's item-kind vocabulary.
 fn geo_kind(class: &str, kind: &str, name: &str) -> &'static str {
     let lower = name.to_lowercase();
     if lower.contains("озер")
@@ -409,6 +428,7 @@ fn geo_kind(class: &str, kind: &str, name: &str) -> &'static str {
     }
 }
 
+/// Parses Nominatim's string-valued `boundingbox` into south/west/north/east.
 fn parse_bbox(value: Option<&Value>) -> Option<(f64, f64, f64, f64)> {
     let array = value?.as_array()?;
     Some((

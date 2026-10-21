@@ -1,3 +1,10 @@
+//! Runtime configuration, read once from environment variables.
+//!
+//! All secrets (LLM/API keys, app token) come from the environment and are
+//! never embedded in code. Missing optional values fall back to local/demo
+//! defaults. `validate_public_url` rejects private or loopback LLM proxy
+//! targets so the server cannot be turned into an SSRF proxy.
+
 use std::env;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
@@ -5,6 +12,8 @@ use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
+/// Resolved settings for one process, cloned into shared state and tools.
+/// Secret values are optional so the service can start in mock/demo mode.
 #[derive(Debug, Clone)]
 pub struct Config {
     pub bind: SocketAddr,
@@ -38,6 +47,9 @@ pub struct Config {
 }
 
 impl Config {
+    /// Reads and validates process configuration from the environment.
+    /// Returns an error only for malformed required values (bind address,
+    /// proxy URL).
     pub fn from_env() -> Result<Self> {
         let bind = env::var("BIND")
             .unwrap_or_else(|_| "0.0.0.0:8080".to_string())
@@ -97,16 +109,21 @@ impl Config {
         Ok(cfg)
     }
 
+    /// True when a live LLM is configured and mock mode is off. Drives budget
+    /// accounting and the health endpoint.
     pub fn has_real_llm(&self) -> bool {
         !self.mock_llm && (self.llm_proxy_token.is_some() || self.openrouter_api_key.is_some())
     }
 
+    /// Estimates USD cost from token counts and the configured per-million
+    /// input/output prices.
     pub fn estimate_cost(&self, prompt_tokens: u32, completion_tokens: u32) -> f64 {
         let input = prompt_tokens as f64 / 1_000_000.0 * self.price_in_per_m;
         let output = completion_tokens as f64 / 1_000_000.0 * self.price_out_per_m;
         input + output
     }
 
+    /// Rough Russian-text token estimate used only for pre-checks.
     pub fn estimate_tokens(text: &str) -> u32 {
         // Rough for Russian: ~2.8 chars per token. Used only for budget pre-checks.
         (text.chars().count() as f64 / 2.8).ceil() as u32
@@ -202,6 +219,7 @@ fn validate_public_url(raw: &str) -> Result<()> {
     Ok(())
 }
 
+/// Rejects loopback, private, link-local, metadata and reserved ranges.
 fn forbidden_ip(ip: IpAddr) -> bool {
     match ip {
         IpAddr::V4(ip) => {

@@ -1,3 +1,4 @@
+//! Structured logging setup (`RUST_LOG` overrides the default filter).
 use tracing_subscriber::EnvFilter;
 
 pub fn init() {

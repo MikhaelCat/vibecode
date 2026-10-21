@@ -1,3 +1,11 @@
+//! Parser layer: one module per external source.
+//!
+//! Live sources are OSM Overpass (places, food, hotels, fuel), Wikipedia
+//! geosearch, Nominatim/Photon (areas), Open-Meteo (weather, VL.ru fallback),
+//! OSRM (routes), public transport and VL.ru JSON-LD (events). Local JSON in
+//! `data/mock` is used only when a live source is unavailable. `geo` resolves
+//! any Primorye settlement/lake/river into a bbox; `load_mock` is the single
+//! read path for fallback data.
 pub mod events;
 pub mod fuel;
 pub mod geo;

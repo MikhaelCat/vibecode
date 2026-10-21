@@ -1,3 +1,18 @@
+//! Travel planner backend.
+//!
+//! Layers:
+//! - `api` — axum routes, SSE stream and request validation.
+//! - `agent` — tool-calling loop, prompt assembly and repair.
+//! - `domain` — intent/plan models, validator, fallback and geo helpers.
+//! - `tools` — outbound data providers (OSM, Wikipedia, weather, routes,
+//!   events, lodging, fuel) plus the shared optional cache.
+//! - `store` — SQLite runs and daily budget.
+//! - `llm` — OpenAI-compatible client and deterministic test mock.
+//!
+//! The frontend is a static SPA in `src/frontend`; `src/bin/eval.rs` and
+//! `scripts/` hold the QA tooling. No HTTP handler talks to a provider
+//! directly: everything goes through a registered tool, which keeps the
+//! agent loop and the plan validator the only paths to a submitted plan.
 pub mod agent;
 pub mod api;
 pub mod config;

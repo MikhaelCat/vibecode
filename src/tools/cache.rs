@@ -1,3 +1,10 @@
+//! Optional tool-result cache.
+//!
+//! This cache is only an optimization: Redis is never a source of truth and
+//! stores nothing but serialized `ToolOutput` values. Memory is always used;
+//! Redis adds a shared layer across instances. Connection failures or
+//! timeouts silently fall back to memory so a dead Redis cannot fail a plan.
+
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
@@ -20,6 +27,7 @@ pub struct Cache {
 }
 
 impl Cache {
+    /// Creates an empty cache; Redis is connected lazily on first use.
     pub fn new(redis_url: Option<String>) -> Self {
         Self {
             inner: RwLock::new(HashMap::new()),
@@ -67,6 +75,8 @@ impl Cache {
         format!("travel-ai:tool:{key}")
     }
 
+    /// Reads Redis first, then memory; returns `None` on a miss, expiry or
+    /// malformed cached JSON.
     pub async fn get(&self, key: &str) -> Option<Value> {
         if let Some(mut connection) = self.redis().await {
             let result = tokio::time::timeout(
@@ -89,6 +99,8 @@ impl Cache {
             .map(|entry| entry.value.clone())
     }
 
+    /// Writes memory and, when connected, Redis with the given TTL. Memory is
+    /// capped and expired entries are pruned on each write.
     pub async fn put(&self, key: String, value: Value, ttl: Duration) {
         let entry = Entry {
             value: value.clone(),

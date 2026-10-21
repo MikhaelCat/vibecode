@@ -1,3 +1,12 @@
+//! Tool registry and the single provider call path.
+//!
+//! `Registry` owns all `Tool` implementations, converts them to OpenAI-style
+//! function specs and executes calls with a timeout and a disposable
+//! tool-result cache. Every result is a `ToolOutput` with provenance; the
+//! orchestrator ingests it into `Facts`, so tools never bypass the validator.
+//! Provider credentials come from `Config`, which reads them from the
+//! environment.
+
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -17,6 +26,8 @@ use crate::tools::providers::{
     WeatherTool, WikipediaTool,
 };
 
+/// Errors a tool may report; the orchestrator turns them into tool messages
+/// and keeps the agent loop alive.
 #[derive(Debug, thiserror::Error)]
 pub enum ToolError {
     #[error("bad arguments: {0}")]
@@ -27,6 +38,8 @@ pub enum ToolError {
     Timeout,
 }
 
+/// Shared per-call context: parsed intent (for date defaults), HTTP client,
+/// mock-data directory and Nominatim user agent.
 pub struct ToolCtx {
     pub intent: Intent,
     pub http: Client,
@@ -34,14 +47,23 @@ pub struct ToolCtx {
     pub nominatim_user_agent: String,
 }
 
+/// One external data source exposed to the LLM.
+///
+/// Implementations must return provenance in `ToolOutput::meta` and must not
+/// write to `Facts`; ingestion is the orchestrator's job.
 #[async_trait]
 pub trait Tool: Send + Sync {
+    /// Stable function name used by the model and cache keys.
     fn name(&self) -> &'static str;
+    /// Russian description shown to the model.
     fn description(&self) -> &'static str;
+    /// JSON schema for the tool arguments.
     fn parameters(&self) -> Value;
+    /// Executes the tool with raw model-supplied JSON arguments.
     async fn call(&self, args: Value, ctx: &ToolCtx) -> Result<ToolOutput, ToolError>;
 }
 
+/// Owns the tool set, shared HTTP client, cache and per-call timeout.
 pub struct Registry {
     tools: HashMap<&'static str, Arc<dyn Tool>>,
     http: Client,
@@ -52,6 +74,7 @@ pub struct Registry {
 }
 
 impl Registry {
+    /// Builds all providers and their shared HTTP client from configuration.
     pub fn new(config: &Config) -> anyhow::Result<Self> {
         let http = Client::builder()
             .timeout(config.tool_timeout + Duration::from_secs(2))
@@ -84,6 +107,7 @@ impl Registry {
         })
     }
 
+    /// Returns OpenAI function specs for all tools plus `submit_plan`.
     pub fn specs(&self) -> Vec<Value> {
         let mut tools: Vec<&Arc<dyn Tool>> = self.tools.values().collect();
         tools.sort_by_key(|tool| tool.name());
@@ -104,12 +128,18 @@ impl Registry {
         specs
     }
 
+    /// Sorted tool names, used by diagnostics and tests.
     pub fn tool_names(&self) -> Vec<&'static str> {
         let mut names: Vec<&'static str> = self.tools.keys().copied().collect();
         names.sort_unstable();
         names
     }
 
+    /// Runs a named tool with caching and a timeout.
+    ///
+    /// Cache hits are re-labelled as `cache`; only `live` results are stored,
+    /// for ten minutes. A miss or cache error simply falls through to the
+    /// provider.
     pub async fn call(
         &self,
         name: &str,
@@ -166,6 +196,8 @@ impl Registry {
     }
 }
 
+/// Rewrites nested `source` fields so the model can see the result came from
+/// the cache rather than a live provider.
 fn mark_cached_sources(data: &mut Value) {
     if let Some(source) = data.get_mut("source") {
         if source.is_string() {
@@ -183,6 +215,8 @@ fn mark_cached_sources(data: &mut Value) {
     }
 }
 
+/// Schema for the terminal `submit_plan` call. It is not a provider, so it
+/// lives outside the registry map.
 fn submit_plan_spec() -> Value {
     json!({
         "type": "function",

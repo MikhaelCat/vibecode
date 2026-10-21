@@ -20,8 +20,10 @@ sudoedit /opt/travel-ai/.env
 Без ключа поставьте `MOCK_LLM=1` — приложение работает офлайн. Для публичного
 демо задайте `APP_TOKEN`, `DAILY_BUDGET_USD` и `DAILY_TOKEN_BUDGET`; `APP_TOKEN`
 передаётся в `x-app-token` или `Authorization: Bearer`.
-`DATABASE_URL` указывает на `/var/lib/travel-ai/app.db`; `PRICE_IN_PER_M` и
-`PRICE_OUT_PER_M` — цена за 1M токенов, `0` = неизвестна. Пути `PROMPTS_DIR`, `DATA_DIR` и `WEB_DIR` относительны `/opt/travel-ai`.
+Для systemd укажите `DATABASE_URL=sqlite:///var/lib/travel-ai/app.db` (каталог
+создаёт `install.sh`); `PRICE_IN_PER_M` и `PRICE_OUT_PER_M` — цена за 1M токенов,
+`0` = неизвестна. Пути `PROMPTS_DIR`, `DATA_DIR` и `WEB_DIR` относительны `/opt/travel-ai`;
+`BIND` по умолчанию — `0.0.0.0:8080`.
 
 **Redis (опционально):** установите `redis-server`, задайте
 `REDIS_URL=redis://127.0.0.1:6379/0` и не открывайте 6379 наружу. Redis хранит
@@ -71,7 +73,8 @@ sudo systemctl restart travel-ai
 ```
 
 ## 6. Порт, firewall и SSE
-Сервис слушает `0.0.0.0:8080`. Откройте порт в firewall VM и облака:
+По умолчанию сервис слушает `0.0.0.0:8080`; порт задаётся `BIND` в `.env`.
+Откройте его в firewall VM и облака (если меняли `BIND` — соответствующий порт):
 
 ```bash
 sudo ufw allow 8080/tcp

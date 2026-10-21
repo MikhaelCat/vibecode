@@ -2,8 +2,8 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
-use crate::domain::geo::haversine_km;
-use crate::tools::providers::places::kind_from_title;
+use crate::domain::geo::{haversine_km, in_primorye, waterbody_title};
+use crate::tools::providers::places::{generic_title, kind_from_title};
 use crate::tools::providers::{fallback_places, load_mock};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
@@ -88,7 +88,9 @@ impl Tool for WikipediaTool {
                 let Some(place_lon) = place.get("lon").and_then(Value::as_f64) else {
                     return false;
                 };
-                haversine_km((lat, lon), (place_lat, place_lon)) <= radius_km
+                let name = place.get("name").and_then(Value::as_str).unwrap_or("");
+                !waterbody_title(name)
+                    && haversine_km((lat, lon), (place_lat, place_lon)) <= radius_km
             })
             .take(8)
             .collect();
@@ -121,12 +123,18 @@ fn parse_geosearch(value: &Value) -> Vec<Value> {
         let Some(title) = item.get("title").and_then(Value::as_str) else {
             continue;
         };
+        if generic_title(title) || waterbody_title(title) {
+            continue;
+        }
         let Some(lat) = item.get("lat").and_then(Value::as_f64) else {
             continue;
         };
         let Some(lon) = item.get("lon").and_then(Value::as_f64) else {
             continue;
         };
+        if !in_primorye(lat, lon) {
+            continue;
+        }
         let distance = item.get("dist").and_then(Value::as_f64).unwrap_or(0.0);
         places.push(json!({
             "id": format!("wikipedia:{page_id}"),
@@ -164,5 +172,21 @@ mod tests {
         assert_eq!(places[0]["id"], "wikipedia:123");
         assert_eq!(places[0]["name"], "Токаревская кошка");
         assert_eq!(places[0]["source"], "live");
+    }
+
+    #[test]
+    fn skips_water_centroids_and_generic_titles() {
+        let payload = serde_json::json!({
+            "query": {
+                "geosearch": [
+                    {"pageid": 1, "title": "Находка (бухта, Японское море)", "lat": 42.80, "lon": 132.89, "dist": 10.0},
+                    {"pageid": 2, "title": "Улица Ленина", "lat": 42.82, "lon": 132.89, "dist": 20.0},
+                    {"pageid": 3, "title": "Смотровая площадка «Бухта Находка»", "lat": 42.816, "lon": 132.889, "dist": 30.0}
+                ]
+            }
+        });
+        let places = parse_geosearch(&payload);
+        assert_eq!(places.len(), 1);
+        assert_eq!(places[0]["name"], "Смотровая площадка «Бухта Находка»");
     }
 }

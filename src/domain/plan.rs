@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::domain::dates::{add_days, days_inclusive};
 use crate::domain::facts::{Facts, Lodging, PlaceFact, SourceKind, SourceRef};
-use crate::domain::geo::{haversine_km, travel_minutes};
+use crate::domain::geo::{haversine_km, travel_minutes, waterbody_title};
 use crate::domain::intent::{Intent, TransportMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -23,6 +23,8 @@ pub enum ItemKind {
     Lake,
     River,
     Food,
+    Bar,
+    Club,
     Transfer,
     Rest,
 }
@@ -219,6 +221,8 @@ fn item_kind(fact: Option<&PlaceFact>, fallback: ItemKind) -> ItemKind {
         "lake" => ItemKind::Lake,
         "river" => ItemKind::River,
         "food" => ItemKind::Food,
+        "bar" => ItemKind::Bar,
+        "club" => ItemKind::Club,
         "rest" => ItemKind::Rest,
         _ => fallback,
     }
@@ -258,12 +262,21 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
     let mut seen_ids: HashSet<String> = HashSet::new();
     let mut seen_places: Vec<(String, f64, f64)> = Vec::new();
     let mut duplicate_items = 0usize;
+    let mut waterbody_items = 0usize;
     let mut date = intent.start_date;
 
     while date <= intent.end_date {
         let mut items = Vec::new();
         for item_draft in items_by_date.remove(&date).unwrap_or_default() {
             let fact = facts.place(&item_draft.place_id);
+
+            // A lake, river or bay is an area, not a stop. Providers already
+            // filter these; this final guard also covers facts produced by
+            // geocoding and old cached tool results.
+            if fact.is_some_and(|place| waterbody_title(&place.name)) {
+                waterbody_items += 1;
+                continue;
+            }
 
             if !item_draft.place_id.is_empty() && !seen_ids.insert(item_draft.place_id.clone()) {
                 duplicate_items += 1;
@@ -346,6 +359,13 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
         warnings.push(Warning {
             code: "duplicates_removed".to_string(),
             message: format!("Убрано повторяющихся точек: {duplicate_items}"),
+        });
+    }
+    if waterbody_items > 0 {
+        warnings.push(Warning {
+            code: "waterbody_skipped".to_string(),
+            message: "Озёра и реки используются как районы поиска — их точки в воде не показаны"
+                .to_string(),
         });
     }
 
@@ -650,5 +670,46 @@ mod tests {
         assert_eq!(plan.days.len(), 2);
         assert_eq!(plan.days[0].legs.len(), 1);
         assert!(plan.days[1].items.is_empty());
+    }
+
+    #[test]
+    fn enrich_drops_waterbody_stops() {
+        let mut facts = Facts::default();
+        facts.ensure_minimal(intent().start_date, intent().end_date);
+        facts.places.insert(
+            "test:lake".to_string(),
+            PlaceFact {
+                id: "test:lake".to_string(),
+                name: "озеро Ханка".to_string(),
+                lat: 44.93,
+                lon: 132.44,
+                kind: "lake".to_string(),
+                opening_hours: None,
+                source: SourceKind::Live,
+            },
+        );
+        let draft = PlanDraft {
+            title: "Тест".to_string(),
+            summary: "Тест".to_string(),
+            days: vec![DayDraft {
+                date: intent().start_date,
+                items: vec![ItemDraft {
+                    place_id: "test:lake".to_string(),
+                    name: "озеро Ханка".to_string(),
+                    kind: ItemKind::Lake,
+                    start: None,
+                    end: None,
+                    note: None,
+                }],
+            }],
+            lodging_ids: vec![],
+            transport: Some(TransportMode::Car),
+        };
+        let plan = enrich(draft, &intent(), &facts);
+        assert!(plan.days[0].items.is_empty());
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "waterbody_skipped"));
     }
 }

@@ -1,3 +1,10 @@
+//! VL.ru events parser.
+//!
+//! The city poster exposes schema.org `Event` objects as JSON-LD, so this
+//! provider parses structured data instead of scraping markup. Events are
+//! filtered to the trip window, deduplicated by title/date/place and returned
+//! with `live` provenance; upstream failures surface as `ToolError::Upstream`.
+
 use std::collections::HashSet;
 
 use async_trait::async_trait;
@@ -37,6 +44,8 @@ impl Tool for EventsTool {
         })
     }
 
+    /// Fetches the poster and returns at most 12 events overlapping the
+    /// requested dates. Missing date arguments default to the intent window.
     async fn call(&self, args: Value, ctx: &ToolCtx) -> Result<ToolOutput, ToolError> {
         let area = args
             .get("area")
@@ -90,6 +99,8 @@ fn parse_date_arg(args: &Value, key: &str) -> Option<NaiveDate> {
         .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
 }
 
+/// Extracts events from every JSON-LD block, keeps those overlapping
+/// `start..=end`, deduplicates them and sorts by start date.
 fn parse_events(html: &str, start: NaiveDate, end: NaiveDate) -> Vec<Value> {
     let mut events = Vec::new();
     let mut seen = HashSet::new();
@@ -134,6 +145,7 @@ fn parse_events(html: &str, start: NaiveDate, end: NaiveDate) -> Vec<Value> {
     events
 }
 
+/// Intermediate event record parsed from one schema.org object.
 struct ParsedEvent {
     id: String,
     title: String,
@@ -143,6 +155,8 @@ struct ParsedEvent {
     url: Option<String>,
 }
 
+/// Reads one schema.org `Event`; requires a title and a parseable start date.
+/// The end date falls back to the start date for one-day events.
 fn event_from_json(value: &Value) -> Option<ParsedEvent> {
     let is_event = match value.get("@type") {
         Some(Value::String(kind)) => kind == "Event",
@@ -197,6 +211,7 @@ fn parse_iso_date(value: Option<&str>) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(date, "%Y-%m-%d").ok()
 }
 
+/// Returns the raw contents of every `application/ld+json` script tag.
 fn json_ld_blocks(html: &str) -> Vec<String> {
     let mut blocks = Vec::new();
     let mut rest = html;

@@ -214,6 +214,10 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
         ("еда", "food"),
         ("истори", "history"),
         ("рыбалк", "fishing"),
+        ("бар", "nightlife"),
+        ("паб", "nightlife"),
+        ("клуб", "nightlife"),
+        ("ночн", "nightlife"),
     ] {
         if lower.contains(needle) && !interests.contains(&interest.to_string()) {
             interests.push(interest.to_string());
@@ -600,6 +604,10 @@ fn is_travel(lower: &str) -> bool {
         "водопад",
         "заповедник",
         "набережн",
+        "бар",
+        "паб",
+        "клуб",
+        "ночн",
     ];
     WORDS.iter().any(|word| lower.contains(word))
 }
@@ -621,13 +629,15 @@ fn is_injection(lower: &str) -> bool {
 }
 
 fn is_other_region(lower: &str) -> bool {
-    const REGIONS: [&str; 16] = [
+    const REGIONS: [&str; 18] = [
         "сочи",
         "урал",
         "москв",
         "санкт-петербург",
         "петербург",
         "питер",
+        "ленинград",
+        "ленинградск",
         "казан",
         "крым",
         "байкал",
@@ -706,6 +716,12 @@ mod tests {
     }
 
     #[test]
+    fn bars_and_clubs_are_travel_when_asked_explicitly() {
+        let intent = parse("Хочу бары и клубы Владивостока на выходные", today()).unwrap();
+        assert!(intent.interests.iter().any(|item| item == "nightlife"));
+    }
+
+    #[test]
     fn explicit_foot_wins_over_no_car_phrase() {
         let intent = parse("Хочу пешком, без машины, по Приморью", today()).unwrap();
         assert_eq!(intent.transport, TransportMode::Foot);
@@ -780,6 +796,22 @@ mod tests {
     fn refuses_other_region() {
         assert_eq!(
             parse("Спланируй неделю в Сочи", today())
+                .unwrap_err()
+                .category,
+            "other_region"
+        );
+    }
+
+    #[test]
+    fn refuses_leningrad_as_other_region() {
+        assert_eq!(
+            parse("пешком до ленинграда от владивостока в ресторане", today())
+                .unwrap_err()
+                .category,
+            "other_region"
+        );
+        assert_eq!(
+            parse("Поездка в Ленинградскую область", today())
                 .unwrap_err()
                 .category,
             "other_region"

@@ -148,6 +148,8 @@ fn kind_from_label(label: &str) -> ItemKind {
         "lake" => ItemKind::Lake,
         "river" => ItemKind::River,
         "food" => ItemKind::Food,
+        "bar" => ItemKind::Bar,
+        "club" => ItemKind::Club,
         _ => ItemKind::Sight,
     }
 }

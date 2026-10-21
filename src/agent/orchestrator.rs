@@ -1,3 +1,13 @@
+//! Agent loop and the only path from a user query to a plan.
+//!
+//! Flow: deterministic `guard` → prompt assembly → LLM tool loop → tool
+//! registry → `Facts::ingest` → `submit_plan` → `enrich` → `validate`. Hard
+//! validation failures are fed back to the model up to `max_repairs`; when the
+//! loop ends without a valid plan, `fallback::assemble` produces a degraded
+//! one. Every tool result is ingested into `Facts` before submission, so the
+//! validator's provenance checks (V10) cover all model output. Runs are
+//! persisted to the store and mirrored as SSE events when a sink is present.
+
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -21,12 +31,17 @@ use crate::llm::{ChatRequest, LlmClient, LlmMessage};
 use crate::store::{RunRecord, Store};
 use crate::tools::Registry;
 
+/// One event emitted during a run: an SSE event name plus a JSON payload.
 #[derive(Debug, Clone)]
 pub struct StreamEvent {
     pub event: &'static str,
     pub data: Value,
 }
 
+/// Explicit form/API values that override the intent parsed from the query.
+///
+/// Overrides are applied once after the guard and are authoritative for the
+/// rest of the run; the trip is clamped to `MAX_TRIP_DAYS`.
 #[derive(Debug, Clone, Default)]
 pub struct RunOverrides {
     pub start_date: Option<NaiveDate>,
@@ -34,6 +49,11 @@ pub struct RunOverrides {
     pub transport: Option<TransportMode>,
 }
 
+/// Result of a finished run.
+///
+/// A refusal has `refusal` set and no plan; a normal or degraded run has
+/// `intent`, `plan` and `report` set. `trace` records per-step timings and
+/// tool calls, and `tools_used` excludes validator-only pseudo-calls.
 #[derive(Debug, Clone)]
 pub struct RunOutcome {
     pub run_id: Uuid,
@@ -48,6 +68,8 @@ pub struct RunOutcome {
     pub model: String,
 }
 
+/// Executes the guard/LLM/validate pipeline with shared config, LLM client,
+/// tool registry, run store and prompts.
 pub struct Orchestrator {
     cfg: Arc<Config>,
     llm: Arc<dyn LlmClient>,
@@ -57,6 +79,7 @@ pub struct Orchestrator {
 }
 
 impl Orchestrator {
+    /// Builds an orchestrator with prompts loaded from `cfg.prompts_dir`.
     pub fn new(
         cfg: Arc<Config>,
         llm: Arc<dyn LlmClient>,
@@ -66,6 +89,7 @@ impl Orchestrator {
         Self::new_with_prompt(cfg, llm, registry, store, None)
     }
 
+    /// Like `new`, but loads the system prompt from an explicit file (evals).
     pub fn new_with_prompt(
         cfg: Arc<Config>,
         llm: Arc<dyn LlmClient>,
@@ -86,14 +110,18 @@ impl Orchestrator {
         }
     }
 
+    /// Model identifier reported by the LLM client.
     pub fn model(&self) -> &str {
         self.llm.model()
     }
 
+    /// Prompt version derived from the loaded system prompt file stem.
     pub fn prompt_version(&self) -> &str {
         &self.prompts.version
     }
 
+    /// Checks daily spend/token budgets before a live LLM run. Always true
+    /// when no real LLM is configured, so mock/demo runs are never blocked.
     pub async fn budget_ok(&self) -> bool {
         if !self.cfg.has_real_llm() {
             return true;
@@ -111,6 +139,7 @@ impl Orchestrator {
         true
     }
 
+    /// Runs a query without form overrides.
     pub async fn execute(
         &self,
         query: String,
@@ -120,6 +149,10 @@ impl Orchestrator {
             .await
     }
 
+    /// Runs the full pipeline, streaming events to `sink` when supplied.
+    ///
+    /// Returns exactly one outcome: a refusal from the guard, a validated
+    /// plan, or a degraded plan assembled from `Facts` after the loop ends.
     pub async fn execute_with(
         &self,
         query: String,
@@ -507,6 +540,10 @@ impl Orchestrator {
         .await
     }
 
+    /// Parses and enriches a `submit_plan` call, then validates it.
+    ///
+    /// The plan is accepted only when validation has no hard violations;
+    /// otherwise the returned text is the repair feedback for the model.
     async fn handle_submit(
         &self,
         args: &Value,
@@ -536,6 +573,7 @@ impl Orchestrator {
         }
     }
 
+    /// Emits terminal events, persists the run and builds the `RunOutcome`.
     #[allow(clippy::too_many_arguments)]
     async fn finish_plan(
         &self,
@@ -631,6 +669,8 @@ impl Orchestrator {
         }
     }
 
+    /// Stores a run record. Usage and cost are zeroed for mock LLM runs so
+    /// they do not consume the daily budget.
     #[allow(clippy::too_many_arguments)]
     async fn persist(
         &self,
@@ -664,6 +704,8 @@ impl Orchestrator {
         }
     }
 
+    /// Sends a stream event if the caller is streaming; a closed receiver is
+    /// ignored because the run still needs to finish and persist.
     async fn emit(
         &self,
         sink: &Option<mpsc::Sender<StreamEvent>>,
@@ -676,6 +718,8 @@ impl Orchestrator {
     }
 }
 
+/// Applies form/API overrides after guard parsing and clamps the trip to
+/// `MAX_TRIP_DAYS`, recording any assumption shown to the user.
 fn apply_overrides(mut intent: Intent, overrides: &RunOverrides) -> Intent {
     if let Some(start) = overrides.start_date {
         intent.start_date = start;

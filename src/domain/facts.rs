@@ -1,3 +1,12 @@
+//! Verified tool output, keyed for planning.
+//!
+//! `Facts` is the only data source a plan may reference: the orchestrator
+//! ingests each successful `ToolOutput` here, and the validator rejects any
+//! `place_id` that is not present (V10). Every fact carries `SourceKind`
+//! provenance (live, cache, mock, stale, estimated). If all providers fail,
+//! `ensure_minimal` loads the committed `data/mock/*.json` fixtures so a
+//! degraded plan can still be produced.
+
 use std::collections::HashMap;
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
@@ -7,6 +16,10 @@ use serde_json::Value;
 
 use crate::domain::geo::haversine_km;
 
+/// Provenance of a fact or tool result.
+///
+/// `Mock` is the serde default, so an unlabelled value is treated as fixture
+/// data rather than live data.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
 pub enum SourceKind {
@@ -19,6 +32,7 @@ pub enum SourceKind {
 }
 
 impl SourceKind {
+    /// Stable lower-case label used in JSON and traces.
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Live => "live",
@@ -36,6 +50,7 @@ impl std::fmt::Display for SourceKind {
     }
 }
 
+/// Per-call provenance: origin, fetch time, cache and staleness flags.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolMeta {
     pub source: SourceKind,
@@ -45,6 +60,7 @@ pub struct ToolMeta {
 }
 
 impl ToolMeta {
+    /// Creates metadata for a fresh result from `source`.
     pub fn new(source: SourceKind) -> Self {
         Self {
             source,
@@ -55,6 +71,7 @@ impl ToolMeta {
     }
 }
 
+/// Uniform tool response: success flag, JSON payload, provenance and summary.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ToolOutput {
     pub ok: bool,
@@ -64,6 +81,7 @@ pub struct ToolOutput {
 }
 
 impl ToolOutput {
+    /// Builds a successful output with fresh provenance.
     pub fn ok(data: Value, source: SourceKind, summary: impl Into<String>) -> Self {
         Self {
             ok: true,
@@ -74,6 +92,7 @@ impl ToolOutput {
     }
 }
 
+/// Source attribution carried into the final plan.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceRef {
     pub provider: String,
@@ -82,6 +101,7 @@ pub struct SourceRef {
     pub kind: SourceKind,
 }
 
+/// A place verified by a tool, keyed by provider id (e.g. `osm:node/1`).
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PlaceFact {
     pub id: String,
@@ -96,6 +116,7 @@ pub struct PlaceFact {
     pub source: SourceKind,
 }
 
+/// Daily forecast used by the weather checks; one entry per date.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WeatherDay {
     pub date: NaiveDate,
@@ -109,6 +130,7 @@ pub struct WeatherDay {
     pub sunset: Option<NaiveTime>,
 }
 
+/// A lodging option returned by `find_lodging`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lodging {
     pub id: String,
@@ -125,6 +147,7 @@ pub struct Lodging {
     pub source: SourceKind,
 }
 
+/// A route between two provider coordinates, keyed by `from->to`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RouteFact {
     #[serde(default)]
@@ -139,6 +162,7 @@ pub struct RouteFact {
     pub source: SourceKind,
 }
 
+/// A scheduled transport option returned by `find_transport`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TransportOption {
     pub id: String,
@@ -156,6 +180,7 @@ pub struct TransportOption {
     pub source: SourceKind,
 }
 
+/// A fuel station returned by `find_fuel`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FuelStation {
     pub id: String,
@@ -167,6 +192,7 @@ pub struct FuelStation {
     pub source: SourceKind,
 }
 
+/// A dated event returned by `find_events`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventFact {
     pub id: String,
@@ -180,6 +206,10 @@ pub struct EventFact {
     pub source: SourceKind,
 }
 
+/// Accumulated, verified tool output for one run.
+///
+/// Collections are keyed by provider ids/dates so repeated calls merge rather
+/// than duplicate; transport and events are de-duplicated on insert.
 #[derive(Debug, Clone, Default)]
 pub struct Facts {
     pub places: HashMap<String, PlaceFact>,
@@ -193,6 +223,9 @@ pub struct Facts {
 }
 
 impl Facts {
+    /// Merges a tool result by tool name; failed outputs only record provenance.
+    /// Unknown tools are ignored, so adding a provider cannot silently corrupt
+    /// existing fact types.
     pub fn ingest(&mut self, tool: &str, out: &ToolOutput) {
         self.push_source(tool, out);
         if !out.ok {
@@ -279,28 +312,34 @@ impl Facts {
         }
     }
 
+    /// Provenance check used by validator V10.
     pub fn contains_place(&self, place_id: &str) -> bool {
         self.places.contains_key(place_id)
     }
 
+    /// Looks up a verified place by provider id.
     pub fn place(&self, place_id: &str) -> Option<&PlaceFact> {
         self.places.get(place_id)
     }
 
+    /// Opening hours for a known place, if the provider supplied them.
     pub fn opening_hours(&self, place_id: &str) -> Option<&str> {
         self.place(place_id)
             .and_then(|place| place.opening_hours.as_deref())
     }
 
+    /// Forecast for a date, if `get_weather` covered it.
     pub fn weather_for(&self, date: NaiveDate) -> Option<&WeatherDay> {
         self.weather.get(&date)
     }
 
+    /// Route by exact provider coordinate strings.
     pub fn route_between(&self, from: &str, to: &str) -> Option<&RouteFact> {
         self.routes.get(&route_key(from, to))
     }
 
-    /// Route facts are keyed by the provider's "lat,lon" strings; match them to plan points.
+    /// Route facts are keyed by the provider's "lat,lon" strings; match them to
+    /// plan points within roughly 20 m.
     pub fn route_for_points(&self, from: (f64, f64), to: (f64, f64)) -> Option<&RouteFact> {
         self.routes.values().find(|route| {
             let Some(route_from) = parse_latlon(&route.from) else {
@@ -313,12 +352,15 @@ impl Facts {
         })
     }
 
+    /// True once at least two places are known; the loop then nudges the model
+    /// to submit instead of searching forever.
     pub fn enough_for_plan(&self) -> bool {
         self.places.len() >= 2
     }
 
-    /// Guarantees that a plan can be assembled even if every external provider failed.
-    /// All local fallback data comes from the same `data/mock/*.json` files.
+    /// Guarantees that a plan can be assembled even if every external provider
+    /// failed. Existing facts are never overwritten; all local fallback data
+    /// comes from the same `data/mock/*.json` files.
     pub fn ensure_minimal(&mut self, _start: NaiveDate, _end: NaiveDate) {
         if self.places.is_empty() {
             for place in mock_places() {
@@ -373,18 +415,22 @@ pub fn mock_places() -> Vec<PlaceFact> {
     parse_mock(MOCK_PLACES, "places")
 }
 
+/// Local lodging fixtures from `data/mock/lodging.json`.
 pub fn mock_lodging() -> Vec<Lodging> {
     parse_mock(MOCK_LODGING, "options")
 }
 
+/// Local transport fixtures from `data/mock/transport.json`.
 pub fn mock_transport() -> Vec<TransportOption> {
     parse_mock(MOCK_TRANSPORT, "options")
 }
 
+/// Local fuel-station fixtures from `data/mock/fuel.json`.
 pub fn mock_fuel() -> Vec<FuelStation> {
     parse_mock(MOCK_FUEL, "stations")
 }
 
+/// Tolerantly parses one array field from a mock file; bad entries are skipped.
 fn parse_mock<T: DeserializeOwned>(raw: &str, key: &str) -> Vec<T> {
     let value: Value = serde_json::from_str(raw).unwrap_or(Value::Null);
     value

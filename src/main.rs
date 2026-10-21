@@ -1,3 +1,4 @@
+//! Process entry point: environment → state → axum server → graceful shutdown.
 use std::sync::Arc;
 
 use tokio::net::TcpListener;

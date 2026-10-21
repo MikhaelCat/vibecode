@@ -1,5 +1,8 @@
-/* vibecode frontend — SSE-клиент для POST /api/plan.
-   API всегда same-origin: произвольный адрес из query string не принимается. */
+/* vibecode frontend — vanilla JS SPA, no build step.
+   Reads the SSE stream from POST /api/plan (same-origin only), renders days,
+   lodging and a lazily created Leaflet map. Map pins are accepted only when
+   the backend place has finite coordinates inside Primorye; water-body
+   centroids and (0,0) are ignored so a pin can never land in the sea. */
 const API = '';
 const $ = (id) => document.getElementById(id);
 const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
@@ -31,11 +34,34 @@ const kindRu = {
   lake: 'озеро',
   river: 'река',
   food: 'еда',
+  bar: 'бар',
+  club: 'клуб',
   transfer: 'переезд',
   rest: 'отдых',
 };
 const lodgingKindRu = { hotel: 'отель', guesthouse: 'гостевой дом', apartment: 'апартаменты', hostel: 'хостел' };
 const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+
+// A plan item must be a real, finite point inside Primorye. Unknown places
+// arrive as (0,0) and must never become a pin in the sea or zoom the map out.
+function mapPoint(stop) {
+  const lat = Number(stop.lat ?? stop.latitude);
+  const lon = Number(stop.lon ?? stop.lng ?? stop.longitude);
+  if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+  if (lat < 42.2 || lat > 48.5 || lon < 130.0 || lon > 139.1) return null;
+  if (Math.abs(lat) < 0.0001 && Math.abs(lon) < 0.0001) return null;
+  if (waterName(stop.name)) return null;
+  return [lat, lon];
+}
+
+function waterName(name) {
+  const lower = String(name || '').toLowerCase();
+  const parenthetical = lower.match(/\(([^)]*)\)/);
+  const water = /^(бухт|озер|озёр|водохранилищ|пруд|пролив|ковш|лиман|затон|стариц|проток|канал)|^(залив|река|реки|реке|реку|рекой|море|моря|морю)$/;
+  if (parenthetical && parenthetical[1].split(/[^\p{L}]+/u).some((word) => water.test(word))) return true;
+  const words = lower.split(/[^\p{L}]+/u).filter(Boolean);
+  return water.test(words[0] || '') || water.test(words[words.length - 1] || '');
+}
 
 // ---------- карта ----------
 let map = null;
@@ -395,8 +421,13 @@ function stage(text, state = 'live') {
 
 function refuse(data) {
   const box = $('refusal');
+  const isTimeout = data && data.category === 'timeout';
+  const heading = isTimeout ? 'Не удалось собрать план.' : 'Запрос не по теме.';
+  const fallback = isTimeout
+    ? 'Попробуйте более короткий запрос или повторите попытку.'
+    : 'Я планирую только поездки по Приморскому краю.';
   box.hidden = false;
-  box.innerHTML = `<div><b>Запрос не по теме.</b> ${esc(data.message || data.reason || 'Я планирую только поездки по Приморскому краю.')}</div>
+  box.innerHTML = `<div><b>${heading}</b> ${esc(data.message || data.reason || fallback)}</div>
     <button type="button" class="btn btn-small" id="refusal-example">Попробовать пример</button>`;
   const example = box.querySelector('#refusal-example');
   if (example) example.addEventListener('click', () => {
@@ -500,10 +531,10 @@ function renderDay() {
   if (!map || !window.L) return;
   const points = [];
   items.forEach((stop, index) => {
-    const lat = stop.lat ?? stop.latitude;
-    const lon = stop.lon ?? stop.lng ?? stop.longitude;
-    if (lat == null || lon == null) return;
-    points.push([lat, lon]);
+    const point = mapPoint(stop);
+    if (!point) return;
+    points.push(point);
+    const [lat, lon] = point;
     const time = fmtTime(stop.start || stop.time);
     const popup = `<b>${esc(stop.name)}</b>${time ? `<br><span>${esc(time)}</span>` : ''}`;
     const marker = L.marker([lat, lon], {

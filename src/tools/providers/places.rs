@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
-use crate::domain::geo::{haversine_km, in_primorye};
+use crate::domain::geo::{haversine_km, in_primorye, waterbody_title};
 use crate::tools::providers::{fallback_places, geo, limit_from, load_mock};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
@@ -18,7 +18,7 @@ impl Tool for PlacesTool {
     }
 
     fn description(&self) -> &'static str {
-        "Найти места в любом районе Приморья: достопримечательности, музеи, природу, пляжи, озёра, реки, рестораны/кафе, отели. area — город, село, озеро или река; categories — nature, museum, viewpoint, park, historic, beach, lake, river, restaurant, cafe, hotel, attraction."
+        "Найти места в любом районе Приморья: достопримечательности, музеи, природу, пляжи, озёра, реки, рестораны/кафе, бары и клубы (только по явному запросу), отели. area — город, село, озеро или река; categories — nature, museum, viewpoint, park, historic, beach, lake, river, restaurant, cafe, bar, club, hotel, attraction."
     }
 
     fn parameters(&self) -> Value {
@@ -29,7 +29,7 @@ impl Tool for PlacesTool {
                 "categories": {
                     "type": "array",
                     "items": {"type": "string"},
-                    "description": "nature, museum, viewpoint, park, historic, beach, lake, river, restaurant, cafe, hotel, attraction"
+                    "description": "nature, museum, viewpoint, park, historic, beach, lake, river, restaurant, cafe, bar, club, hotel, attraction"
                 },
                 "limit": {"type": "integer", "minimum": 1, "maximum": 20},
                 "date": {"type": "string"}
@@ -64,6 +64,11 @@ impl Tool for PlacesTool {
             ));
         };
 
+        // A lake or a river is a search area, not a marker in the water. Around
+        // such an area any precise land object (shore village, beach, cape,
+        // museum) is more useful than the water centroid.
+        let area_is_water = waterbody_title(area_text) || waterbody_title(&area.label);
+
         // Wikipedia geosearch answers in one request and does not compete for
         // the two Overpass slots, so try it first for attraction-like
         // categories. Food and lodging stay on OSM, where they are precise.
@@ -71,8 +76,15 @@ impl Tool for PlacesTool {
         let mut wikipedia_tried = false;
         if wikipedia_first {
             wikipedia_tried = true;
-            if let Some(places) =
-                wikipedia_matching_places(ctx, area.lat, area.lon, limit, &categories).await
+            if let Some(places) = wikipedia_matching_places(
+                ctx,
+                area.lat,
+                area.lon,
+                limit,
+                &categories,
+                area_is_water,
+            )
+            .await
             {
                 return Ok(ToolOutput::ok(
                     json!({"places": places}),
@@ -97,8 +109,15 @@ impl Tool for PlacesTool {
         }
 
         if !wikipedia_tried && wants_wikipedia(&categories) {
-            if let Some(places) =
-                wikipedia_matching_places(ctx, area.lat, area.lon, limit, &categories).await
+            if let Some(places) = wikipedia_matching_places(
+                ctx,
+                area.lat,
+                area.lon,
+                limit,
+                &categories,
+                area_is_water,
+            )
+            .await
             {
                 return Ok(ToolOutput::ok(
                     json!({"places": places}),
@@ -151,21 +170,33 @@ async fn overpass_places(
         .acquire()
         .await
         .ok()?;
-    let response = tokio::time::timeout(
-        Duration::from_secs(7),
-        ctx.http
-            .post("https://overpass-api.de/api/interpreter")
-            .body(query)
-            .send(),
-    )
-    .await
-    .ok()?
-    .ok()?;
-    if !response.status().is_success() {
-        return None;
+    // The main Overpass instance is occasionally busy. Try one mirror only
+    // when the first request fails; a successful empty answer is valid and
+    // must not trigger another network round-trip.
+    for endpoint in [
+        "https://overpass-api.de/api/interpreter",
+        "https://overpass.kumi.systems/api/interpreter",
+    ] {
+        let response = tokio::time::timeout(
+            Duration::from_secs(8),
+            ctx.http.post(endpoint).body(query.clone()).send(),
+        )
+        .await
+        .ok()
+        .and_then(Result::ok);
+        let Some(response) = response else {
+            continue;
+        };
+        if !response.status().is_success() {
+            continue;
+        }
+        let Ok(value) = response.json::<Value>().await else {
+            continue;
+        };
+        let places = parse_elements(&value, area, limit);
+        return Some(places);
     }
-    let value = response.json::<Value>().await.ok()?;
-    Some(parse_elements(&value, area, limit))
+    None
 }
 
 fn overpass_filters(categories: &[String]) -> Vec<&'static str> {
@@ -208,19 +239,14 @@ fn overpass_filters(categories: &[String]) -> Vec<&'static str> {
         add_filter(&mut filters, "nwr[\"natural\"=\"beach\"]");
         add_filter(&mut filters, "nwr[\"leisure\"=\"beach_resort\"]");
     }
-    if has("lake") || has("озер") {
-        add_filter(
-            &mut filters,
-            "nwr[\"natural\"=\"water\"][\"water\"~\"lake|reservoir|pond\"]",
-        );
-        add_filter(&mut filters, "nwr[\"natural\"=\"water\"]");
-    }
-    if has("river") || has("рек") {
-        add_filter(&mut filters, "nwr[\"waterway\"~\"river|stream\"]");
-        add_filter(
-            &mut filters,
-            "nwr[\"natural\"=\"water\"][\"water\"=\"river\"]",
-        );
+    if has("lake") || has("озер") || has("river") || has("рек") {
+        // Water polygons put a pin in the middle of a lake. Search the shore
+        // instead: beaches, viewpoints, parks and historic objects are precise
+        // land stops for a lake/river trip.
+        add_filter(&mut filters, "nwr[\"natural\"=\"beach\"]");
+        add_filter(&mut filters, "nwr[\"tourism\"=\"viewpoint\"]");
+        add_filter(&mut filters, "nwr[\"leisure\"~\"park|nature_reserve\"]");
+        add_filter(&mut filters, "nwr[\"historic\"]");
     }
     if has("restaurant")
         || has("food")
@@ -231,8 +257,16 @@ fn overpass_filters(categories: &[String]) -> Vec<&'static str> {
     {
         add_filter(
             &mut filters,
-            "nwr[\"amenity\"~\"restaurant|cafe|fast_food|bar|pub\"]",
+            "nwr[\"amenity\"~\"restaurant|cafe|fast_food\"]",
         );
+    }
+    // Bars and clubs are returned only when the user explicitly asks for
+    // nightlife categories, not as filler for a generic city walk.
+    if has("bar") || has("бар") || has("pub") || has("паб") {
+        add_filter(&mut filters, "nwr[\"amenity\"~\"bar|pub\"]");
+    }
+    if has("club") || has("клуб") || has("night") || has("ночн") {
+        add_filter(&mut filters, "nwr[\"amenity\"~\"nightclub|bar|pub\"]");
     }
     if has("hotel") || has("отель") || has("гостин") || has("lodging") {
         add_filter(
@@ -274,6 +308,9 @@ fn parse_elements(value: &Value, area: &geo::Area, limit: usize) -> Vec<Value> {
         else {
             continue;
         };
+        if waterbody_title(name) || is_water_feature(tags) {
+            continue;
+        }
         let lat = element.get("lat").and_then(Value::as_f64).or_else(|| {
             element
                 .get("center")
@@ -339,10 +376,25 @@ fn parse_elements(value: &Value, area: &geo::Area, limit: usize) -> Vec<Value> {
     places
 }
 
+fn is_water_feature(tags: &Value) -> bool {
+    let value = |key: &str| tags.get(key).and_then(Value::as_str).unwrap_or("");
+    value("natural") == "water"
+        || matches!(
+            value("waterway"),
+            "river" | "stream" | "canal" | "drain" | "ditch"
+        )
+}
+
 fn kind_from_tags(tags: &Value) -> &'static str {
     let value = |key: &str| tags.get(key).and_then(Value::as_str).unwrap_or("");
     let amenity = value("amenity");
-    if matches!(amenity, "restaurant" | "cafe" | "fast_food" | "bar" | "pub") {
+    if amenity == "nightclub" {
+        return "club";
+    }
+    if matches!(amenity, "bar" | "pub") {
+        return "bar";
+    }
+    if matches!(amenity, "restaurant" | "cafe" | "fast_food") {
         return "food";
     }
     let natural = value("natural");
@@ -443,11 +495,12 @@ async fn wikipedia_matching_places(
     lon: f64,
     limit: usize,
     categories: &[String],
+    area_is_water: bool,
 ) -> Option<Vec<Value>> {
     let places = wikipedia_places(ctx, lat, lon, limit).await?;
     let filtered: Vec<Value> = places
         .into_iter()
-        .filter(|place| wikipedia_matches_categories(place, categories))
+        .filter(|place| wikipedia_matches_categories(place, categories, area_is_water))
         .collect();
     if filtered.is_empty() {
         None
@@ -457,12 +510,24 @@ async fn wikipedia_matching_places(
 }
 
 /// Keep Wikipedia results category-accurate: a beach query should not be
-/// satisfied by a random museum article, otherwise Overpass never runs.
-fn wikipedia_matches_categories(place: &Value, categories: &[String]) -> bool {
+/// satisfied by a random museum article, otherwise Overpass never runs. Near a
+/// lake/river the water article is filtered later, so shore objects of any
+/// non-food kind are valid.
+fn wikipedia_matches_categories(place: &Value, categories: &[String], area_is_water: bool) -> bool {
     if categories.is_empty() {
         return true;
     }
     let kind = place.get("kind").and_then(Value::as_str).unwrap_or("sight");
+    if area_is_water
+        && categories.iter().any(|category| {
+            category.contains("lake")
+                || category.contains("озер")
+                || category.contains("river")
+                || category.contains("рек")
+        })
+    {
+        return !matches!(kind, "food" | "bar" | "club" | "rest");
+    }
     categories.iter().any(|category| {
         let category = category.as_str();
         if category.contains("all")
@@ -470,7 +535,7 @@ fn wikipedia_matches_categories(place: &Value, categories: &[String]) -> bool {
             || category.contains("sight")
             || category.contains("достоприм")
         {
-            !matches!(kind, "food" | "rest")
+            !matches!(kind, "food" | "bar" | "club" | "rest")
         } else if category.contains("nature") || category.contains("природ") {
             matches!(
                 kind,
@@ -490,6 +555,15 @@ fn wikipedia_matches_categories(place: &Value, categories: &[String]) -> bool {
             kind == "lake"
         } else if category.contains("river") || category.contains("рек") {
             kind == "river"
+        } else if category.contains("bar") || category.contains("бар") || category.contains("pub")
+        {
+            kind == "bar"
+        } else if category.contains("club")
+            || category.contains("клуб")
+            || category.contains("night")
+            || category.contains("ночн")
+        {
+            matches!(kind, "club" | "bar")
         } else {
             false
         }
@@ -516,7 +590,11 @@ fn local_places(
             ) else {
                 return false;
             };
-            haversine_km((area.lat, area.lon), (lat, lon)) <= 60.0
+            let Some(name) = place.get("name").and_then(Value::as_str) else {
+                return false;
+            };
+            !waterbody_title(name)
+                && haversine_km((area.lat, area.lon), (lat, lon)) <= 60.0
                 && matches_categories(place.get("kind").and_then(Value::as_str), categories)
         })
         .collect();
@@ -532,12 +610,27 @@ fn matches_categories(kind: Option<&str>, categories: &[String]) -> bool {
         return true;
     }
     categories.iter().any(|category| match category.as_str() {
-        value if value.contains("food") || value.contains("ресторан") || value.contains("кафе") => {
+        value
+            if value.contains("food")
+                || value.contains("cafe")
+                || value.contains("кафе")
+                || value.contains("ресторан") =>
+        {
             kind == "food"
         }
         value if value.contains("beach") || value.contains("пляж") => kind == "nature",
-        value if value.contains("lake") || value.contains("озер") => kind == "nature",
-        value if value.contains("river") || value.contains("рек") => kind == "nature",
+        value if value.contains("lake") || value.contains("озер") => {
+            matches!(
+                kind,
+                "nature" | "sight" | "beach" | "park" | "viewpoint" | "museum" | "historic"
+            )
+        }
+        value if value.contains("river") || value.contains("рек") => {
+            matches!(
+                kind,
+                "nature" | "sight" | "beach" | "park" | "viewpoint" | "museum" | "historic"
+            )
+        }
         value if value.contains("nature") || value.contains("природ") => kind == "nature",
         value if value.contains("museum") || value.contains("музе") => kind == "museum",
         value if value.contains("viewpoint") || value.contains("смотров") => {
@@ -545,8 +638,26 @@ fn matches_categories(kind: Option<&str>, categories: &[String]) -> bool {
         }
         value if value.contains("park") || value.contains("парк") => kind == "park",
         value if value.contains("historic") || value.contains("истор") => kind == "historic",
+        value if value.contains("bar") || value.contains("бар") || value.contains("pub") => {
+            kind == "bar"
+        }
+        value
+            if value.contains("club")
+                || value.contains("клуб")
+                || value.contains("night")
+                || value.contains("ночн") =>
+        {
+            matches!(kind, "club" | "bar")
+        }
+        value
+            if value.contains("attraction")
+                || value.contains("sight")
+                || value.contains("достоприм") =>
+        {
+            !matches!(kind, "food" | "bar" | "club" | "rest")
+        }
         value if value.contains("hotel") || value.contains("отель") => false,
-        _ => true,
+        _ => false,
     })
 }
 
@@ -579,7 +690,7 @@ async fn wikipedia_places(ctx: &ToolCtx, lat: f64, lon: f64, limit: usize) -> Op
         let Some(title) = item.get("title").and_then(Value::as_str) else {
             continue;
         };
-        if generic_title(title) {
+        if generic_title(title) || waterbody_title(title) {
             continue;
         }
         let normalized = normalize_title(title);
@@ -625,7 +736,7 @@ async fn wikipedia_places(ctx: &ToolCtx, lat: f64, lon: f64, limit: usize) -> Op
     }
 }
 
-fn generic_title(title: &str) -> bool {
+pub(crate) fn generic_title(title: &str) -> bool {
     let title = title.to_lowercase();
     title == "владивосток"
         || title == "большой владивосток"
@@ -644,9 +755,13 @@ fn generic_title(title: &str) -> bool {
 
 pub(crate) fn kind_from_title(title: &str) -> &'static str {
     let title = title.to_lowercase();
-    if title.contains("музей") || title.contains("галерея") {
+    if title.contains("бар") || title.contains("паб") {
+        "bar"
+    } else if title.contains("клуб") || title.contains("nightclub") {
+        "club"
+    } else if title.contains("музей") || title.contains("галерея") {
         "museum"
-    } else if title.contains("маяк") {
+    } else if title.contains("смотров") || title.contains("маяк") {
         "viewpoint"
     } else if title.contains("озеро") || title.contains("водохран") {
         "lake"
@@ -714,5 +829,17 @@ mod tests {
         let river = json!({"waterway": "river"});
         assert_eq!(kind_from_tags(&lake), "lake");
         assert_eq!(kind_from_tags(&river), "river");
+        assert!(is_water_feature(&lake));
+        assert!(is_water_feature(&river));
+        assert!(!is_water_feature(&json!({"natural": "beach"})));
+    }
+
+    #[test]
+    fn bars_and_clubs_have_their_own_categories() {
+        let filters = overpass_filters(&["bar".to_string(), "club".to_string()]);
+        assert!(filters.iter().any(|filter| filter.contains("bar|pub")));
+        assert!(filters.iter().any(|filter| filter.contains("nightclub")));
+        assert_eq!(kind_from_tags(&json!({"amenity": "bar"})), "bar");
+        assert_eq!(kind_from_tags(&json!({"amenity": "nightclub"})), "club");
     }
 }

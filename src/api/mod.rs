@@ -1,3 +1,9 @@
+//! HTTP boundary.
+//!
+//! `POST /api/plan` streams SSE events from the orchestrator; `/api/plan/sync`
+//! exists for evals and debugging. The router also serves the built SPA and
+//! read-only diagnostics (`/api/health`, `/api/stats`, `/api/runs/{id}`).
+//! Request parsing lives in `dto`; SSE framing lives in `sse`.
 pub mod dto;
 pub mod sse;
 
@@ -15,7 +21,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
 
-use crate::agent::{Orchestrator, RunOverrides};
+use crate::agent::{Orchestrator, RunOverrides, StreamEvent};
 use crate::config::Config;
 use crate::domain::intent::MAX_TRIP_DAYS;
 use crate::error::ApiError;
@@ -73,7 +79,30 @@ async fn plan_sse(
     let orchestrator = state.orchestrator.clone();
     tokio::spawn(async move {
         let _permit = permit;
-        orchestrator.execute_with(query, Some(tx), overrides).await;
+        let run = tokio::time::timeout(
+            Duration::from_secs(120),
+            orchestrator.execute_with(query, Some(tx.clone()), overrides),
+        )
+        .await;
+        if run.is_err() {
+            // The orchestrator was dropped mid-run. Tell the client why the
+            // stream ends and close it; do not fabricate a plan.
+            let _ = tx
+                .send(StreamEvent {
+                    event: "refusal",
+                    data: json!({
+                        "category": "timeout",
+                        "message": "Не удалось собрать план за 120 секунд. Попробуйте более короткий запрос."
+                    }),
+                })
+                .await;
+            let _ = tx
+                .send(StreamEvent {
+                    event: "done",
+                    data: json!({"outcome": "refusal"}),
+                })
+                .await;
+        }
     });
 
     Ok(plan_stream(rx).into_response())

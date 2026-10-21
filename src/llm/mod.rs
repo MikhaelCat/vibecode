@@ -1,3 +1,9 @@
+//! LLM clients behind one trait.
+//!
+//! `openrouter` speaks the OpenAI-compatible Chat Completions API used by the
+//! T-Bank Spirit proxy and OpenRouter. `mock` is deterministic and keeps the
+//! agent, validator, SSE and evals testable without network or spend. API keys
+//! are read from config only; they are never logged or serialized.
 pub mod mock;
 pub mod openrouter;
 

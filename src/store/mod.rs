@@ -1,3 +1,9 @@
+//! Persistence: SQLite is the source of truth for runs and budget.
+//!
+//! `runs` stores each query, status, latency, token usage, cost and the final
+//! plan/trace JSON. `daily_budget` is checked before a live LLM call and
+//! updated after it. Redis is never used here; it is only an optional cache
+//! for provider results (`tools::cache`).
 use std::str::FromStr;
 
 use anyhow::Result;

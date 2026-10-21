@@ -2,7 +2,7 @@
 
 ## Что и как меряем
 
-Набор: `data/eval/queries.jsonl` — 20 запросов (16 in-scope + 4 негативных) и `data/eval/guardrails.jsonl` — 10 adversarial-кейсов. Один и тот же набор для всех конфигураций.
+Набор: `data/eval/queries.jsonl` — 20 запросов (16 in-scope + 4 негативных), его прогоняет `scripts/eval_all.sh` для всех трёх конфигураций. `data/eval/guardrails.jsonl` — отдельные 10 adversarial-кейсов для ручной проверки отказов; в `eval_all.sh` они не входят.
 
 Метрики:
 - **Hard-pass** — доля планов без hard-нарушений (N=16).
