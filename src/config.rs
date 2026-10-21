@@ -15,6 +15,8 @@ pub struct Config {
     pub llm_proxy_url: String,
     pub llm_proxy_model: Option<String>,
     pub daily_budget_usd: f64,
+    pub daily_token_budget: u64,
+    pub app_token: Option<String>,
     pub price_in_per_m: f64,
     pub price_out_per_m: f64,
     pub database_url: String,
@@ -52,13 +54,16 @@ impl Config {
         let cfg = Self {
             bind,
             openrouter_api_key: non_empty(env::var("OPENROUTER_API_KEY").ok()),
-            model: env::var("OPENROUTER_MODEL").unwrap_or_else(|_| "openrouter/auto".to_string()),
+            model: non_empty(env::var("OPENROUTER_MODEL").ok())
+                .unwrap_or_else(|| "openrouter/auto".to_string()),
             fallback_models,
             llm_proxy_token: non_empty(env::var("LLM_PROXY_TOKEN").ok()),
             llm_proxy_url: env::var("LLM_PROXY_URL")
                 .unwrap_or_else(|_| "https://llm-proxy.spirit.t-education.com/v1".to_string()),
             llm_proxy_model: non_empty(env::var("LLM_PROXY_MODEL").ok()),
             daily_budget_usd: parse_f64("DAILY_BUDGET_USD", 25.0),
+            daily_token_budget: parse_u64("DAILY_TOKEN_BUDGET", 1_000_000),
+            app_token: non_empty(env::var("APP_TOKEN").ok()),
             price_in_per_m: parse_f64("PRICE_IN_PER_M", 0.0),
             price_out_per_m: parse_f64("PRICE_OUT_PER_M", 0.0),
             database_url: env::var("DATABASE_URL")
