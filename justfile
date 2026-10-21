@@ -11,6 +11,9 @@ check:
 build:
 	cargo build --release
 
+web:
+	cd src/frontend && mkdir -p dist && cp index.html styles.css app.js dist/
+
 eval VERSION:
 	cargo run --release --bin eval -- \
 		--config configs/{{VERSION}}.toml \
