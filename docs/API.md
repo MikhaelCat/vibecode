@@ -24,7 +24,7 @@
 
 ## 2. POST /api/plan — SSE
 
-Запрос: `Content-Type: application/json`, тело `{"query":"..."}`. Успех — `200 text/event-stream`, `Cache-Control: no-cache`; кадр — `event: <имя>\ndata: <json>\n\n`. Ошибки валидации, бюджета, авторизации и занятости семафора приходят до открытия потока обычным JSON с 4xx.
+Запрос: `Content-Type: application/json`, тело `{"query":"...","start_date":"YYYY-MM-DD","end_date":"YYYY-MM-DD","transport":"car"}`. `start_date`/`end_date`/`transport` необязательны: если даты переданы, они переопределяют разобранный intent и ограничивают план 1–3 днями; `transport` — `car`, `foot`, `bike`, `transit`. Успех — `200 text/event-stream`, `Cache-Control: no-cache`; кадр — `event: <имя>\ndata: <json>\n\n`. Ошибки валидации, бюджета, авторизации и занятости семафора приходят до открытия потока обычным JSON с 4xx.
 
 | Событие | Поля `data` | Когда |
 |---|---|---|
@@ -85,10 +85,10 @@ event: tool_result
 data: {"id":"mock_call_1","name":"get_weather","ok":true,"ms":2,"cached":false,"source":"mock","summary":"Погода: демо-данные (провайдер недоступен)"}
 
 event: tool_call
-data: {"id":"mock_call_2","name":"submit_plan","args":{"title":"Демо-план по Приморью","summary":"1 дн.","transport":"car","days":[{"date":"2026-10-24","items":[{"place_id":"mock:place:oceanarium"},{"place_id":"mock:place:fortress"}]}],"lodging_ids":[]}}
+data: {"id":"mock_call_2","name":"submit_plan","args":{"title":"План по Приморью","summary":"1 дн.","transport":"car","days":[{"date":"2026-10-24","items":[{"place_id":"mock:place:oceanarium"},{"place_id":"mock:place:fortress"}]}],"lodging_ids":[]}}
 
 event: plan
-data: {"id":"3f0f5f7e-6a5b-4c2f-9f1a-2d3c4b5a6e7f","title":"Демо-план по Приморью","summary":"1 дн. — офлайн-план для проверки пайплайна","intent":{"region":"primorye","start_date":"2026-10-24","end_date":"2026-10-24","max_days":1,"transport":"car","budget_rub":null,"party_size":1,"with_children":false,"interests":[],"must_see":[],"avoid":["ночёвка"],"pace":"normal","assumptions":["даты не указаны — взял ближайшие выходные","число людей не указано — считаю одного путешественника"]},"days":[{"date":"2026-10-24","title":"День 1 — Приморский океанариум","items":[{"place_id":"mock:place:oceanarium","name":"Приморский океанариум","kind":"museum","lat":43.1406,"lon":131.9276,"start":"10:00:00","end":"12:00:00","opening_hours":"Tu-Su 10:00-18:00","price_rub":null,"source":"mock","note":null},{"place_id":"mock:place:fortress","name":"Владивостокская крепость","kind":"historic","lat":43.1155,"lon":131.8855,"start":"14:00:00","end":"16:00:00","opening_hours":"Tu-Su 10:00-18:00","price_rub":null,"source":"mock","note":null}],"legs":[{"from_place_id":"mock:place:oceanarium","to_place_id":"mock:place:fortress","mode":"car","distance_km":4.4,"duration_min":5,"geometry":null,"source":"estimated"}],"lodging_id":null}],"lodging":[],"transport":"car","total_km":4.4,"cost_estimate_rub":null,"warnings":[{"code":"demo_data","message":"Часть данных демонстрационная — проверьте перед выездом"}],"weather":[{"date":"2026-10-24","t_min":10.6,"t_max":16.0,"precip_prob":4.0,"wind_max":17.1,"desc":"осадки 4%, ветер 17 м/с"}],"sources":[{"provider":"search_places","url":null,"fetched_at":"2026-10-21T04:10:00Z","kind":"mock"},{"provider":"get_weather","url":null,"fetched_at":"2026-10-21T04:10:01Z","kind":"mock"}],"generation":"llm","created_at":"2026-10-21T04:10:02Z"}
+data: {"id":"3f0f5f7e-6a5b-4c2f-9f1a-2d3c4b5a6e7f","title":"План по Приморью","summary":"1 дн. — офлайн-план для проверки пайплайна","intent":{"region":"primorye","start_date":"2026-10-24","end_date":"2026-10-24","max_days":1,"transport":"car","budget_rub":null,"party_size":1,"with_children":false,"interests":[],"must_see":[],"avoid":["ночёвка"],"pace":"normal","assumptions":["даты не указаны — взял ближайшие выходные","число людей не указано — считаю одного путешественника"]},"days":[{"date":"2026-10-24","title":"День 1 — Приморский океанариум","items":[{"place_id":"mock:place:oceanarium","name":"Приморский океанариум","kind":"museum","lat":43.1406,"lon":131.9276,"start":"10:00:00","end":"12:00:00","opening_hours":"Tu-Su 10:00-18:00","price_rub":null,"source":"mock","note":null},{"place_id":"mock:place:fortress","name":"Владивостокская крепость","kind":"historic","lat":43.1155,"lon":131.8855,"start":"14:00:00","end":"16:00:00","opening_hours":"Tu-Su 10:00-18:00","price_rub":null,"source":"mock","note":null}],"legs":[{"from_place_id":"mock:place:oceanarium","to_place_id":"mock:place:fortress","mode":"car","distance_km":4.4,"duration_min":5,"geometry":null,"source":"estimated"}],"lodging_id":null}],"lodging":[],"transport":"car","total_km":4.4,"cost_estimate_rub":null,"warnings":[{"code":"demo_data","message":"Часть данных демонстрационная — проверьте перед выездом"}],"weather":[{"date":"2026-10-24","t_min":10.6,"t_max":16.0,"precip_prob":4.0,"wind_max":17.1,"desc":"осадки 4%, ветер 17 м/с"}],"sources":[{"provider":"search_places","url":null,"fetched_at":"2026-10-21T04:10:00Z","kind":"mock"},{"provider":"get_weather","url":null,"fetched_at":"2026-10-21T04:10:01Z","kind":"mock"}],"generation":"llm","created_at":"2026-10-21T04:10:02Z"}
 
 event: validation
 data: {"violations":[],"hard_failed":false,"checks_run":15,"checks_passed":15,"score":1.0}
@@ -112,7 +112,7 @@ data: {"run_id":"b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e","latency_ms":18,"outcome"
 
 ## 3. POST /api/plan/sync
 
-Тело — то же `{"query":"..."}`. Ответ — JSON без SSE; таймауты, бюджет и fallback те же, семафор не используется.
+Тело — то же, что у SSE: `query` + необязательные `start_date`, `end_date`, `transport`. Ответ — JSON без SSE; таймауты, бюджет и fallback те же, семафор не используется.
 
 | Поле | Тип |
 |---|---|
@@ -135,7 +135,7 @@ data: {"run_id":"b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e","latency_ms":18,"outcome"
 
 ## 4. GET /api/health, /api/stats, /api/runs/{id}
 
-`GET /api/health` всегда 200 и не проверяет БД: `{"status":"ok","version":"0.1.0","model":"mock-llm","mock_llm":true,"prompt_version":"system_v1","uptime_secs":312,"budget":{"daily_usd":25.0,"spent_today_usd":0.0}}`. `mock_llm` — признак отсутствия реального LLM; `uptime_secs` — секунды с запуска.
+`GET /api/health` всегда 200 и не проверяет БД: `{"status":"ok","version":"0.1.0","model":"mock-llm","mock_llm":true,"auth_required":false,"prompt_version":"system_v1","uptime_secs":312,"budget":{"daily_usd":25.0,"spent_today_usd":0.0}}`. `mock_llm` — признак отсутствия реального LLM; `auth_required` — задан ли `APP_TOKEN` (тогда UI показывает поле токена); `uptime_secs` — секунды с запуска.
 
 `GET /api/stats` — агрегат за текущий день Владивостока: `{"date":"2026-10-21","runs":3,"prompt_tokens":5400,"completion_tokens":900,"cost_usd":0.0}`. `hard-pass`, p50/p95 и разбивки по статусам в ответе **нет**; `runs` включает отказы и degraded. Фильтр в SQL идёт по UTC-дате из `created_at`, поэтому на границе суток возможны расхождения с `date`.
 
