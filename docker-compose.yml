@@ -1,4 +1,15 @@
 services:
+  redis:
+    image: redis:7-alpine
+    container_name: travel-ai-redis
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 2s
+      retries: 10
+
   travel-ai:
     build:
       context: .
@@ -10,9 +21,13 @@ services:
     environment:
       BIND: 0.0.0.0:8080
       DATABASE_URL: sqlite:///var/lib/travel-ai/app.db
+      REDIS_URL: redis://redis:6379/0
       PROMPTS_DIR: /app/src/prompts
       DATA_DIR: /app/data
       WEB_DIR: /app/src/frontend/dist
+    depends_on:
+      redis:
+        condition: service_healthy
     ports:
       - "8080:8080"
     volumes:

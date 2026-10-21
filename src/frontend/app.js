@@ -43,7 +43,19 @@ let layer = null;
 let markers = [];
 let mapTilesLoaded = false;
 if (window.L) {
-  map = L.map('map', { zoomControl: true, attributionControl: false }).setView([44.0, 133.0], 7);
+  // Wheel zoom hijacks page scrolling and touch drags trap mobile users on the
+  // map. Keep zoom buttons; allow wheel and one-finger scrolling everywhere.
+  const compactMap = window.matchMedia('(max-width: 760px)').matches;
+  map = L.map('map', {
+    zoomControl: true,
+    attributionControl: false,
+    scrollWheelZoom: false,
+    dragging: !compactMap,
+    touchZoom: !compactMap,
+    doubleClickZoom: !compactMap,
+    boxZoom: false,
+  }).setView([44.0, 133.0], 7);
+  if (compactMap) map.getContainer().style.touchAction = 'pan-y';
   const mapLoading = $('map-loading');
   const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 });
   tiles.on('tileload', () => {

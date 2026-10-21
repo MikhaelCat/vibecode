@@ -23,6 +23,11 @@ sudoedit /opt/travel-ai/.env
 `DATABASE_URL` указывает на `/var/lib/travel-ai/app.db`; `PRICE_IN_PER_M` и
 `PRICE_OUT_PER_M` — цена за 1M токенов, `0` = неизвестна. Пути `PROMPTS_DIR`, `DATA_DIR` и `WEB_DIR` относительны `/opt/travel-ai`.
 
+**Redis (опционально):** установите `redis-server`, задайте
+`REDIS_URL=redis://127.0.0.1:6379/0` и не открывайте 6379 наружу. Redis хранит
+только кэш результатов тулов (TTL 10 минут); SQLite остаётся источником истины.
+Если `REDIS_URL` пуст или Redis недоступен, приложение использует in-memory кэш.
+
 ## 2. Сборка
 ```bash
 cargo build --release
@@ -72,7 +77,7 @@ sudo systemctl restart travel-ai
 sudo ufw allow 8080/tcp
 ```
 
-Не публикуйте SQLite. При reverse proxy отключите буферизацию SSE:
+Не публикуйте SQLite и Redis. При reverse proxy отключите буферизацию SSE:
 `proxy_buffering off;`, `proxy_cache off;`, `proxy_read_timeout 3600s;`, иначе
 события придут пачками. Проверяйте через `curl -N`.
 

@@ -44,6 +44,18 @@ POST-эндпоинта требуют `x-app-token`), а расход огра�
 и `DAILY_TOKEN_BUDGET`. DeepSeek через proxy используйте экономно — только
 на финальных прогонах и демо; повседневные тесты гоняйте на mock.
 
+## Хранилище и Redis
+
+- **SQLite** (`DATABASE_URL`, по умолчанию `sqlite://travel-ai.db`, в Docker — `/var/lib/travel-ai/app.db`) — источник истины:
+  - `runs` — каждый прогон: запрос, статус, latency, токены, стоимость, `plan_json`, `trace_json`;
+  - `daily_budget` — счётчики токенов/стоимости/запусков на день по Владивостоку;
+  - `GET /api/runs/{id}`, `GET /api/stats` и остаток бюджета в `/api/health` читают эти таблицы.
+  - Пользователей, паролей и бронирований в БД нет.
+- **Redis** (`REDIS_URL`, необязательно) — общий кэш результатов инструментов на 10 минут. Нужен, чтобы несколько инстансов не дёргали OSM/погоду повторно; при недоступном Redis приложение автоматически работает с in-memory кэшем.
+  - Docker Compose поднимает Redis и передаёт `redis://redis:6379/0`.
+  - Локально: `redis-server --daemonize yes --bind 127.0.0.1 --port 6379`, затем `REDIS_URL=redis://127.0.0.1:6379/0` в `.env`.
+  - Eval принудительно отключает Redis, чтобы замеры не переиспользовали чужие результаты.
+
 ---
 
 ## Команда
@@ -96,6 +108,8 @@ vibecode/
 
 ```bash
 cp .env.example .env       # ключ можно оставить пустым — включится mock LLM
+# optional: Redis для общего кэша тулов; без него используется память
+redis-server --daemonize yes --bind 127.0.0.1 --port 6379
 cargo run                  # сервер на http://127.0.0.1:8080
 cargo test
 cargo run --release --bin eval -- \

@@ -20,6 +20,7 @@ pub struct Config {
     pub price_in_per_m: f64,
     pub price_out_per_m: f64,
     pub database_url: String,
+    pub redis_url: Option<String>,
     pub prompts_dir: PathBuf,
     pub data_dir: PathBuf,
     pub web_dir: PathBuf,
@@ -71,6 +72,7 @@ impl Config {
             price_out_per_m: parse_f64("PRICE_OUT_PER_M", 0.0),
             database_url: env::var("DATABASE_URL")
                 .unwrap_or_else(|_| "sqlite://travel-ai.db".to_string()),
+            redis_url: non_empty(env::var("REDIS_URL").ok()),
             prompts_dir: PathBuf::from(
                 env::var("PROMPTS_DIR").unwrap_or_else(|_| "./src/prompts".to_string()),
             ),

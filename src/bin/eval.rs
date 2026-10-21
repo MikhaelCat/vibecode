@@ -135,6 +135,8 @@ async fn main() -> Result<()> {
     cfg.max_repairs = eval_config.repair_attempts;
     cfg.mock_llm = !args.live;
     cfg.database_url = "sqlite::memory:".to_string();
+    // Eval must not reuse Redis results across runs; it measures the pipeline.
+    cfg.redis_url = None;
     if args.live {
         if let Some(model) = &eval_config.model {
             cfg.model = model.clone();

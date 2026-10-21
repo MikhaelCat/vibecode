@@ -77,7 +77,7 @@ impl Registry {
         Ok(Self {
             tools,
             http,
-            cache: Arc::new(Cache::new()),
+            cache: Arc::new(Cache::new(config.redis_url.clone())),
             data_dir: config.data_dir.clone(),
             nominatim_user_agent: config.nominatim_user_agent.clone(),
             timeout: config.tool_timeout,
