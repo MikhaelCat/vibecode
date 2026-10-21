@@ -2,16 +2,15 @@ pub mod dto;
 pub mod sse;
 
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use tokio::sync::Semaphore;
-use tower_http::cors::CorsLayer;
 use tower_http::limit::RequestBodyLimitLayer;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::TraceLayer;
@@ -45,15 +44,16 @@ pub fn router(state: AppState) -> Router {
         .route("/api/runs/{id}", get(run_by_id))
         .fallback_service(ServeDir::new(web_dir).fallback(ServeFile::new(index)))
         .layer(RequestBodyLimitLayer::new(16 * 1024))
-        .layer(CorsLayer::permissive())
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }
 
 async fn plan_sse(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<PlanRequest>,
 ) -> Result<Response, ApiError> {
+    check_auth(&state, &headers)?;
     let query = validate_query(&state, request.query)?;
     if !state.orchestrator.budget_ok().await {
         return Err(ApiError::budget_exhausted(
@@ -79,8 +79,10 @@ async fn plan_sse(
 
 async fn plan_sync(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(request): Json<PlanRequest>,
 ) -> Result<Json<Value>, ApiError> {
+    check_auth(&state, &headers)?;
     let query = validate_query(&state, request.query)?;
     if !state.orchestrator.budget_ok().await {
         return Err(ApiError::budget_exhausted(
@@ -88,7 +90,23 @@ async fn plan_sync(
         ));
     }
 
-    let outcome = state.orchestrator.run(query, None).await;
+    let permit = state
+        .semaphore
+        .clone()
+        .try_acquire_owned()
+        .map_err(|_| ApiError::rate_limited("Слишком много одновременных запросов"))?;
+    let outcome = tokio::time::timeout(
+        Duration::from_secs(120),
+        state.orchestrator.run(query, None),
+    )
+    .await
+    .map_err(|_| ApiError {
+        status: StatusCode::GATEWAY_TIMEOUT,
+        code: "upstream_timeout",
+        message: "Запрос не успел завершиться за 120 секунд".to_string(),
+        hint: Some("Попробуйте более короткий запрос".to_string()),
+    })?;
+    drop(permit);
     Ok(Json(json!({
         "run_id": outcome.run_id,
         "model": outcome.model,
@@ -135,6 +153,28 @@ async fn run_by_id(
             message: format!("run {id} not found"),
             hint: None,
         }),
+    }
+}
+
+fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {
+    let Some(expected) = state.cfg.app_token.as_deref() else {
+        return Ok(());
+    };
+    let header_token = headers
+        .get("x-app-token")
+        .and_then(|value| value.to_str().ok())
+        .or_else(|| {
+            headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|value| value.to_str().ok())
+                .and_then(|value| value.strip_prefix("Bearer "))
+        });
+    if header_token == Some(expected) {
+        Ok(())
+    } else {
+        Err(ApiError::unauthorized(
+            "Неверный или отсутствующий APP_TOKEN",
+        ))
     }
 }
 
