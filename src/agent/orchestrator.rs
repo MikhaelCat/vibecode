@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use std::time::Instant;
 
-use chrono::Utc;
+use chrono::{NaiveDate, Utc};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::domain::dates::today_vladivostok;
 use crate::domain::facts::Facts;
 use crate::domain::fallback;
-use crate::domain::intent::{Intent, Refusal};
+use crate::domain::intent::{Intent, Refusal, TransportMode};
 use crate::domain::plan::{enrich, Generation, Plan, PlanDraft};
 use crate::domain::trace::{Outcome, RunTrace, TokenUsage, ToolCallTrace, TraceStep};
 use crate::domain::validate::{validate, ValidationReport};
@@ -24,6 +24,13 @@ use crate::tools::Registry;
 pub struct StreamEvent {
     pub event: &'static str,
     pub data: Value,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct RunOverrides {
+    pub start_date: Option<NaiveDate>,
+    pub end_date: Option<NaiveDate>,
+    pub transport: Option<TransportMode>,
 }
 
 #[derive(Debug, Clone)]
@@ -104,6 +111,15 @@ impl Orchestrator {
     }
 
     pub async fn run(&self, query: String, sink: Option<mpsc::Sender<StreamEvent>>) -> RunOutcome {
+        self.run_with(query, sink, RunOverrides::default()).await
+    }
+
+    pub async fn run_with(
+        &self,
+        query: String,
+        sink: Option<mpsc::Sender<StreamEvent>>,
+        overrides: RunOverrides,
+    ) -> RunOutcome {
         let started = Instant::now();
         let run_id = Uuid::new_v4();
         let mut trace = RunTrace::new(
@@ -165,7 +181,7 @@ impl Orchestrator {
                     model: self.llm.model().to_string(),
                 };
             }
-            GuardDecision::Allow(intent) => intent,
+            GuardDecision::Allow(intent) => apply_overrides(intent, &overrides),
         };
 
         self.emit(&sink, "stage", json!({"stage": "intent", "status": "ok"}))
@@ -583,6 +599,36 @@ impl Orchestrator {
             let _ = tx.send(StreamEvent { event, data }).await;
         }
     }
+}
+
+fn apply_overrides(mut intent: Intent, overrides: &RunOverrides) -> Intent {
+    if let Some(start) = overrides.start_date {
+        intent.start_date = start;
+    }
+    if let Some(end) = overrides.end_date {
+        intent.end_date = end;
+    }
+    if let Some(transport) = overrides.transport {
+        intent.transport = transport;
+    }
+    if overrides.start_date.is_some() || overrides.end_date.is_some() {
+        let days = (intent.end_date - intent.start_date).num_days() + 1;
+        if (1..=3).contains(&days) {
+            intent.max_days = days as u8;
+        } else if days > 3 {
+            intent.end_date = intent.start_date + chrono::Duration::days(2);
+            intent.max_days = 3;
+            intent
+                .assumptions
+                .push("период ограничен тремя днями".to_string());
+        }
+    }
+    if overrides.transport.is_some() {
+        intent
+            .assumptions
+            .push("транспорт выбран в форме".to_string());
+    }
+    intent
 }
 
 fn truncate(value: &str, max: usize) -> String {
