@@ -1,0 +1,20 @@
+[Unit]
+Description=Travel AI Assistant
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=travel
+Group=travel
+WorkingDirectory=/opt/travel-ai
+EnvironmentFile=/opt/travel-ai/.env
+ExecStart=/opt/travel-ai/travel-ai
+Restart=on-failure
+RestartSec=2
+TimeoutStopSec=15
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,164 @@
+{
+  "options": [
+    {
+      "id": "mock:trip:1",
+      "from": "Владивосток",
+      "to": "Уссурийск",
+      "mode": "bus",
+      "depart": "08:00",
+      "arrive": "10:30",
+      "price_rub": 600,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:2",
+      "from": "Владивосток",
+      "to": "Уссурийск",
+      "mode": "train",
+      "depart": "07:20",
+      "arrive": "09:45",
+      "price_rub": 720,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:3",
+      "from": "Владивосток",
+      "to": "Уссурийск",
+      "mode": "bus",
+      "depart": "18:00",
+      "arrive": "20:40",
+      "price_rub": 650,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:4",
+      "from": "Владивосток",
+      "to": "Уссурийск",
+      "mode": "train",
+      "depart": "19:10",
+      "arrive": "21:40",
+      "price_rub": 780,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:5",
+      "from": "Владивосток",
+      "to": "Находка",
+      "mode": "bus",
+      "depart": "07:30",
+      "arrive": "11:00",
+      "price_rub": 900,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:6",
+      "from": "Владивосток",
+      "to": "Находка",
+      "mode": "train",
+      "depart": "09:00",
+      "arrive": "12:30",
+      "price_rub": 1050,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:7",
+      "from": "Владивосток",
+      "to": "Находка",
+      "mode": "bus",
+      "depart": "17:30",
+      "arrive": "21:00",
+      "price_rub": 950,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:8",
+      "from": "Владивосток",
+      "to": "Арсеньев",
+      "mode": "bus",
+      "depart": "08:30",
+      "arrive": "14:30",
+      "price_rub": 1800,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:9",
+      "from": "Владивосток",
+      "to": "Арсеньев",
+      "mode": "bus",
+      "depart": "17:00",
+      "arrive": "23:00",
+      "price_rub": 1900,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:10",
+      "from": "Уссурийск",
+      "to": "Находка",
+      "mode": "bus",
+      "depart": "09:00",
+      "arrive": "12:30",
+      "price_rub": 700,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:11",
+      "from": "Уссурийск",
+      "to": "Находка",
+      "mode": "train",
+      "depart": "14:00",
+      "arrive": "17:30",
+      "price_rub": 820,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:12",
+      "from": "Владивосток",
+      "to": "Славянка",
+      "mode": "bus",
+      "depart": "08:00",
+      "arrive": "10:20",
+      "price_rub": 520,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:13",
+      "from": "Владивосток",
+      "to": "Славянка",
+      "mode": "bus",
+      "depart": "18:30",
+      "arrive": "20:50",
+      "price_rub": 580,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:14",
+      "from": "Находка",
+      "to": "Терней",
+      "mode": "bus",
+      "depart": "07:00",
+      "arrive": "15:00",
+      "price_rub": 2200,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:15",
+      "from": "Владивосток",
+      "to": "Попов",
+      "mode": "ferry",
+      "depart": "09:00",
+      "arrive": "11:30",
+      "price_rub": 800,
+      "source": "mock"
+    },
+    {
+      "id": "mock:trip:16",
+      "from": "Владивосток",
+      "to": "Аскольд",
+      "mode": "ferry",
+      "depart": "10:00",
+      "arrive": "13:00",
+      "price_rub": 1000,
+      "source": "mock"
+    }
+  ]
+}

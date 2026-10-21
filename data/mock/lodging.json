@@ -1,0 +1,124 @@
+{
+  "options": [
+    {
+      "id": "mock:lodge:1",
+      "name": "Отель «Золотой Рог»",
+      "settlement": "Владивосток",
+      "lat": 43.1161,
+      "lon": 131.8836,
+      "price_per_night": 6200,
+      "kind": "hotel",
+      "source": "mock"
+    },
+    {
+      "id": "mock:lodge:2",
+      "name": "Апартаменты на Орлиной",
+      "settlement": "Владивосток",
+      "lat": 43.1198,
+      "lon": 131.8988,
+      "price_per_night": 4800,
+      "kind": "apartment",
+      "source": "mock"
+    },
+    {
+      "id": "mock:lodge:3",
+      "name": "Гостевой дом «Русский берег»",
+      "settlement": "Владивосток",
+      "lat": 43.0888,
+      "lon": 131.9031,
+      "price_per_night": 3900,
+      "kind": "guesthouse",
+      "source": "mock"
+    },
+    {
+      "id": "mock:lodge:4",
+      "name": "Гостиница «Уссурийск»",
+      "settlement": "Уссурийск",
+      "lat": 43.7972,
+      "lon": 131.9453,
+      "price_per_night": 3500,
+      "kind": "hotel",
+      "source": "mock"
+    },
+    {
+      "id": "mock:lodge:5",
+      "name": "Гостевой дом «Тихий двор»",
+      "settlement": "Уссурийск",
+      "lat": 43.8006,
+      "lon": 131.9501,
+      "price_per_night": 2800,
+      "kind": "guesthouse",
+      "source": "mock"
+    },
+    {
+      "id": "mock:lodge:6",
+      "name": "Отель «Приморье»",
+      "settlement": "Находка",
+      "lat": 42.8224,
+      "lon": 132.8702,
+      "price_per_night": 4200,
+      "kind": "hotel",
+      "source": "mock"
+    },
+    {
+      "id": "mock:lodge:7",
+      "name": "Гостевой дом «Бухта»",
+      "settlement": "Андреевка",
+      "lat": 42.6159,
+      "lon": 131.1177,
+      "price_per_night": 3500,
+      "kind": "guesthouse",
+      "source": "mock"
+    },
+    {
+      "id": "mock:lodge:8",
+      "name": "База отдыха «Гамов»",
+      "settlement": "Андреевка",
+      "lat": 42.6192,
+      "lon": 131.1204,
+      "price_per_night": 5100,
+      "kind": "guesthouse",
+      "source": "mock"
+    },
+    {
+      "id": "mock:lodge:9",
+      "name": "Гостевой дом «Славянка»",
+      "settlement": "Славянка",
+      "lat": 42.8602,
+      "lon": 131.3831,
+      "price_per_night": 3200,
+      "kind": "guesthouse",
+      "source": "mock"
+    },
+    {
+      "id": "mock:lodge:10",
+      "name": "Гостиница «Арсеньев»",
+      "settlement": "Арсеньев",
+      "lat": 44.1671,
+      "lon": 133.2694,
+      "price_per_night": 3600,
+      "kind": "hotel",
+      "source": "mock"
+    },
+    {
+      "id": "mock:lodge:11",
+      "name": "Отель «Сопка»",
+      "settlement": "Дальнегорск",
+      "lat": 44.567,
+      "lon": 135.619,
+      "price_per_night": 3300,
+      "kind": "hotel",
+      "source": "mock"
+    },
+    {
+      "id": "mock:lodge:12",
+      "name": "Гостевой дом «Терней»",
+      "settlement": "Терней",
+      "lat": 45.0501,
+      "lon": 136.6042,
+      "price_per_night": 3000,
+      "kind": "guesthouse",
+      "source": "mock"
+    }
+  ]
+}

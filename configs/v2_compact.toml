@@ -1,0 +1,8 @@
+name = "v2-compact"
+prompt = "src/prompts/system_v2.md"
+model = "openrouter/auto"
+max_steps = 8
+compression = "compact"
+parallel_tools = true
+repair_attempts = 2
+fallback = true

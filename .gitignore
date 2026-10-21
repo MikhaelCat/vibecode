@@ -1,0 +1,15 @@
+target/
+.env
+*.db
+*.db-wal
+*.db-shm
+node_modules/
+src/frontend/dist/
+results/
+.DS_Store
+*.log
+.idea/
+.vscode/
+
+# Keep the committed template.
+!.env.example

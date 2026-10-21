@@ -1,0 +1,8 @@
+name = "v1-baseline"
+prompt = "src/prompts/system_v1.md"
+model = "openrouter/auto"
+max_steps = 12
+compression = "raw"
+parallel_tools = false
+repair_attempts = 0
+fallback = false

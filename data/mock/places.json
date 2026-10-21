@@ -1,0 +1,184 @@
+{
+  "places": [
+    {
+      "id": "mock:place:1",
+      "name": "Приморский океанариум",
+      "lat": 43.0009,
+      "lon": 131.9437,
+      "kind": "museum",
+      "opening_hours": "Tu-Su 10:00-18:00",
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:2",
+      "name": "Музей «Владивостокская крепость»",
+      "lat": 43.1188,
+      "lon": 131.8833,
+      "kind": "historic",
+      "opening_hours": "We-Su 10:00-18:00",
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:3",
+      "name": "Токаревский маяк",
+      "lat": 43.0764,
+      "lon": 131.8352,
+      "kind": "viewpoint",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:4",
+      "name": "Смотровая площадка «Русский мост»",
+      "lat": 43.0884,
+      "lon": 131.9045,
+      "kind": "viewpoint",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:5",
+      "name": "Бухта Новик",
+      "lat": 43.0192,
+      "lon": 131.8568,
+      "kind": "nature",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:6",
+      "name": "Полуостров Гамова",
+      "lat": 42.6124,
+      "lon": 131.1843,
+      "kind": "nature",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:7",
+      "name": "Сихотэ-Алинский заповедник",
+      "lat": 45.065,
+      "lon": 136.64,
+      "kind": "nature",
+      "opening_hours": "Mo-Fr 09:00-17:00",
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:8",
+      "name": "Парк Дружбы в Уссурийске",
+      "lat": 43.7992,
+      "lon": 131.9495,
+      "kind": "park",
+      "opening_hours": "24/7",
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:9",
+      "name": "Смотровая площадка «Бухта Находка»",
+      "lat": 42.8103,
+      "lon": 132.8734,
+      "kind": "viewpoint",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:10",
+      "name": "Пляж Андреевки",
+      "lat": 42.6162,
+      "lon": 131.118,
+      "kind": "nature",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:11",
+      "name": "Бухта Славянка",
+      "lat": 42.8605,
+      "lon": 131.3835,
+      "kind": "nature",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:12",
+      "name": "Мыс Тобизина",
+      "lat": 43.0715,
+      "lon": 131.8275,
+      "kind": "nature",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:13",
+      "name": "Стеклянная бухта",
+      "lat": 43.078,
+      "lon": 131.824,
+      "kind": "nature",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:14",
+      "name": "Смотровая площадка «Орлиное гнездо»",
+      "lat": 43.1195,
+      "lon": 131.8982,
+      "kind": "viewpoint",
+      "opening_hours": "24/7",
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:15",
+      "name": "Лазовский заповедник",
+      "lat": 43.3742,
+      "lon": 133.9045,
+      "kind": "nature",
+      "opening_hours": "Mo-Fr 09:00-17:00",
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:16",
+      "name": "Озеро Ханка",
+      "lat": 44.95,
+      "lon": 132.4667,
+      "kind": "nature",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:17",
+      "name": "Гора Ливадийская (Пидан)",
+      "lat": 43.0417,
+      "lon": 132.6833,
+      "kind": "nature",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:18",
+      "name": "Арсеньевский историко-краеведческий музей",
+      "lat": 44.1662,
+      "lon": 133.2702,
+      "kind": "museum",
+      "opening_hours": "Tu-Sa 10:00-18:00",
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:19",
+      "name": "Дальнегорский музейно-выставочный центр",
+      "lat": 44.5662,
+      "lon": 135.6178,
+      "kind": "museum",
+      "opening_hours": "Mo-Fr 09:00-18:00",
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:20",
+      "name": "Рыбный рынок «Спортивная гавань»",
+      "lat": 43.1189,
+      "lon": 131.8818,
+      "kind": "food",
+      "opening_hours": "Mo-Su 08:00-19:00",
+      "source": "mock"
+    }
+  ]
+}

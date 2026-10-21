@@ -1,0 +1,8 @@
+name = "v3-fast"
+prompt = "src/prompts/system_v3.md"
+model = "openrouter/auto"
+max_steps = 6
+compression = "summary"
+parallel_tools = true
+repair_attempts = 2
+fallback = true

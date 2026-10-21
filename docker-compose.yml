@@ -1,0 +1,32 @@
+services:
+  travel-ai:
+    build:
+      context: .
+      dockerfile: deploy/Dockerfile
+    image: travel-ai:local
+    container_name: travel-ai
+    env_file:
+      - .env
+    environment:
+      BIND: 0.0.0.0:8080
+      DATABASE_URL: sqlite:///var/lib/travel-ai/app.db
+      PROMPTS_DIR: /app/src/prompts
+      DATA_DIR: /app/data
+      WEB_DIR: /app/src/frontend/dist
+    ports:
+      - "8080:8080"
+    volumes:
+      - travel-ai-data:/var/lib/travel-ai
+    healthcheck:
+      test: ["CMD", "curl", "-fsS", "http://127.0.0.1:8080/api/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 6
+      start_period: 10s
+    restart: unless-stopped
+    init: true
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  travel-ai-data:

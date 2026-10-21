@@ -1,0 +1,13 @@
+target/
+.git/
+.gitignore
+.env
+*.db
+*.db-wal
+*.db-shm
+results/
+docs/
+README.md
+justfile
+src/frontend/node_modules/
+src/frontend/dist/
