@@ -200,7 +200,7 @@ fn submit_plan_spec() -> Value {
                                             "name": {"type": "string"},
                                             "kind": {
                                                 "type": "string",
-                                                "enum": ["sight", "museum", "nature", "viewpoint", "park", "historic", "food", "transfer", "rest"]
+                                                "enum": ["sight", "museum", "nature", "viewpoint", "park", "historic", "beach", "lake", "river", "food", "transfer", "rest"]
                                             },
                                             "start": {"type": "string", "description": "HH:MM или HH:MM:SS"},
                                             "end": {"type": "string", "description": "HH:MM или HH:MM:SS"},

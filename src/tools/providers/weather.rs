@@ -1,9 +1,12 @@
+use std::time::Duration;
+
 use async_trait::async_trait;
 use chrono::NaiveDate;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
 use crate::domain::plan::parse_time;
+use crate::tools::providers::geo;
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
 pub struct WeatherTool;
@@ -15,7 +18,7 @@ impl Tool for WeatherTool {
     }
 
     fn description(&self) -> &'static str {
-        "Прогноз погоды по координатам и датам: осадки, ветер, температуры, восход и закат. Даты в формате YYYY-MM-DD."
+        "Прогноз погоды по координатам и датам: осадки, ветер, температуры, восход и закат. Вызывай для района каждого дня поездки, а не только для стартового города."
     }
 
     fn parameters(&self) -> Value {
@@ -63,7 +66,9 @@ impl Tool for WeatherTool {
              &timezone=Asia%2FVladivostok&start_date={start}&end_date={end}"
         );
 
-        if let Ok(response) = ctx.http.get(url).send().await {
+        if let Ok(Ok(response)) =
+            tokio::time::timeout(Duration::from_secs(5), ctx.http.get(url).send()).await
+        {
             if response.status().is_success() {
                 if let Ok(value) = response.json::<Value>().await {
                     let days = parse_days(&value);
@@ -74,6 +79,21 @@ impl Tool for WeatherTool {
                             "Прогноз Open-Meteo",
                         ));
                     }
+                }
+            }
+        }
+
+        // Open-Meteo can be unreachable from some networks. VL.ru publishes a
+        // 9-day forecast for Primorye cities as Next.js JSON; use the nearest
+        // city as a clearly-labelled live fallback.
+        if let Some((city, slug)) = geo::nearest_city(lat, lon) {
+            if let Some(days) = vlru_days(ctx, slug, start, end).await {
+                if !days.is_empty() {
+                    return Ok(ToolOutput::ok(
+                        json!({"days": days, "forecast_available": true}),
+                        SourceKind::Live,
+                        format!("VL.ru: погода по {city}"),
+                    ));
                 }
             }
         }
@@ -138,4 +158,128 @@ fn text_at<'a>(value: &'a Value, key: &str, index: usize) -> Option<&'a str> {
         .and_then(Value::as_array)
         .and_then(|array| array.get(index))
         .and_then(Value::as_str)
+}
+
+async fn vlru_days(
+    ctx: &ToolCtx,
+    slug: &str,
+    start: NaiveDate,
+    end: NaiveDate,
+) -> Option<Vec<Value>> {
+    let url = format!("https://www.vl.ru/weather/{slug}");
+    let response = tokio::time::timeout(
+        Duration::from_secs(6),
+        ctx.http
+            .get(url)
+            .header(
+                "User-Agent",
+                "Mozilla/5.0 (compatible; vibecode-travel-ai/0.1; +https://github.com/MikhaelCat/vibecode)",
+            )
+            .send(),
+    )
+    .await
+    .ok()?
+    .ok()?;
+    if !response.status().is_success() {
+        return None;
+    }
+    let html = response.text().await.ok()?;
+    let json_text = next_data(&html)?;
+    let value: Value = serde_json::from_str(json_text).ok()?;
+    let days = parse_vlru_days(&value, start, end);
+    if days.is_empty() {
+        None
+    } else {
+        Some(days)
+    }
+}
+
+fn next_data(html: &str) -> Option<&str> {
+    let marker = "id=\"__NEXT_DATA__\"";
+    let start = html.find(marker)?;
+    let rest = &html[start..];
+    let tag_end = rest.find('>')?;
+    let rest = &rest[tag_end + 1..];
+    let end = rest.find("</script>")?;
+    Some(&rest[..end])
+}
+
+fn parse_vlru_days(value: &Value, start: NaiveDate, end: NaiveDate) -> Vec<Value> {
+    let Some(days) = value
+        .get("props")
+        .and_then(|props| props.get("pageProps"))
+        .and_then(|props| props.get("forecasts"))
+        .and_then(|forecasts| forecasts.get("days"))
+        .and_then(Value::as_array)
+    else {
+        return Vec::new();
+    };
+    let mut result = Vec::new();
+    for day in days {
+        let Some(date_text) = day.get("date").and_then(Value::as_str) else {
+            continue;
+        };
+        let Ok(date) = NaiveDate::parse_from_str(date_text, "%Y-%m-%d") else {
+            continue;
+        };
+        if date < start || date > end {
+            continue;
+        }
+        let description = day.get("description").and_then(Value::as_str).unwrap_or("");
+        let precipitation = day
+            .get("precipitation")
+            .and_then(Value::as_f64)
+            .unwrap_or(0.0);
+        let description_lower = description.to_lowercase();
+        let precip_prob = if description_lower.contains("дождь")
+            || description_lower.contains("ливень")
+            || description_lower.contains("снег")
+            || precipitation >= 5.0
+        {
+            80.0
+        } else if precipitation >= 1.0 {
+            60.0
+        } else if precipitation > 0.0 {
+            40.0
+        } else {
+            0.0
+        };
+        result.push(json!({
+            "date": date,
+            "precip_prob": precip_prob,
+            "wind_max": day.get("wind_speed").and_then(Value::as_f64).unwrap_or(0.0),
+            "temp_min": day.get("temperature_low").and_then(Value::as_f64).unwrap_or(0.0),
+            "temp_max": day.get("temperature_high").and_then(Value::as_f64).unwrap_or(0.0),
+            "sunrise": null,
+            "sunset": null,
+            "description": description
+        }));
+    }
+    result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_vlru_days_and_filters_dates() {
+        let value = json!({
+            "props": {"pageProps": {"forecasts": {"days": [
+                {"date": "2026-10-24", "temperature_high": 12, "temperature_low": 5,
+                 "wind_speed": 7, "precipitation": 1.2, "description": "Небольшой дождь"},
+                {"date": "2026-10-25", "temperature_high": 10, "temperature_low": 3,
+                 "wind_speed": 5, "precipitation": 0, "description": "Безоблачно"},
+                {"date": "2026-10-30", "temperature_high": 8, "temperature_low": 2,
+                 "wind_speed": 4, "precipitation": 0, "description": "Облачно"}
+            ]}}}
+        });
+        let start = NaiveDate::from_ymd_opt(2026, 10, 24).unwrap();
+        let end = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        let days = parse_vlru_days(&value, start, end);
+        assert_eq!(days.len(), 2);
+        assert_eq!(days[0]["temp_max"].as_f64(), Some(12.0));
+        assert_eq!(days[0]["precip_prob"].as_f64(), Some(80.0));
+        assert_eq!(days[1]["precip_prob"].as_f64(), Some(0.0));
+    }
 }

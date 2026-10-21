@@ -629,7 +629,7 @@ pub async fn run(&self, query: String, sink: Option<Sender<StreamEvent>>) -> Run
 |---|---|---|
 | Шагов цикла | 8 | Fallback-сборка |
 | Время запроса | 90 с | Fallback или 504 с понятным текстом |
-| Время одного тула | 8 с | Тул возвращает `Deferred`, план идёт без него |
+| Время одного тула | 15 с | Тул возвращает `Deferred`, план идёт без него |
 | Время LLM-вызова | 45 с | 1 ретрай, затем fallback |
 | Prompt-токены на запрос | 48k | Отключаем самые «тяжёлые» результаты, сжимаем |
 | Completion-токены на шаг | 4k для `submit_plan`, 1k иначе | Обрезаем, принуждаем к `submit_plan` |
@@ -664,11 +664,11 @@ Fallback-сборщик — это ещё и страховка демо. Пиш
 | Тул | Аргументы | Возвращает |
 |---|---|---|
 | `geocode` | `query`, `limit` | координаты, нормализованное имя, bbox |
-| `search_places` | `area`, `categories[]`, `limit`, `date` | места: id, имя, координаты, часы, рейтинг-эвристика |
+| `search_places` | `area`, `categories[]`, `limit`, `date` | места в любом городе/селе/озере/реке: id, имя, координаты, часы; категории food/beach/lake/river/hotel и др. |
 | `get_nearby_attractions` | `lat`, `lon`, `radius_meters` | реальные объекты Википедии: id, имя, координаты |
 | `get_route` | `points[]`, `mode` | расстояние, время, геометрия, сегменты |
 | `get_weather` | `lat`, `lon`, `start_date`, `end_date` | дневные осадки, ветер, температуры, восход/закат |
-| `find_lodging` | `settlement`, `check_in`, `check_out`, `party` | варианты с ценой и координатами (mock) |
+| `find_lodging` | `settlement`, `check_in`, `check_out`, `party` | варианты с ценой/координатами: локальные моки или OSM-отели, в том числе рядом с ориентиром |
 | `find_transport` | `from`, `to`, `date`, `mode` | рейсы, время, пересадки (mock) |
 | `find_fuel` | `route_points[]`, `radius_km` | АЗС вдоль маршрута, расстояние до трассы |
 | `find_events` | `area`, `start_date`, `end_date` | события Владивостока из VL.ru (JSON-LD) |
@@ -756,12 +756,12 @@ while let Some(ev) = stream.next().await {
 
 | Тул | Провайдер | Тип | Ключ | Лимиты | TTL кэша | Фолбэк |
 |---|---|---|---|---|---|---|
-| `get_weather` | Open-Meteo | live | нет | щедрые, non-commercial | 3 ч | `stale` из кэша, затем «нет данных» |
-| `search_places` | OSM Overpass | live | нет | fair use, 2 слота | 7 дней | `data/mock/places.json` |
+| `get_weather` | Open-Meteo, fallback VL.ru | live | нет | щедрые, non-commercial | 10 мин | `stale`/«нет данных»; погода не выдумывается |
+| `search_places` | OSM Overpass + Wikipedia | live | нет | fair use, 2 слота | 10 мин | `data/mock/places.json` рядом с районом |
 | `geocode` | Nominatim | live | нет | **1 req/s**, User-Agent обязателен | 30 дней | локальный словарь топонимов |
 | `get_route` | OSRM demo / ORS | live | ORS — ключ | demo без SLA; ORS free tier | 30 дней | прямая по формуле гаверсинуса + пометка `approximate` |
 | `find_fuel` | Overpass `amenity=fuel` | live (наличие — mock) | нет | как Overpass | 7 дней | пусто + warning «нет данных» |
-| `find_lodging` | mock JSON | mock | нет | — | — | — |
+| `find_lodging` | mock JSON + OSM Overpass | mock/live | нет | Overpass fair use | 10 мин | пусто с пометкой |
 | `find_transport` | mock JSON | mock | нет | — | — | — |
 | `find_events` | VL.ru afisha (JSON-LD) | live | нет | robots.txt разрешает страницу | 10 мин | пусто + `ok:false`, если провайдер недоступен |
 | `submit_plan` | внутренний | — | — | — | — | — |
@@ -831,7 +831,7 @@ out center tags 80;
 - `moka` с TTL по таблице; negative-cache 10 минут, чтобы не долбить упавший провайдер.
 - Single-flight: одновременные одинаковые запросы ждут один вызов (`try_get_with`).
 - Семафоры: Nominatim — 1, Overpass — 2, Open-Meteo — 4, OSRM — 2.
-- Таймаут на тул — 8 с; общий дедлайн запроса — 90 с.
+- Таймаут на тул — 15 с; общий дедлайн запроса — 90 с.
 - В `ToolOutput.meta` всегда `cached`, `stale`, `fetched_at` — это видно в trace и UI.
 - Устаревшие данные (старше TTL, но провайдер недоступен) отдаём как `stale` с пометкой, **не** как `live`.
 
@@ -1432,7 +1432,7 @@ MAX_STEPS=8
 MAX_REPAIRS=2
 MAX_COMPLETION_TOKENS=4096
 REQUEST_TIMEOUT_SECS=90
-TOOL_TIMEOUT_SECS=8
+TOOL_TIMEOUT_SECS=15
 MAX_QUERY_CHARS=1000
 CONCURRENT_RUNS=4
 
@@ -1659,7 +1659,7 @@ MAX_STEPS=8
 MAX_REPAIRS=2
 MAX_COMPLETION_TOKENS=4096
 REQUEST_TIMEOUT_SECS=90
-TOOL_TIMEOUT_SECS=8
+TOOL_TIMEOUT_SECS=15
 MAX_QUERY_CHARS=1000
 CONCURRENT_RUNS=4
 

@@ -358,6 +358,9 @@ fn kind_from_label(label: &str) -> ItemKind {
         "viewpoint" => ItemKind::Viewpoint,
         "park" => ItemKind::Park,
         "historic" => ItemKind::Historic,
+        "beach" => ItemKind::Beach,
+        "lake" => ItemKind::Lake,
+        "river" => ItemKind::River,
         "food" => ItemKind::Food,
         _ => ItemKind::Sight,
     }

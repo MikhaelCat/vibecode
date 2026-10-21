@@ -43,7 +43,7 @@
         {
           "place_id": "id из фактов",
           "name": "имя из фактов",
-          "kind": "sight|museum|nature|viewpoint|food|transfer|rest",
+          "kind": "sight|museum|nature|viewpoint|park|historic|beach|lake|river|food|transfer|rest",
           "start": "HH:MM:SS",
           "end": "HH:MM:SS",
           "note": null

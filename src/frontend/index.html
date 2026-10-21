@@ -108,6 +108,7 @@
   <section class="map-band" aria-label="Карта маршрута">
     <div class="map-card">
       <div id="map" role="region" aria-label="Карта Приморского края"></div>
+      <div class="map-loading" id="map-loading">Загружаю карту…</div>
       <div class="map-overlay">
         <span class="map-caption" id="map-caption">Приморский край · карта OSM</span>
         <span class="map-credit">© OpenStreetMap</span>
@@ -147,18 +148,6 @@
           <div id="lodging" class="lodging-grid"></div>
         </section>
 
-        <section class="check">
-          <div class="section-head">
-            <span class="index">CHECK</span>
-            <h3>Проверка плана</h3>
-          </div>
-          <div id="checks" class="checks"></div>
-        </section>
-
-        <details class="trace" id="trace-box">
-          <summary>Как собран план <span id="usage"></span></summary>
-          <ul id="trace"></ul>
-        </details>
       </article>
     </div>
   </section>

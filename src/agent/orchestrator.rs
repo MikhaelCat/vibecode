@@ -2,6 +2,7 @@ use std::sync::Arc;
 use std::time::Instant;
 
 use chrono::{NaiveDate, Utc};
+use futures::future::join_all;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use uuid::Uuid;
@@ -275,6 +276,10 @@ impl Orchestrator {
                 response.tool_calls.clone(),
             ));
 
+            // Parse and announce all calls first, then execute independent
+            // tools concurrently. `submit_plan` stays last and sees all facts.
+            let mut regular_calls = Vec::new();
+            let mut submit_calls = Vec::new();
             for call in &response.tool_calls {
                 let name = call.function.name.clone();
                 let args = match serde_json::from_str::<Value>(&call.function.arguments) {
@@ -305,95 +310,119 @@ impl Orchestrator {
                 .await;
 
                 if name == "submit_plan" {
-                    let submit_started = Instant::now();
-                    let (content, ok) = self
-                        .handle_submit(
-                            &args,
-                            &intent,
-                            &facts,
-                            &mut pending_submit,
-                            &mut submit_problem,
-                        )
-                        .await;
-                    trace.tool_calls.push(ToolCallTrace {
-                        id: call.id.clone(),
-                        name: name.clone(),
-                        args_summary: truncate(&args.to_string(), 200),
-                        ms: submit_started.elapsed().as_millis() as u64,
-                        ok,
-                        cached: false,
-                        source: "validator".to_string(),
-                        summary: content.chars().take(200).collect(),
-                    });
-                    messages.push(LlmMessage::tool(call.id.clone(), content));
-                    continue;
+                    submit_calls.push((call.id.clone(), name, args));
+                } else {
+                    regular_calls.push((call.id.clone(), name, args));
                 }
+            }
 
-                let tool_started = Instant::now();
-                let result = self.registry.call(&name, args.clone(), &intent).await;
-                let ms = tool_started.elapsed().as_millis() as u64;
-
-                match result {
-                    Ok(output) => {
-                        facts.ingest(&name, &output);
-                        tools_used.push(name.clone());
-                        let content = truncate(
-                            &serde_json::to_string(&output.data).unwrap_or_default(),
-                            24_000,
-                        );
-                        trace.tool_calls.push(ToolCallTrace {
-                            id: call.id.clone(),
-                            name: name.clone(),
-                            args_summary: truncate(&args.to_string(), 200),
-                            ms,
-                            ok: output.ok,
-                            cached: output.meta.cached,
-                            source: output.meta.source.as_str().to_string(),
-                            summary: output.summary.clone(),
-                        });
-                        self.emit(
-                            &sink,
-                            "tool_result",
-                            json!({
-                                "id": call.id,
-                                "name": name,
-                                "ok": output.ok,
-                                "ms": ms,
-                                "cached": output.meta.cached,
-                                "source": output.meta.source.as_str(),
-                                "summary": output.summary
-                            }),
+            if !regular_calls.is_empty() {
+                let registry = self.registry.clone();
+                let intent = intent.clone();
+                let futures = regular_calls.into_iter().map(|(call_id, name, args)| {
+                    let registry = registry.clone();
+                    let intent = intent.clone();
+                    let args_summary = truncate(&args.to_string(), 200);
+                    async move {
+                        let started = Instant::now();
+                        let result = registry.call(&name, args, &intent).await;
+                        (
+                            call_id,
+                            name,
+                            args_summary,
+                            result,
+                            started.elapsed().as_millis() as u64,
                         )
-                        .await;
-                        messages.push(LlmMessage::tool(call.id.clone(), content));
                     }
-                    Err(error) => {
-                        let content = json!({"error": error.to_string()}).to_string();
-                        trace.tool_calls.push(ToolCallTrace {
-                            id: call.id.clone(),
-                            name: name.clone(),
-                            args_summary: truncate(&args.to_string(), 200),
-                            ms,
-                            ok: false,
-                            cached: false,
-                            source: "error".to_string(),
-                            summary: error.to_string(),
-                        });
-                        self.emit(
-                            &sink,
-                            "tool_result",
-                            json!({
-                                "id": call.id,
-                                "name": name,
-                                "ok": false,
-                                "ms": ms,
-                                "error": error.to_string()
-                            }),
-                        )
-                        .await;
-                        messages.push(LlmMessage::tool(call.id.clone(), content));
+                });
+
+                for (call_id, name, args_summary, result, ms) in join_all(futures).await {
+                    match result {
+                        Ok(output) => {
+                            facts.ingest(&name, &output);
+                            tools_used.push(name.clone());
+                            let content = truncate(
+                                &serde_json::to_string(&output.data).unwrap_or_default(),
+                                24_000,
+                            );
+                            trace.tool_calls.push(ToolCallTrace {
+                                id: call_id.clone(),
+                                name: name.clone(),
+                                args_summary,
+                                ms,
+                                ok: output.ok,
+                                cached: output.meta.cached,
+                                source: output.meta.source.as_str().to_string(),
+                                summary: output.summary.clone(),
+                            });
+                            self.emit(
+                                &sink,
+                                "tool_result",
+                                json!({
+                                    "id": call_id,
+                                    "name": name,
+                                    "ok": output.ok,
+                                    "ms": ms,
+                                    "cached": output.meta.cached,
+                                    "source": output.meta.source.as_str(),
+                                    "summary": output.summary
+                                }),
+                            )
+                            .await;
+                            messages.push(LlmMessage::tool(call_id, content));
+                        }
+                        Err(error) => {
+                            let content = json!({"error": error.to_string()}).to_string();
+                            trace.tool_calls.push(ToolCallTrace {
+                                id: call_id.clone(),
+                                name: name.clone(),
+                                args_summary,
+                                ms,
+                                ok: false,
+                                cached: false,
+                                source: "error".to_string(),
+                                summary: error.to_string(),
+                            });
+                            self.emit(
+                                &sink,
+                                "tool_result",
+                                json!({
+                                    "id": call_id,
+                                    "name": name,
+                                    "ok": false,
+                                    "ms": ms,
+                                    "error": error.to_string()
+                                }),
+                            )
+                            .await;
+                            messages.push(LlmMessage::tool(call_id, content));
+                        }
                     }
                 }
+            }
+
+            for (call_id, name, args) in submit_calls {
+                let submit_started = Instant::now();
+                let (content, ok) = self
+                    .handle_submit(
+                        &args,
+                        &intent,
+                        &facts,
+                        &mut pending_submit,
+                        &mut submit_problem,
+                    )
+                    .await;
+                trace.tool_calls.push(ToolCallTrace {
+                    id: call_id.clone(),
+                    name: name.clone(),
+                    args_summary: truncate(&args.to_string(), 200),
+                    ms: submit_started.elapsed().as_millis() as u64,
+                    ok,
+                    cached: false,
+                    source: "validator".to_string(),
+                    summary: content.chars().take(200).collect(),
+                });
+                messages.push(LlmMessage::tool(call_id, content));
             }
 
             if let Some((plan, report)) = pending_submit.take() {

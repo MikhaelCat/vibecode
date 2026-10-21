@@ -23,6 +23,8 @@
 - `find_events(area, start_date, end_date)` — события.
 Независимые вызовы объединяй в одном шаге. Не повторяй одинаковый вызов. `submit_plan` не вызывай параллельно с другими инструментами.
 
+`area` — любой город, село, озеро или река Приморья, не только Владивосток. Для ресторанов используй `search_places(area, ["restaurant","cafe"])`, для пляжей — `["beach"]`, озёр — `["lake"]`, рек — `["river"]`, отелей — `find_lodging(settlement)`. Для озера/реки передавай название водоёма целиком, а не село. Для «отель рядом с X» передай X (маяк, пляж, озеро) в `settlement`. Погоду запрашивай по району каждого дня.
+
 ## Порядок работы
 
 1. Возьми даты, транспорт и ограничения из запроса и контекста; относительные даты уже разрешены сервером.
@@ -47,7 +49,7 @@
 
 Вызывай, когда есть даты, проверенные места, транспорт, погода и жильё для ночёвки. Аргумент `draft`:
 ```json
-{"title":"...","summary":"...","days":[{"date":"YYYY-MM-DD","items":[{"place_id":"...","name":"...","kind":"sight|museum|nature|viewpoint|food|transfer|rest","start":"HH:MM:SS","end":"HH:MM:SS","note":null}]}],"lodging_ids":["..."],"transport":"car|foot|bike|transit"}
+{"title":"...","summary":"...","days":[{"date":"YYYY-MM-DD","items":[{"place_id":"...","name":"...","kind":"sight|museum|nature|viewpoint|park|historic|beach|lake|river|food|transfer|rest","start":"HH:MM:SS","end":"HH:MM:SS","note":null}]}],"lodging_ids":["..."],"transport":"car|foot|bike|transit"}
 ```
 Не добавляй поля. `note` — строка или `null`. После вызова не пиши текст.
 

@@ -70,13 +70,15 @@ async def main():
                 meta,
                 tabs: [...document.querySelectorAll('#tabs .tab')].map(x => x.textContent),
                 dayDates: [...document.querySelectorAll('#tabs .tab small')].map(x => x.textContent.trim()),
-                stopIds: [...document.querySelectorAll('#stops .stop code')].map(x => x.textContent.trim()),
+                stopIds: [...document.querySelectorAll('#stops .stop')].map(x => x.dataset.placeId).filter(Boolean),
+                sources: document.querySelectorAll('#stops .stop .source').length,
+                hasChecks: !!document.getElementById('checks'),
+                hasTrace: !!document.getElementById('trace-box'),
                 errorHidden: document.getElementById('error').hidden,
                 refusalHidden: document.getElementById('refusal').hidden,
                 stages: [...document.querySelectorAll('#stages li')].map(x => x.textContent),
                 stops: document.querySelectorAll('#stops .stop').length,
                 lodging: document.querySelectorAll('.lodge').length,
-                checks: document.getElementById('checks').innerText,
                 mapReady: !!document.querySelector('.leaflet-container'),
                 mapWidth: document.getElementById('map')?.clientWidth || 0,
                 mapHeight: document.getElementById('map')?.clientHeight || 0,
@@ -111,8 +113,6 @@ async def main():
                 data = json.loads(value)
                 if not data.get("ok"):
                     raise SystemExit(f"plan did not render: {data}")
-                if "Проверки пройдены" not in data["checks"]:
-                    raise SystemExit(f"validation not rendered: {data['checks']}")
                 if "осадки" not in data["meta"] and "недоступна" not in data["meta"] and "недоступен" not in data["meta"]:
                     raise SystemExit(f"weather is neither rendered nor marked unavailable: {data['meta']}")
                 if "мок" in data["meta"].lower() or "mock-llm" in data["title"].lower():
@@ -125,6 +125,10 @@ async def main():
                     raise SystemExit(f"duplicate day dates: {data['dayDates']}")
                 if len(set(data["stopIds"])) != len(data["stopIds"]):
                     raise SystemExit(f"duplicate stops on the active day: {data['stopIds']}")
+                if data.get("hasChecks") or data.get("hasTrace"):
+                    raise SystemExit(f"debug panels must be removed from the UI: {data}")
+                if data.get("stops") and not data.get("sources"):
+                    raise SystemExit("stop source links are missing")
                 if not data["errorHidden"] or not data["refusalHidden"]:
                     raise SystemExit(f"stale notices are visible: {data}")
                 if "guard" in data["stages"]:
@@ -138,6 +142,27 @@ async def main():
                 if not data.get("lodging"):
                     raise SystemExit("lodging recommendations did not render")
                 print(json.dumps({"plan": data}, ensure_ascii=False))
+                break
+
+        await ws.send(json.dumps({"id": 3, "method": "Emulation.setDeviceMetricsOverride", "params": {
+            "width": 390, "height": 844, "deviceScaleFactor": 1, "mobile": True}}))
+        while True:
+            msg = json.loads(await ws.recv())
+            if msg.get("id") == 3:
+                break
+        await asyncio.sleep(1)
+        await ws.send(json.dumps({"id": 4, "method": "Runtime.evaluate", "params": {
+            "expression": "JSON.stringify({scrollWidth:document.documentElement.scrollWidth,innerWidth:window.innerWidth,mapWidth:document.getElementById('map')?.clientWidth||0})",
+            "returnByValue": True}}))
+        while True:
+            msg = json.loads(await ws.recv())
+            if msg.get("id") == 4:
+                mobile = json.loads(msg["result"]["result"]["value"])
+                if mobile["scrollWidth"] > mobile["innerWidth"] + 1:
+                    raise SystemExit(f"mobile horizontal overflow: {mobile}")
+                if mobile["mapWidth"] < 250:
+                    raise SystemExit(f"mobile map is too narrow: {mobile}")
+                print(json.dumps({"mobile": mobile}, ensure_ascii=False))
                 break
 
         refuse_js = """(async () => {
@@ -169,6 +194,6 @@ async def main():
 asyncio.run(main())
 PY
 
-ok "plan rendered with validation and weather"
+ok "plan rendered with weather or an explicit missing-data warning"
 ok "refusal rendered"
 echo "All frontend checks passed against $BASE_URL"

@@ -42,6 +42,7 @@ impl Tool for FuelTool {
         let query = format!(
             "[out:json][timeout:10];node[\"amenity\"=\"fuel\"]({PRIMORYE_BBOX});out center 30;"
         );
+        let _permit = crate::tools::providers::OVERPASS_SLOTS.acquire().await.ok();
         if let Ok(response) = ctx
             .http
             .post("https://overpass-api.de/api/interpreter")

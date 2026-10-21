@@ -3,6 +3,7 @@ use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
 use crate::domain::geo::haversine_km;
+use crate::tools::providers::places::kind_from_title;
 use crate::tools::providers::{fallback_places, load_mock};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
@@ -132,7 +133,7 @@ fn parse_geosearch(value: &Value) -> Vec<Value> {
             "name": title,
             "lat": lat,
             "lon": lon,
-            "kind": "sight",
+            "kind": kind_from_title(title),
             "opening_hours": null,
             "source": "live",
             "distance_meters": distance.round()

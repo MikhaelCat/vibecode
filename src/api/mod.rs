@@ -99,14 +99,14 @@ async fn plan_sync(
         .try_acquire_owned()
         .map_err(|_| ApiError::rate_limited("Слишком много одновременных запросов"))?;
     let outcome = tokio::time::timeout(
-        Duration::from_secs(120),
+        Duration::from_secs(180),
         state.orchestrator.execute_with(query, None, overrides),
     )
     .await
     .map_err(|_| ApiError {
         status: StatusCode::GATEWAY_TIMEOUT,
         code: "upstream_timeout",
-        message: "Запрос не успел завершиться за 120 секунд".to_string(),
+        message: "Запрос не успел завершиться за 180 секунд".to_string(),
         hint: Some("Попробуйте более короткий запрос".to_string()),
     })?;
     drop(permit);

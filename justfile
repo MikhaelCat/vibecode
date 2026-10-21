@@ -40,3 +40,6 @@ frontend-test:
 
 qa:
 	bash scripts/qa.sh
+
+edge-cases:
+	BASE_URL=http://127.0.0.1:8080 bash scripts/edge_cases.sh

@@ -10,9 +10,9 @@
 | `query` | 1–1000 символов после `trim()` (`MAX_QUERY_CHARS`) | пусто — 400 `bad_request`; длиннее — 413 `too_large` |
 | Одновременные SSE-прогоны | 4 (`CONCURRENT_RUNS`, минимум 1) | 429 `rate_limited`, слот не ждёт |
 | Дневной бюджет | 25 USD (`DAILY_BUDGET_USD`) и 1M токенов (`DAILY_TOKEN_BUDGET`) | 429 `budget_exhausted` + `hint` |
-| `/api/plan/sync` | берёт тот же семафор, таймаут 120 с | 429 `rate_limited` или 504 `upstream_timeout` |
+| `/api/plan/sync` | берёт тот же семафор, таймаут 180 с | 429 `rate_limited` или 504 `upstream_timeout` |
 
-`request_timeout` (90 с) ограничивает HTTP-запрос к LLM; `/api/plan/sync` дополнительно ограничен 120 с. Таймаут одного тула — 8 с. Лимиты шагов: `MAX_STEPS=8`, `MAX_REPAIRS=2`.
+`request_timeout` (90 с) ограничивает HTTP-запрос к LLM; `/api/plan/sync` дополнительно ограничен 180 с. Таймаут одного тула — 15 с. Лимиты шагов: `MAX_STEPS=8`, `MAX_REPAIRS=2`.
 
 | Метод | Путь | Ответ |
 |---|---|---|
@@ -159,7 +159,7 @@ data: {"run_id":"b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e","latency_ms":18,"outcome"
 | 429 | `rate_limited` | нет свободного слота SSE-семафора |
 | 429 | `budget_exhausted` | дневной бюджет исчерпан; `hint` заполнен |
 | 404 | `not_found` | неизвестный `run_id` |
-| 504 | `upstream_timeout` | `/api/plan/sync` не уложился в 120 с |
+| 504 | `upstream_timeout` | `/api/plan/sync` не уложился в 180 с |
 | 500 | `internal` | объявлен, но текущие обработчики его не возвращают |
 
 Битый JSON, отсутствие `query` или неверный `Content-Type` отсекает extractor axum: 400/422/415 с текстовым телом, **не** в конверте `ApiError`. Сбой LLM внутри прогона уводит в fallback; `llm_unavailable` не используется.

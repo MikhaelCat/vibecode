@@ -87,7 +87,23 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
     }
 
     let lodging_ids = if days.len() > 1 {
-        facts.lodging.keys().next().cloned().into_iter().collect()
+        let anchor = places.first().map(|place| (place.lat, place.lon));
+        facts
+            .lodging
+            .values()
+            .min_by(|left, right| {
+                let left_distance = anchor
+                    .map(|(lat, lon)| haversine_km((left.lat, left.lon), (lat, lon)))
+                    .unwrap_or(0.0);
+                let right_distance = anchor
+                    .map(|(lat, lon)| haversine_km((right.lat, right.lon), (lat, lon)))
+                    .unwrap_or(0.0);
+                left_distance
+                    .partial_cmp(&right_distance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|option| vec![option.id.clone()])
+            .unwrap_or_default()
     } else {
         Vec::new()
     };
@@ -122,6 +138,9 @@ fn kind_from_label(label: &str) -> ItemKind {
         "viewpoint" => ItemKind::Viewpoint,
         "park" => ItemKind::Park,
         "historic" => ItemKind::Historic,
+        "beach" => ItemKind::Beach,
+        "lake" => ItemKind::Lake,
+        "river" => ItemKind::River,
         "food" => ItemKind::Food,
         _ => ItemKind::Sight,
     }

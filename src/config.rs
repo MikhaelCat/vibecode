@@ -1,5 +1,5 @@
 use std::env;
-use std::net::{IpAddr, SocketAddr};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -82,7 +82,7 @@ impl Config {
             max_repairs: parse_usize("MAX_REPAIRS", 2),
             max_completion_tokens: parse_u32("MAX_COMPLETION_TOKENS", 4096),
             request_timeout: Duration::from_secs(parse_u64("REQUEST_TIMEOUT_SECS", 90)),
-            tool_timeout: Duration::from_secs(parse_u64("TOOL_TIMEOUT_SECS", 8)),
+            tool_timeout: Duration::from_secs(parse_u64("TOOL_TIMEOUT_SECS", 15)),
             max_query_chars: parse_usize("MAX_QUERY_CHARS", 1000),
             concurrent_runs: parse_usize("CONCURRENT_RUNS", 4).max(1),
             nominatim_user_agent: env::var("NOMINATIM_USER_AGENT")
@@ -176,30 +176,49 @@ fn validate_public_url(raw: &str) -> Result<()> {
     {
         bail!("LLM_PROXY_URL must not point to a local host");
     }
+    // The official training proxy is reached through a private training network
+    // and may resolve to a private or benchmark address. It is an explicit,
+    // documented allowlist entry, not attacker-controlled per-request input.
+    const TRUSTED_PROXY_HOSTS: &[&str] = &["llm-proxy.spirit.t-education.com"];
+    if TRUSTED_PROXY_HOSTS.contains(&host.as_str()) {
+        return Ok(());
+    }
     if let Ok(ip) = host.parse::<IpAddr>() {
-        let forbidden = match ip {
-            IpAddr::V4(ip) => {
-                ip.is_private()
-                    || ip.is_loopback()
-                    || ip.is_link_local()
-                    || ip.is_broadcast()
-                    || ip.is_documentation()
-                    || ip.is_unspecified()
-                    || ip.octets()[0] >= 240
-            }
-            IpAddr::V6(ip) => {
-                let segments = ip.segments();
-                ip.is_loopback()
-                    || ip.is_unspecified()
-                    || (segments[0] & 0xfe00) == 0xfc00
-                    || (segments[0] & 0xffc0) == 0xfe80
-            }
-        };
-        if forbidden {
+        if forbidden_ip(ip) {
             bail!("LLM_PROXY_URL must not point to a private or reserved address");
+        }
+    } else if let Ok(addresses) =
+        (host.as_str(), url.port_or_known_default().unwrap_or(443)).to_socket_addrs()
+    {
+        // Resolve domains too: a public hostname must not point at a private IP.
+        for address in addresses {
+            if forbidden_ip(address.ip()) {
+                bail!("LLM_PROXY_URL resolves to a private or reserved address");
+            }
         }
     }
     Ok(())
+}
+
+fn forbidden_ip(ip: IpAddr) -> bool {
+    match ip {
+        IpAddr::V4(ip) => {
+            ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_broadcast()
+                || ip.is_documentation()
+                || ip.is_unspecified()
+                || ip.octets()[0] >= 240
+        }
+        IpAddr::V6(ip) => {
+            let segments = ip.segments();
+            ip.is_loopback()
+                || ip.is_unspecified()
+                || (segments[0] & 0xfe00) == 0xfc00
+                || (segments[0] & 0xffc0) == 0xfe80
+        }
+    }
 }
 
 #[cfg(test)]

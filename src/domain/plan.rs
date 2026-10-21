@@ -5,7 +5,7 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
 use crate::domain::dates::{add_days, days_inclusive};
-use crate::domain::facts::{Facts, Lodging, SourceKind, SourceRef};
+use crate::domain::facts::{Facts, Lodging, PlaceFact, SourceKind, SourceRef};
 use crate::domain::geo::{haversine_km, travel_minutes};
 use crate::domain::intent::{Intent, TransportMode};
 
@@ -19,6 +19,9 @@ pub enum ItemKind {
     Viewpoint,
     Park,
     Historic,
+    Beach,
+    Lake,
+    River,
     Food,
     Transfer,
     Rest,
@@ -28,7 +31,13 @@ impl ItemKind {
     pub fn is_outdoor(self) -> bool {
         matches!(
             self,
-            Self::Nature | Self::Viewpoint | Self::Park | Self::Historic
+            Self::Nature
+                | Self::Viewpoint
+                | Self::Park
+                | Self::Historic
+                | Self::Beach
+                | Self::Lake
+                | Self::River
         )
     }
 }
@@ -196,6 +205,25 @@ pub fn parse_time(text: &str) -> Option<NaiveTime> {
     None
 }
 
+fn item_kind(fact: Option<&PlaceFact>, fallback: ItemKind) -> ItemKind {
+    let Some(fact) = fact else {
+        return fallback;
+    };
+    match fact.kind.as_str() {
+        "museum" => ItemKind::Museum,
+        "nature" => ItemKind::Nature,
+        "viewpoint" => ItemKind::Viewpoint,
+        "park" => ItemKind::Park,
+        "historic" => ItemKind::Historic,
+        "beach" => ItemKind::Beach,
+        "lake" => ItemKind::Lake,
+        "river" => ItemKind::River,
+        "food" => ItemKind::Food,
+        "rest" => ItemKind::Rest,
+        _ => fallback,
+    }
+}
+
 fn normalized_name(name: &str) -> String {
     name.to_lowercase()
         .replace('ё', "е")
@@ -274,7 +302,7 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
                 name: fact
                     .map(|place| place.name.clone())
                     .unwrap_or_else(|| item_draft.name.clone()),
-                kind: item_draft.kind,
+                kind: item_kind(fact, item_draft.kind),
                 lat: fact.map(|place| place.lat).unwrap_or(0.0),
                 lon: fact.map(|place| place.lon).unwrap_or(0.0),
                 start: item_draft.start,
@@ -328,11 +356,27 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
         }
     }
     if lodging.is_empty() && days.len() > 1 {
-        if let Some(option) = facts.lodging.values().next() {
+        let anchor = days
+            .iter()
+            .flat_map(|day| day.items.iter())
+            .next()
+            .map(|item| (item.lat, item.lon));
+        let nearest = facts.lodging.values().min_by(|left, right| {
+            let left_distance = anchor
+                .map(|(lat, lon)| haversine_km((left.lat, left.lon), (lat, lon)))
+                .unwrap_or(0.0);
+            let right_distance = anchor
+                .map(|(lat, lon)| haversine_km((right.lat, right.lon), (lat, lon)))
+                .unwrap_or(0.0);
+            left_distance
+                .partial_cmp(&right_distance)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        });
+        if let Some(option) = nearest {
             lodging.push(option.clone());
             warnings.push(Warning {
                 code: "lodging_auto".to_string(),
-                message: "Ночёвка выбрана автоматически из доступных вариантов".to_string(),
+                message: "Ночёвка выбрана автоматически из ближайших вариантов".to_string(),
             });
         }
     }

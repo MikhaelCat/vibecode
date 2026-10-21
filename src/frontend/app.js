@@ -19,18 +19,6 @@ const STAGES = {
   validation: 'Проверяю план',
   done: 'Готово',
 };
-const TOOL_RU = {
-  search_places: 'Поиск мест',
-  get_nearby_attractions: 'Википедия рядом',
-  geocode: 'Геокодинг',
-  get_weather: 'Погода',
-  get_route: 'Маршрут',
-  find_lodging: 'Жильё',
-  find_transport: 'Транспорт',
-  find_fuel: 'АЗС',
-  find_events: 'События',
-  submit_plan: 'Сборка плана',
-};
 const transportRu = { car: 'машина', foot: 'пешком', bike: 'велосипед', transit: 'автобус/поезд' };
 const kindRu = {
   sight: 'достопримечательность',
@@ -39,6 +27,9 @@ const kindRu = {
   viewpoint: 'смотровая',
   park: 'парк',
   historic: 'история',
+  beach: 'пляж',
+  lake: 'озеро',
+  river: 'река',
   food: 'еда',
   transfer: 'переезд',
   rest: 'отдых',
@@ -50,10 +41,23 @@ const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'и�
 let map = null;
 let layer = null;
 let markers = [];
+let mapTilesLoaded = false;
 if (window.L) {
   map = L.map('map', { zoomControl: true, attributionControl: false }).setView([44.0, 133.0], 7);
-  L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 }).addTo(map);
+  const mapLoading = $('map-loading');
+  const tiles = L.tileLayer('https://tile.openstreetmap.org/{z}/{x}/{y}.png', { maxZoom: 18 });
+  tiles.on('tileload', () => {
+    if (mapTilesLoaded) return;
+    mapTilesLoaded = true;
+    if (mapLoading) mapLoading.classList.add('hidden');
+  });
+  tiles.addTo(map);
   layer = L.layerGroup().addTo(map);
+  setTimeout(() => {
+    if (!mapTilesLoaded && mapLoading) {
+      mapLoading.textContent = 'Карта недоступна — точки маршрута загружены';
+    }
+  }, 6000);
 }
 
 function fitMap() {
@@ -291,21 +295,6 @@ function handle(event, data) {
       syncDateBounds();
       updateDateHint();
     }
-    trace(
-      'Разбор запроса',
-      `${fmtRange(data.start_date, data.end_date)} · ${transportRu[data.transport] || data.transport || 'транспорт'}`
-    );
-  }
-  if (event === 'tool_call') {
-    const name = data.name || data.tool || 'tool';
-    trace(TOOL_RU[name] || name, JSON.stringify(data.args ?? data.input ?? {}));
-  }
-  if (event === 'tool_result') {
-    const name = data.name || data.tool || 'result';
-    const text = data.ok === false
-      ? `ошибка: ${data.error || 'нет данных'}`
-      : ['ок', data.ms ? `${data.ms} мс` : '', data.cached ? 'из кэша' : ''].filter(Boolean).join(' · ');
-    trace(TOOL_RU[name] || name, text, data.ok === false);
   }
   if (event === 'plan') {
     plan = data.plan || data;
@@ -313,18 +302,7 @@ function handle(event, data) {
     stage(STAGES.plan, 'done');
     renderPlan();
   }
-  if (event === 'validation') {
-    stage(STAGES.validation, 'done');
-    renderChecks(data);
-  }
-  if (event === 'usage') {
-    const usage = [];
-    if (data.total_tokens) usage.push(`${Number(data.total_tokens).toLocaleString('ru-RU')} токенов`);
-    if (data.prompt_tokens) usage.push(`${Number(data.prompt_tokens).toLocaleString('ru-RU')} вход`);
-    if (data.completion_tokens) usage.push(`${Number(data.completion_tokens).toLocaleString('ru-RU')} выход`);
-    if (data.cost_usd != null) usage.push(`$${(+data.cost_usd).toFixed(4)}`);
-    $('usage').textContent = usage.join(' · ');
-  }
+  if (event === 'validation') stage(STAGES.validation, 'done');
   if (event === 'refusal') {
     sawDone = true;
     stage(STAGES.done, 'done');
@@ -339,13 +317,10 @@ function handle(event, data) {
 // ---------- UI ----------
 function reset() {
   $('stages').innerHTML = '';
-  $('trace').innerHTML = '';
-  $('usage').textContent = '';
   $('refusal').hidden = true;
   $('refusal').innerHTML = '';
   $('error').hidden = true;
   $('result').hidden = true;
-  $('checks').innerHTML = '';
   $('lodging-box').hidden = true;
   $('lodging').innerHTML = '';
   $('stops').innerHTML = '';
@@ -375,13 +350,6 @@ function stage(text, state = 'live') {
   item.innerHTML = `<span>${esc(text)}</span>`;
   list.appendChild(item);
   stageMap.set(text, item);
-}
-
-function trace(name, text, bad) {
-  $('trace').insertAdjacentHTML(
-    'beforeend',
-    `<li><span class="n">${esc(name)}</span><span class="${bad ? 'bad' : ''}">${esc(String(text).slice(0, 240))}</span></li>`
-  );
 }
 
 function refuse(data) {
@@ -515,12 +483,40 @@ function renderDay() {
     : 'Приморский край · карта OSM';
 }
 
+function sourceInfo(placeId) {
+  const id = String(placeId || '');
+  if (id.startsWith('wikipedia:')) {
+    const page = id.slice('wikipedia:'.length);
+    return /^\d+$/.test(page)
+      ? { label: 'Wikipedia', url: `https://ru.wikipedia.org/?curid=${page}` }
+      : { label: 'Wikipedia', url: null };
+  }
+  const osm = id.match(/^osm:(node|way|relation)\/(\d+)$/);
+  if (osm) {
+    return {
+      label: 'OpenStreetMap',
+      url: `https://www.openstreetmap.org/${osm[1]}/${osm[2]}`,
+    };
+  }
+  if (id.startsWith('nominatim:') || id.startsWith('photon:')) {
+    return { label: 'OpenStreetMap', url: 'https://www.openstreetmap.org/' };
+  }
+  if (id.startsWith('mock:')) return { label: 'локальные данные', url: null };
+  return { label: 'источник', url: null };
+}
+
 function stopHtml(stop, index) {
   const time = fmtTime(stop.start || stop.time);
   const end = fmtTime(stop.end);
   const range = time && end ? `${time}–${end}` : time;
   const kind = kindRu[stop.kind] || '';
-  return `<li class="stop" data-i="${index}">
+  const source = stop.place_id ? sourceInfo(stop.place_id) : null;
+  const sourceHtml = source
+    ? (source.url
+      ? `<a class="source" href="${esc(source.url)}" target="_blank" rel="noopener noreferrer" title="Открыть объект в источнике">Источник: ${esc(source.label)}</a>`
+      : `<span class="source">Источник: ${esc(source.label)}</span>`)
+    : '';
+  return `<li class="stop" data-i="${index}" data-place-id="${esc(stop.place_id || '')}">
     <div class="stop-rail"><span class="stop-num">${String(index + 1).padStart(2, '0')}</span></div>
     <div class="stop-body">
       <div class="stop-top">
@@ -529,7 +525,7 @@ function stopHtml(stop, index) {
       </div>
       <h4>${esc(stop.name)}</h4>
       ${stop.note ? `<p>${esc(stop.note)}</p>` : ''}
-      ${stop.place_id ? `<code title="Источник точки">${esc(stop.place_id)}</code>` : ''}
+      ${sourceHtml}
     </div>
   </li>`;
 }
@@ -583,31 +579,3 @@ function renderLodging() {
   }).join('');
 }
 
-function renderChecks(report) {
-  const violations = report.violations || report.checks || report.results || [];
-  const groups = new Map();
-  for (const violation of violations) {
-    const code = violation.code || violation.id || 'V';
-    const group = groups.get(code) || { code, count: 0, bad: false, message: '' };
-    group.count += 1;
-    if (violation.severity === 'hard' || violation.ok === false || violation.passed === false) group.bad = true;
-    if (!group.message) group.message = violation.message || violation.msg || '';
-    groups.set(code, group);
-  }
-  const hard = report.hard_failed === true || [...groups.values()].some((group) => group.bad);
-  const passed = report.checks_passed != null
-    ? report.checks_passed
-    : Math.max(0, (report.checks_run || groups.size) - groups.size);
-  const total = report.checks_run != null ? report.checks_run : groups.size;
-
-  const verdict = hard
-    ? '<div class="verdict verdict-warn">Есть блокирующие нарушения — план показан с предупреждениями.</div>'
-    : `<div class="verdict verdict-ok">Проверки пройдены${total ? `: ${passed}/${total}` : ''}${report.score != null ? ` · score ${(+report.score).toFixed(2)}` : ''}.</div>`;
-
-  const chips = [...groups.values()].map((group) =>
-    `<span class="ck ${group.bad ? 'fail' : 'ok'}" title="${esc(group.message)}">
-      ${esc(group.code)} <b>${group.count > 1 ? group.count : '✓'}</b>
-    </span>`).join('');
-
-  $('checks').innerHTML = verdict + (chips ? `<div class="check-chips">${chips}</div>` : '');
-}
