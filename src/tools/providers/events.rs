@@ -1,4 +1,7 @@
+use std::collections::HashSet;
+
 use async_trait::async_trait;
+use chrono::NaiveDate;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
@@ -34,12 +37,48 @@ impl Tool for EventsTool {
             .get("area")
             .and_then(Value::as_str)
             .unwrap_or("Приморский край");
+        let start = args
+            .get("start_date")
+            .and_then(Value::as_str)
+            .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok());
+        let end = args
+            .get("end_date")
+            .and_then(Value::as_str)
+            .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok());
+
         let mock = load_mock(ctx.data_dir.as_path(), "events.json", fallback_events());
-        let mut events: Vec<Value> = mock
+        let mut seen = HashSet::new();
+        let mut events: Vec<Value> = Vec::new();
+        for event in mock
             .get("events")
             .and_then(Value::as_array)
             .cloned()
-            .unwrap_or_default();
+            .unwrap_or_default()
+        {
+            let event_date = event
+                .get("date")
+                .and_then(Value::as_str)
+                .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok());
+            if let (Some(start), Some(end), Some(date)) = (start, end, event_date) {
+                if date < start || date > end {
+                    continue;
+                }
+            }
+            let title = event
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_lowercase();
+            let id = event
+                .get("id")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string();
+            if !seen.insert((id, title.clone())) {
+                continue;
+            }
+            events.push(event);
+        }
         events.truncate(5);
         Ok(ToolOutput::ok(
             json!({"events": events, "area": area}),

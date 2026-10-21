@@ -47,8 +47,7 @@ impl Tool for WikipediaTool {
             .clamp(1_000, 10_000);
 
         let url = format!(
-            "https://ru.wikipedia.org/w/api.php?action=query&list=geosearch\
-             &gscoord={lat}%7C{lon}&gsradius={radius}&gslimit=8&format=json"
+            "https://ru.wikipedia.org/w/api.php?action=query&list=geosearch&gscoord={lat}%7C{lon}&gsradius={radius}&gslimit=8&format=json"
         );
 
         if let Ok(response) = ctx
