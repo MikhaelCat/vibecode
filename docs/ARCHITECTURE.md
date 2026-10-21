@@ -2,14 +2,14 @@
 
 ## План проекта и техническая архитектура
 
-**Стек:** Rust (axum + tokio) · Spirit LLM Proxy / OpenRouter · OpenStreetMap / Open-Meteo / OSRM · SQLite · фронтенд позже  
+**Стек:** Rust (axum + tokio) · Spirit LLM Proxy / OpenRouter · OpenStreetMap / Open-Meteo / OSRM · SQLite · SPA + Leaflet  
 **Формат:** командный хакатон Т-Банк × Сириус, два дня, защита 8 + 3 минуты  
 **Версия документа:** 1.1 · 21.10.2026  
 **Источник требований:** презентация «Travel AI Assistant.pptx», 20 слайдов  
-**Статус:** Rust-бэкенд, данные, валидатор, эвал и Docker/CI реализованы; фронтенд в этом репозитории пока отсутствует — его добавляет отдельная команда.
+**Статус:** Rust-бэкенд, данные, валидатор, эвал, Docker/CI и SPA во `src/frontend` реализованы.
 
 **Репозиторий:** https://github.com/MikhaelCat/vibecode  
-**Основной код:** `src/` — Rust-бэкенд в корне; `src/parser/`, `src/qa/`, `src/prompts/` — зоны команд; `src/frontend/` появится позже
+**Основной код:** `src/` — Rust-бэкенд в корне; `src/parser/`, `src/qa/`, `src/prompts/` — зоны команд; `src/frontend/` — SPA
 
 > **TL;DR.** Веб-ассистент на Rust: свободный запрос → агентный цикл с тулами (погода, места, маршрут, жильё) → план по дням → детерминированная проверка на сходимость с запросом и реальным миром → карта и trace. Сдаём работающий URL, эвал 20 запросов × 2–3 версии и презентацию. Главный риск — не успеть с эвалом и утонуть в Rust; лечится walking skeleton в первый день и жёстким P0.
 
@@ -284,7 +284,7 @@ vibecode/
 │   ├── api/{mod,sse,dto}.rs
 │   ├── bin/eval.rs
 │   ├── prompts/               # system prompt engineer: v1/v2/v3, preflight, repair
-│   ├── frontend/              # frontend (позже): index.html, ts, css, vite
+│   ├── frontend/              # frontend: index.html, app.js, styles.css, dist
 │   ├── parser/                # parser: заметки и нормализация
 │   └── qa/                    # QA: сценарии, guardrail-набор, отчёты
 └── deploy/
