@@ -1,4 +1,6 @@
 use async_trait::async_trait;
+use std::time::Duration;
+
 use reqwest::Client;
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -57,36 +59,55 @@ impl OpenRouterClient {
     }
 
     async fn request(&self, body: &Value) -> Result<Value, LlmError> {
-        let mut request = self
-            .http
-            .post(&self.endpoint)
-            .header("Authorization", format!("Bearer {}", self.api_key))
-            .json(body);
-        if self.openrouter {
-            request = request
-                .header("HTTP-Referer", "https://github.com/MikhaelCat/vibecode")
-                .header("X-Title", "vibecode travel assistant");
+        let mut last_error = None;
+        for attempt in 0..3u32 {
+            let mut request = self
+                .http
+                .post(&self.endpoint)
+                .header("Authorization", format!("Bearer {}", self.api_key))
+                .json(body);
+            if self.openrouter {
+                request = request
+                    .header("HTTP-Referer", "https://github.com/MikhaelCat/vibecode")
+                    .header("X-Title", "vibecode travel assistant");
+            }
+
+            match request.send().await {
+                Ok(response) => {
+                    let status = response.status();
+                    let text = response
+                        .text()
+                        .await
+                        .map_err(|error| LlmError::Upstream(error.to_string()))?;
+
+                    if status.is_success() {
+                        return serde_json::from_str(&text).map_err(|error| {
+                            LlmError::Parse(format!("{error}; body={}", truncate(&text, 500)))
+                        });
+                    }
+
+                    let retryable = status.as_u16() == 408
+                        || status.as_u16() == 429
+                        || status.is_server_error();
+                    last_error = Some(format!("status {status}: {}", truncate(&text, 500)));
+                    if retryable && attempt < 2 {
+                        tokio::time::sleep(Duration::from_millis(500 * 2u64.pow(attempt))).await;
+                        continue;
+                    }
+                    return Err(LlmError::Upstream(last_error.unwrap_or_default()));
+                }
+                Err(error) => {
+                    last_error = Some(error.to_string());
+                    if attempt < 2 {
+                        tokio::time::sleep(Duration::from_millis(500 * 2u64.pow(attempt))).await;
+                        continue;
+                    }
+                }
+            }
         }
-        let response = request
-            .send()
-            .await
-            .map_err(|error| LlmError::Upstream(error.to_string()))?;
-
-        let status = response.status();
-        let text = response
-            .text()
-            .await
-            .map_err(|error| LlmError::Upstream(error.to_string()))?;
-
-        if !status.is_success() {
-            return Err(LlmError::Upstream(format!(
-                "status {status}: {}",
-                truncate(&text, 500)
-            )));
-        }
-
-        serde_json::from_str(&text)
-            .map_err(|error| LlmError::Parse(format!("{error}; body={}", truncate(&text, 500))))
+        Err(LlmError::Upstream(
+            last_error.unwrap_or_else(|| "request failed".to_string()),
+        ))
     }
 }
 
