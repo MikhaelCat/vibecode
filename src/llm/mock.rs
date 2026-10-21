@@ -5,6 +5,7 @@ use chrono::NaiveDate;
 use serde_json::{json, Value};
 
 use crate::domain::dates::{add_days, next_saturday, today_vladivostok};
+use crate::domain::geo::haversine_km;
 use crate::domain::intent::{Intent, Pace, TransportMode};
 use crate::domain::plan::{DayDraft, ItemDraft, ItemKind, PlanDraft};
 use crate::domain::trace::TokenUsage;
@@ -65,7 +66,7 @@ impl LlmClient for MockLlm {
                     json!({
                         "area": "Приморский край",
                         "categories": ["nature", "museum", "viewpoint"],
-                        "limit": 12
+                        "limit": 20
                     })
                     .to_string(),
                 ),
@@ -92,7 +93,11 @@ impl LlmClient for MockLlm {
             });
         }
 
-        let places = collect_places(&request.messages);
+        let places = select_places(
+            collect_places(&request.messages),
+            &intent,
+            collect_bad_weather(&request.messages, &intent),
+        );
         let lodging_ids = collect_lodging(&request.messages, intent.nights() > 0);
         let draft = build_draft(&intent, &places, &lodging_ids);
         let arguments =
@@ -116,6 +121,8 @@ struct MockPlace {
     id: String,
     name: String,
     kind: String,
+    lat: f64,
+    lon: f64,
 }
 
 fn intent_from_messages(messages: &[crate::llm::LlmMessage]) -> Intent {
@@ -175,13 +182,90 @@ fn collect_places(messages: &[crate::llm::LlmMessage]) -> Vec<MockPlace> {
             };
             let name = item.get("name").and_then(Value::as_str).unwrap_or("Место");
             let kind = item.get("kind").and_then(Value::as_str).unwrap_or("sight");
+            let lat = item.get("lat").and_then(Value::as_f64).unwrap_or(0.0);
+            let lon = item.get("lon").and_then(Value::as_f64).unwrap_or(0.0);
             places.push(MockPlace {
                 id: id.to_string(),
                 name: name.to_string(),
                 kind: kind.to_string(),
+                lat,
+                lon,
             });
         }
     }
+    places
+}
+
+fn collect_bad_weather(messages: &[crate::llm::LlmMessage], intent: &Intent) -> bool {
+    let mut rainy = false;
+    for message in messages {
+        if message.role != "tool" {
+            continue;
+        }
+        let Some(content) = message.content.as_deref() else {
+            continue;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(content) else {
+            continue;
+        };
+        let Some(days) = value.get("days").and_then(Value::as_array) else {
+            continue;
+        };
+        for day in days {
+            let rain = day
+                .get("precip_prob")
+                .and_then(Value::as_f64)
+                .map(|prob| prob >= 70.0)
+                .unwrap_or(false);
+            let wind = day
+                .get("wind_max")
+                .and_then(Value::as_f64)
+                .map(|wind| wind >= 12.0)
+                .unwrap_or(false);
+            if rain
+                || (wind && matches!(intent.transport, TransportMode::Foot | TransportMode::Bike))
+            {
+                rainy = true;
+            }
+        }
+    }
+    rainy
+}
+
+fn select_places(mut places: Vec<MockPlace>, intent: &Intent, rainy: bool) -> Vec<MockPlace> {
+    if places.is_empty() {
+        return places;
+    }
+    if rainy {
+        let indoor: Vec<MockPlace> = places
+            .iter()
+            .filter(|place| matches!(place.kind.as_str(), "museum" | "food" | "rest"))
+            .cloned()
+            .collect();
+        if !indoor.is_empty() {
+            places = indoor;
+        }
+    }
+    let base = (43.1155, 131.8855);
+    let radius_km = match intent.transport {
+        TransportMode::Foot => 20.0,
+        TransportMode::Bike => 50.0,
+        TransportMode::Car => 300.0,
+        TransportMode::Transit => 400.0,
+    };
+    let nearby: Vec<MockPlace> = places
+        .iter()
+        .filter(|place| haversine_km(base, (place.lat, place.lon)) <= radius_km)
+        .cloned()
+        .collect();
+    if !nearby.is_empty() {
+        places = nearby;
+    }
+    places.sort_by(|a, b| {
+        haversine_km(base, (a.lat, a.lon))
+            .partial_cmp(&haversine_km(base, (b.lat, b.lon)))
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     places.truncate(4);
     places
 }
@@ -223,7 +307,7 @@ fn build_draft(intent: &Intent, places: &[MockPlace], lodging_ids: &[String]) ->
     while date <= intent.end_date {
         let mut items = Vec::new();
         for slot in 0..2 {
-            if places.is_empty() {
+            if places.is_empty() || (slot > 0 && places.len() == 1) {
                 break;
             }
             let place = &places[index % places.len()];
