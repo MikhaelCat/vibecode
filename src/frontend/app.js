@@ -137,6 +137,7 @@ function handle(ev, d) {
 function reset() {
   $('stages').innerHTML = ''; $('trace').innerHTML = ''; $('usage').textContent = '';
   $('refusal').hidden = true; $('result').hidden = true; $('checks').innerHTML = '';
+  $('lodging-box').hidden = true; $('lodging').innerHTML = '';
   layer.clearLayers(); markers = []; plan = null;
 }
 function stage(text, state = 'live') {
@@ -158,11 +159,34 @@ const mockTag = () => '';
 const fmtTime = (t) => (t ? String(t).slice(0, 5) : '');
 const transportRu = { car: 'машина', foot: 'пешком', bike: 'велосипед', transit: 'автобус/поезд' };
 const legText = (leg) => leg
-  ? `${leg.mode === 'car' ? '🚗' : leg.mode === 'foot' ? '🚶' : leg.mode === 'bike' ? '🚲' : '🚌'} ${(+leg.distance_km || 0).toFixed(1)} км · ${leg.duration_min || 0} мин`
+  ? `${transportRu[leg.mode] || leg.mode || 'в пути'} · ${(+leg.distance_km || 0).toFixed(1)} км · ${leg.duration_min || 0} мин`
   : '';
 
 function planItems(day) { return day.items || day.stops || []; }
-function planLodging() { const l = plan?.lodging; return Array.isArray(l) ? l[0] : l; }
+const lodgingKindRu = { hotel: 'отель', guesthouse: 'гостевой дом', apartment: 'апартаменты', hostel: 'хостел' };
+
+function renderLodging() {
+  const list = Array.isArray(plan?.lodging_options) && plan.lodging_options.length
+    ? plan.lodging_options
+    : (Array.isArray(plan?.lodging) ? plan.lodging : []);
+  const box = $('lodging-box');
+  if (!list.length) { box.hidden = true; $('lodging').innerHTML = ''; return; }
+  box.hidden = false;
+  const chosen = new Set((plan.days || []).map((d) => d.lodging_id).filter(Boolean));
+  $('lodging').innerHTML = list.map((l, i) => {
+    const kind = lodgingKindRu[l.kind] || l.kind || 'жильё';
+    const price = l.price_per_night ? `${Number(l.price_per_night).toLocaleString('ru-RU')} ₽` : '';
+    const tag = chosen.has(l.id) ? 'в плане' : (i === 0 ? 'рекомендация' : '');
+    return `<article class="lodge${chosen.has(l.id) ? ' chosen' : ''}">
+      <span class="lodge-num">${String(i + 1).padStart(2, '0')}</span>
+      <div>
+        <h3>${esc(l.name)}</h3>
+        <p>${esc(l.settlement || 'Приморье')} · ${esc(kind)}${tag ? ` · <span class="lodge-tag">${esc(tag)}</span>` : ''}</p>
+      </div>
+      <div class="lodge-price">${price}<small>за ночь</small></div>
+    </article>`;
+  }).join('');
+}
 
 function renderPlan() {
   $('result').hidden = false;
@@ -176,14 +200,13 @@ function renderPlan() {
   if (plan.cost_estimate_rub) meta.push(`<span class="pill">≈ ${plan.cost_estimate_rub} ₽</span>`);
   (plan.weather || []).slice(0, 3).forEach((w) =>
     meta.push(`<span class="pill">${esc(w.date || '')} · ${esc(w.t_min ?? '')}…${esc(w.t_max ?? '')}° ${esc(w.desc || w.summary || '')}</span>`));
-  const lod = planLodging();
-  if (lod) meta.push(`<span class="pill">Ночёвка: ${esc(lod.name)}${mockTag(lod)}</span>`);
   (plan.warnings || []).forEach((w) => meta.push(`<span class="pill">⚠ ${esc(w.message || w)}</span>`));
   $('p-meta').innerHTML = meta.join('');
   const days = plan.days || [];
   $('tabs').innerHTML = days.map((d, i) =>
     `<button class="tab" role="tab" data-i="${i}" aria-selected="${i === day}">${esc(d.title || 'День ' + (i + 1))}</button>`).join('');
   renderDay();
+  renderLodging();
 }
 $('tabs').addEventListener('click', (e) => {
   const b = e.target.closest('.tab'); if (!b) return;
