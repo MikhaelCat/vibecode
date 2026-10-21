@@ -10,7 +10,7 @@ const EXAMPLES = [
   'Три дня: маяки, бухты и хорошая погода',
   'Что посмотреть на острове Русский с детьми?',
 ];
-const STAGES = { intent: 'Разбираю запрос', plan: 'Собираю план', validation: 'Проверяю план', done: 'Готово' };
+const STAGES = { guard: 'Проверяю тему', intent: 'Разбираю запрос', fallback: 'Упрощаю план', plan: 'Собираю план', validation: 'Проверяю план', done: 'Готово' };
 
 // ---------- карта ----------
 const map = L.map('map', { zoomControl: true }).setView([44.0, 133.0], 7);
@@ -74,8 +74,8 @@ async function readSSE(body, cb) {
 
 // ---------- события ----------
 function handle(ev, d) {
-  if (ev === 'stage') stage(d.label || d.name || d.stage || String(d));
-  else if (STAGES[ev]) stage(STAGES[ev], ev === 'done' ? 'done' : 'live');
+  if (ev === 'stage') stage(STAGES[d.stage] || d.label || d.name || d.stage || String(d));
+  else if (STAGES[ev] && ev !== 'intent') stage(STAGES[ev], ev === 'done' ? 'done' : 'live');
   if (ev === 'intent') trace('intent', JSON.stringify(d));
   if (ev === 'tool_call') trace(d.name || d.tool || 'tool', JSON.stringify(d.args ?? d.input ?? {}));
   if (ev === 'tool_result') trace(d.name || d.tool || 'result', d.ok === false ? 'ошибка: ' + (d.error || '') : 'ок' + (d.ms ? ` · ${d.ms} мс` : ''), d.ok === false);
@@ -106,21 +106,36 @@ function refuse(d) {
   const r = $('refusal'); r.hidden = false;
   r.innerHTML = `<b>Запрос не по теме.</b> ${esc(d.message || d.reason || 'Я планирую только поездки по Приморскому краю.')}`;
 }
-const mockTag = (o) => (o && (o.mock || o.is_mock) ? '<span class="mock">мок</span>' : '');
+const isMock = (o) => !!(o && (o.source === 'mock' || o.source === 'stale' || o.mock || o.is_mock));
+const mockTag = (o) => (isMock(o) ? '<span class="mock">мок</span>' : '');
+const fmtTime = (t) => (t ? String(t).slice(0, 5) : '');
+const transportRu = { car: 'машина', foot: 'пешком', bike: 'велосипед', transit: 'автобус/поезд' };
+const legText = (leg) => leg
+  ? `${leg.mode === 'car' ? '🚗' : leg.mode === 'foot' ? '🚶' : leg.mode === 'bike' ? '🚲' : '🚌'} ${(+leg.distance_km || 0).toFixed(1)} км · ${leg.duration_min || 0} мин`
+  : '';
+
+function planItems(day) { return day.items || day.stops || []; }
+function planLodging() { const l = plan?.lodging; return Array.isArray(l) ? l[0] : l; }
 
 function renderPlan() {
   $('result').hidden = false;
   $('p-title').textContent = plan.title || 'Ваш маршрут';
   $('p-sum').textContent = plan.summary || '';
   const meta = [];
+  const intent = plan.intent || {};
+  if (intent.start_date) meta.push(`<span class="pill">${esc(intent.start_date)} — ${esc(intent.end_date || '')}</span>`);
+  if (plan.transport || intent.transport) meta.push(`<span class="pill">${esc(transportRu[plan.transport || intent.transport] || plan.transport || '')}</span>`);
+  if (plan.total_km) meta.push(`<span class="pill">${(+plan.total_km).toFixed(0)} км</span>`);
+  if (plan.cost_estimate_rub) meta.push(`<span class="pill">≈ ${plan.cost_estimate_rub} ₽</span>`);
   (plan.weather || []).slice(0, 3).forEach((w) =>
     meta.push(`<span class="pill">${esc(w.date || '')} · ${esc(w.t_min ?? '')}…${esc(w.t_max ?? '')}° ${esc(w.desc || w.summary || '')}</span>`));
-  if (plan.lodging) meta.push(`<span class="pill">Ночёвка: ${esc(plan.lodging.name)}${mockTag(plan.lodging)}</span>`);
-  (plan.warnings || []).forEach((w) => meta.push(`<span class="pill">⚠ ${esc(w)}</span>`));
+  const lod = planLodging();
+  if (lod) meta.push(`<span class="pill">Ночёвка: ${esc(lod.name)}${mockTag(lod)}</span>`);
+  (plan.warnings || []).forEach((w) => meta.push(`<span class="pill">⚠ ${esc(w.message || w)}</span>`));
   $('p-meta').innerHTML = meta.join('');
   const days = plan.days || [];
   $('tabs').innerHTML = days.map((d, i) =>
-    `<button class="tab" role="tab" data-i="${i}" aria-selected="${i === day}">День ${i + 1}${d.title ? ': ' + esc(d.title) : ''}</button>`).join('');
+    `<button class="tab" role="tab" data-i="${i}" aria-selected="${i === day}">${esc(d.title || 'День ' + (i + 1))}</button>`).join('');
   renderDay();
 }
 $('tabs').addEventListener('click', (e) => {
@@ -130,18 +145,26 @@ $('tabs').addEventListener('click', (e) => {
 
 function renderDay() {
   const d = (plan.days || [])[day]; if (!d) return;
-  const stops = d.stops || [];
-  $('stops').innerHTML = stops.map((s, i) => `
-    <li class="stop" data-i="${i}">
-      <div class="t">${esc(s.time || '')}</div>
+  const items = planItems(d);
+  const legs = d.legs || [];
+  let html = '';
+  items.forEach((s, i) => {
+    if (legs[i - 1]) html += `<li class="leg">${esc(legText(legs[i - 1]))}</li>`;
+    const time = fmtTime(s.start || s.time);
+    const end = fmtTime(s.end);
+    const range = time && end ? `${time}–${end}` : time;
+    html += `<li class="stop" data-i="${i}">
+      <div class="t">${esc(range)}</div>
       <h4>${esc(s.name)}${mockTag(s)}</h4>
       ${s.note ? `<p>${esc(s.note)}</p>` : ''}
       ${s.place_id ? `<code title="Источник точки">${esc(s.place_id)}</code>` : ''}
-    </li>
-    ${s.leg ? `<li class="leg">${esc(s.leg)}</li>` : ''}`).join('');
+    </li>`;
+    if (s.leg) html += `<li class="leg">${esc(s.leg)}</li>`;
+  });
+  $('stops').innerHTML = html;
   layer.clearLayers(); markers = [];
   const pts = [];
-  stops.forEach((s, i) => {
+  items.forEach((s, i) => {
     const lat = s.lat ?? s.latitude, lon = s.lon ?? s.lng ?? s.longitude;
     if (lat == null || lon == null) return;
     pts.push([lat, lon]);
@@ -161,14 +184,16 @@ $('stops').addEventListener('click', (e) => {
 });
 
 function renderChecks(v) {
-  const list = v.checks || v.results || [];
-  const failed = list.filter((c) => c.ok === false || c.passed === false).length;
-  const verdict = (v.passed ?? failed === 0)
-    ? '<div class="verdict">Все проверки пройдены.</div>'
-    : `<div class="verdict">Не прошло проверок: ${failed}. План показан с предупреждениями.</div>`;
+  const list = v.violations || v.checks || v.results || [];
+  const hard = v.hard_failed === true || list.some((c) => c.severity === 'hard' || c.ok === false || c.passed === false);
+  const passed = v.checks_passed != null ? v.checks_passed : list.filter((c) => !(c.ok === false || c.passed === false)).length;
+  const total = v.checks_run != null ? v.checks_run : list.length;
+  const verdict = hard
+    ? '<div class="verdict">Есть блокирующие нарушения — план показан с предупреждениями.</div>'
+    : `<div class="verdict">Проверки пройдены${total ? `: ${passed}/${total}` : ''}${v.score != null ? ` · score ${(+v.score).toFixed(2)}` : ''}.</div>`;
   $('checks').innerHTML = verdict + list.map((c) => {
-    const ok = !(c.ok === false || c.passed === false);
-    return `<span class="ck ${ok ? 'ok' : 'fail'}" title="${esc(c.message || c.msg || '')}">${esc(c.id || c.code)} ${ok ? '✓' : '✗'}</span>`;
+    const ok = !(c.severity === 'hard' || c.ok === false || c.passed === false);
+    return `<span class="ck ${ok ? 'ok' : 'fail'}" title="${esc(c.message || c.msg || '')}">${esc(c.code || c.id || 'V')} ${ok ? '✓' : '✗'}</span>`;
   }).join('');
 }
 
