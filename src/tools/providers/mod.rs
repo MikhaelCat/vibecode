@@ -6,6 +6,7 @@ pub mod places;
 pub mod route;
 pub mod transport;
 pub mod weather;
+pub mod wikipedia;
 
 pub use events::EventsTool;
 pub use fuel::FuelTool;
@@ -15,6 +16,7 @@ pub use places::PlacesTool;
 pub use route::RouteTool;
 pub use transport::TransportTool;
 pub use weather::WeatherTool;
+pub use wikipedia::WikipediaTool;
 
 use std::path::Path;
 
