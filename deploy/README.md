@@ -17,7 +17,9 @@ sudoedit /opt/travel-ai/.env
   (`openrouter/deepseek/deepseek-v4.1-flash`).
 - **OpenRouter:** `OPENROUTER_API_KEY` и `OPENROUTER_MODEL`.
 
-Без ключа поставьте `MOCK_LLM=1` — приложение работает офлайн.
+Без ключа поставьте `MOCK_LLM=1` — приложение работает офлайн. Для публичного
+демо задайте `APP_TOKEN`, `DAILY_BUDGET_USD` и `DAILY_TOKEN_BUDGET`; `APP_TOKEN`
+передаётся в `x-app-token` или `Authorization: Bearer`.
 `DATABASE_URL` указывает на `/var/lib/travel-ai/app.db`; `PRICE_IN_PER_M` и
 `PRICE_OUT_PER_M` — цена за 1M токенов, `0` = неизвестна. Пути `PROMPTS_DIR`, `DATA_DIR` и `WEB_DIR` относительны `/opt/travel-ai`.
 
