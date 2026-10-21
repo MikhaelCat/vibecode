@@ -60,8 +60,8 @@ async def main():
           const q = document.getElementById('q');
           q.value = 'Хочу на выходные по Приморью на машине, не больше двух дней';
           document.getElementById('form').requestSubmit();
-          for (let i = 0; i < 100; i++) {
-            await new Promise(r => setTimeout(r, 400));
+          for (let i = 0; i < 160; i++) {
+            await new Promise(r => setTimeout(r, 500));
             if (!document.getElementById('result').hidden) {
               const meta = document.getElementById('p-meta').innerText;
               return JSON.stringify({
