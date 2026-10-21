@@ -663,6 +663,7 @@ Fallback-сборщик — это ещё и страховка демо. Пиш
 |---|---|---|
 | `geocode` | `query`, `limit` | координаты, нормализованное имя, bbox |
 | `search_places` | `area`, `categories[]`, `limit`, `date` | места: id, имя, координаты, часы, рейтинг-эвристика |
+| `get_nearby_attractions` | `lat`, `lon`, `radius_meters` | реальные объекты Википедии: id, имя, координаты |
 | `get_route` | `points[]`, `mode` | расстояние, время, геометрия, сегменты |
 | `get_weather` | `lat`, `lon`, `start_date`, `end_date` | дневные осадки, ветер, температуры, восход/закат |
 | `find_lodging` | `settlement`, `check_in`, `check_out`, `party` | варианты с ценой и координатами (mock) |
