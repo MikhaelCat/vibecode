@@ -1,7 +1,8 @@
 use std::str::FromStr;
 
 use anyhow::Result;
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Duration, TimeZone, Utc};
+use chrono_tz::Asia::Vladivostok;
 use serde_json::{json, Value};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::SqlitePool;
@@ -21,6 +22,21 @@ pub struct RunRecord {
     pub cost_usd: f64,
     pub plan_json: Option<String>,
     pub trace_json: Option<String>,
+}
+
+fn today_bounds_utc() -> (String, String) {
+    let local = Utc::now().with_timezone(&Vladivostok);
+    let start_local = local
+        .date_naive()
+        .and_hms_opt(0, 0, 0)
+        .expect("valid midnight");
+    let start = Vladivostok
+        .from_local_datetime(&start_local)
+        .single()
+        .expect("unambiguous Vladivostok midnight")
+        .with_timezone(&Utc);
+    let end = start + Duration::days(1);
+    (start.to_rfc3339(), end.to_rfc3339())
 }
 
 type RunRow = (
@@ -106,11 +122,13 @@ impl Store {
     }
 
     pub async fn spent_today(&self) -> f64 {
-        let day = today_vladivostok().format("%Y-%m-%d").to_string();
+        let (start, end) = today_bounds_utc();
         let row: Option<(f64,)> = sqlx::query_as(
-            "SELECT COALESCE(SUM(cost_usd), 0) FROM runs WHERE substr(created_at, 1, 10) = ?",
+            "SELECT COALESCE(SUM(cost_usd), 0) FROM runs
+             WHERE created_at >= ? AND created_at < ?",
         )
-        .bind(day)
+        .bind(start)
+        .bind(end)
         .fetch_optional(&self.pool)
         .await
         .ok()
@@ -118,14 +136,31 @@ impl Store {
         row.map(|(cost,)| cost).unwrap_or(0.0)
     }
 
+    pub async fn spent_tokens_today(&self) -> u64 {
+        let (start, end) = today_bounds_utc();
+        let row: Option<(i64,)> = sqlx::query_as(
+            "SELECT COALESCE(SUM(prompt_tokens + completion_tokens), 0) FROM runs
+             WHERE created_at >= ? AND created_at < ?",
+        )
+        .bind(start)
+        .bind(end)
+        .fetch_optional(&self.pool)
+        .await
+        .ok()
+        .flatten();
+        row.map(|(tokens,)| tokens.max(0) as u64).unwrap_or(0)
+    }
+
     pub async fn stats_today(&self) -> Value {
+        let (start, end) = today_bounds_utc();
         let day = today_vladivostok().format("%Y-%m-%d").to_string();
         let row: Option<(i64, i64, i64, f64)> = sqlx::query_as(
             "SELECT COUNT(*), COALESCE(SUM(prompt_tokens), 0),
                     COALESCE(SUM(completion_tokens), 0), COALESCE(SUM(cost_usd), 0)
-             FROM runs WHERE substr(created_at, 1, 10) = ?",
+             FROM runs WHERE created_at >= ? AND created_at < ?",
         )
-        .bind(&day)
+        .bind(start)
+        .bind(end)
         .fetch_optional(&self.pool)
         .await
         .ok()
