@@ -3,7 +3,7 @@
 Веб-ассистент: свободный запрос на русском → проверенный план поездки на 1–3 дня по Приморскому краю: места, маршрут, ночёвка, погода, ограничения, карта и trace того, как план собран.
 
 **Хакатон:** Т-Банк × Сириус · 2 дня · защита 8 + 3 минуты  
-**Стек:** Rust (axum + tokio), T-Bank Spirit LLM Proxy (DeepSeek) / OpenRouter, OpenStreetMap / Open-Meteo / OSRM, SQLite; фронтенд — отдельная команда, позже  
+**Стек:** Rust (axum + tokio), T-Bank Spirit LLM Proxy (DeepSeek) / OpenRouter, OpenStreetMap / Open-Meteo / OSRM, SQLite, SPA (ванильный JS + Leaflet)  
 **Основная папка кода:** [`src/`](src/)
 
 ---
@@ -45,7 +45,7 @@ POST-эндпоинта требуют `x-app-token`), а расход огра�
 | Роль | Зона | Папки |
 |---|---|---|
 | **Backend + deploy** | API/SSE, orchestrator, агентный цикл, валидатор, store, бюджет, VM и systemd | `src/api/`, `src/agent/`, `src/domain/`, `src/llm/`, `src/store/`, `src/main.rs`, `deploy/` |
-| **Frontend** | SPA, SSE-клиент, карта, план, trace (позже, отдельная ветка) | `src/frontend/` |
+| **Frontend** | SPA, SSE-клиент, карта, план, trace | `src/frontend/` |
 | **Parser** | OSM/Open-Meteo/OSRM, нормализация, моки, кэш | `src/tools/providers/`, `src/parser/`, `data/mock/` |
 | **QA** | эвал, тесты, guardrails, метрики | `src/bin/eval.rs`, `src/qa/`, `data/eval/`, `tests/` |
 | **System prompt engineer** | system/preflight/repair-промпты, описания тулов, отказы | `src/prompts/`, `configs/` |
@@ -81,7 +81,7 @@ vibecode/
 └── README.md
 ```
 
-`src/` — главная папка: Rust-бэкенд лежит в корне `src/`, parser/QA/prompts — в `src/parser/`, `src/qa/`, `src/prompts/`. Фронтенд в этом репозитории ещё не добавлен: `src/frontend/` появится отдельной командой. Cargo собирает только Rust-модули.
+`src/` — главная папка: Rust-бэкенд лежит в корне `src/`, parser/QA/prompts — в `src/parser/`, `src/qa/`, `src/prompts/`. Фронтенд — `src/frontend/` (ванильный JS + Leaflet), собирается в `dist`. Cargo собирает только Rust-модули.
 
 ---
 
@@ -109,7 +109,14 @@ curl -N -X POST http://127.0.0.1:8080/api/plan \
   -d '{"query":"Хочу на выходные по Приморью на машине, не больше двух дней"}'
 ```
 
-Фронтенд пока не входит в репозиторий: API и SSE можно проверить через `scripts/smoke.sh` и `docs/API.md`.
+Фронтенд собирается без npm-зависимостей:
+
+```bash
+bash -c 'cd src/frontend && mkdir -p dist && cp index.html styles.css app.js dist/'
+# или: npm --prefix src/frontend run build
+```
+
+Axum отдаёт `src/frontend/dist`; при локальном `cargo run` без сборки `/` вернёт 404.
 
 ## Docker и CI
 
@@ -155,7 +162,7 @@ sudo journalctl -u travel-ai -f
 | `GET` | `/api/runs/{id}` | план + trace |
 | `GET` | `/api/stats` | запуски, токены, стоимость за сегодня |
 | `GET` | `/api/health` | статус, версия, модель, бюджет |
-| `GET` | `/` | SPA из `src/frontend/dist`, если фронт собран; иначе 404 |
+| `GET` | `/` | SPA из `src/frontend/dist`; собирается `just web` / Docker
 
 SSE-события: `stage`, `intent`, `tool_call`, `tool_result`, `plan`, `validation`, `usage`, `refusal`, `done`. Ошибки до открытия потока — JSON 4xx; внутри прогона — fallback или `tool_result` с `ok:false`.
 
