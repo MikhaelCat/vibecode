@@ -18,3 +18,7 @@ results/
 __pycache__/
 *.pyc
 .venv/
+
+# Local agent/runtime state
+.mimosa/
+.v2c/
