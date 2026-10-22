@@ -447,7 +447,8 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
             if let Some(city) = intent.city() {
                 if let Some(center) = city_center(city) {
                     let scope = crate::domain::settlements::scope_km(city).max(15.0);
-                    if fact.is_some_and(|place| haversine_km((place.lat, place.lon), center) > scope)
+                    if fact
+                        .is_some_and(|place| haversine_km((place.lat, place.lon), center) > scope)
                     {
                         outside_items += 1;
                         continue;

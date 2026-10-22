@@ -1133,7 +1133,9 @@ mod tests {
     fn sauna_query_yields_sauna_interest() {
         let intent = intent_for("в баню на выходные");
         assert!(intent.interests.iter().any(|item| item == "sauna"));
-        assert!(search_categories(&intent).iter().any(|item| item == "sauna"));
+        assert!(search_categories(&intent)
+            .iter()
+            .any(|item| item == "sauna"));
     }
 
     #[test]
@@ -1199,7 +1201,8 @@ mod tests {
 
     #[test]
     fn documented_interests_keep_their_mappings() {
-        let intent = intent_with_interests(&["food", "nightlife", "shopping", "attractions", "mountains"]);
+        let intent =
+            intent_with_interests(&["food", "nightlife", "shopping", "attractions", "mountains"]);
         let categories = search_categories(&intent);
         for expected in [
             "restaurant",

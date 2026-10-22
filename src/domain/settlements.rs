@@ -131,7 +131,8 @@ fn word_matches(text_word: &str, name_word: &str, multi_word_name: bool) -> bool
 }
 
 fn settlement_matches(haystack: &str, name: &str) -> bool {
-    if mentions_region(haystack) && (name.contains("приморск") || name.contains("приморь")) {
+    if mentions_region(haystack) && (name.contains("приморск") || name.contains("приморь"))
+    {
         return false;
     }
     let text_words: Vec<&str> = haystack.split_whitespace().collect();
@@ -154,7 +155,8 @@ fn settlement_matches(haystack: &str, name: &str) -> bool {
 pub fn mentions_region(normalized: &str) -> bool {
     let words: Vec<&str> = normalized.split_whitespace().collect();
     let has_word = |list: &[&str]| words.iter().any(|word| list.contains(word));
-    if has_word(&["приморье", "приморья", "приморью", "приморьем"]) {
+    if has_word(&["приморье", "приморья", "приморью", "приморьем"])
+    {
         return true;
     }
     has_word(&["приморский", "приморском", "приморского", "приморскому"])
@@ -279,8 +281,7 @@ mod tests {
             Some("Приморский")
         );
         assert_eq!(
-            find_in_text("на выходные в приморский край")
-                .map(|item| item.name.as_str()),
+            find_in_text("на выходные в приморский край").map(|item| item.name.as_str()),
             None
         );
         assert_eq!(

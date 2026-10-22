@@ -3,176 +3,176 @@
     {
       "id": "mock:place:oceanarium",
       "name": "Приморский океанариум",
-      "lat": 43.004995,
-      "lon": 131.9249297,
+      "lat": 43.0142079,
+      "lon": 131.930204,
       "kind": "museum",
-      "opening_hours": "Tu-Su 10:00-18:00",
+      "opening_hours": null,
       "source": "mock"
     },
     {
       "id": "mock:place:fortress",
       "name": "Музей «Владивостокская крепость»",
-      "lat": 43.1188,
-      "lon": 131.8833,
+      "lat": 43.1225228,
+      "lon": 131.8764755,
       "kind": "historic",
-      "opening_hours": "We-Su 10:00-18:00",
+      "opening_hours": null,
       "source": "mock"
     },
     {
-      "id": "mock:place:3",
+      "id": "mock:place/tokarevsky-lighthouse",
       "name": "Токаревский маяк",
-      "lat": 43.0731,
-      "lon": 131.84311,
+      "lat": 43.0731382,
+      "lon": 131.8431093,
       "kind": "viewpoint",
       "opening_hours": null,
       "source": "mock"
     },
     {
-      "id": "mock:place:4",
-      "name": "Смотровая площадка «Русский мост»",
-      "lat": 43.0677064,
-      "lon": 131.9159453,
-      "kind": "viewpoint",
+      "id": "mock:place/voroshilovskaya-battery",
+      "name": "Ворошиловская батарея",
+      "lat": 42.9815564,
+      "lon": 131.8906605,
+      "kind": "historic",
       "opening_hours": null,
       "source": "mock"
     },
     {
-      "id": "mock:place:6",
-      "name": "Полуостров Гамова",
-      "lat": 42.5664,
-      "lon": 131.2,
-      "kind": "nature",
-      "opening_hours": null,
-      "source": "mock"
-    },
-    {
-      "id": "mock:place:7",
-      "name": "Сихотэ-Алинский заповедник",
-      "lat": 45.065,
-      "lon": 136.64,
-      "kind": "nature",
-      "opening_hours": "Mo-Fr 09:00-17:00",
-      "source": "mock"
-    },
-    {
-      "id": "mock:place:8",
-      "name": "Парк Дружбы в Уссурийске",
-      "lat": 43.7992,
-      "lon": 131.9495,
+      "id": "mock:place/primorsky-safari-park",
+      "name": "Приморский сафари-парк",
+      "lat": 43.3253478,
+      "lon": 132.4034292,
       "kind": "park",
-      "opening_hours": "24/7",
-      "source": "mock"
-    },
-    {
-      "id": "mock:place:9",
-      "name": "Смотровая площадка «Бухта Находка»",
-      "lat": 42.8163991,
-      "lon": 132.8892422,
-      "kind": "viewpoint",
       "opening_hours": null,
       "source": "mock"
     },
     {
-      "id": "mock:place:10",
-      "name": "Пляж Андреевки",
-      "lat": 42.6478738,
-      "lon": 131.1270179,
+      "id": "mock:place/sikhote-alin-reserve",
+      "name": "Сихотэ-Алинский заповедник",
+      "lat": 45.2576644,
+      "lon": 136.2229076,
       "kind": "nature",
       "opening_hours": null,
       "source": "mock"
     },
     {
-      "id": "mock:place:slavyanka",
-      "name": "Славянка",
-      "lat": 42.8607,
-      "lon": 131.3924,
-      "kind": "sight",
-      "opening_hours": null,
-      "source": "mock"
-    },
-    {
-      "id": "mock:place:12",
-      "name": "Мыс Тобизина",
-      "lat": 42.945,
-      "lon": 131.87083,
-      "kind": "nature",
-      "opening_hours": null,
-      "source": "mock"
-    },
-    {
-      "id": "mock:place:14",
-      "name": "Смотровая площадка «Орлиное гнездо»",
-      "lat": 43.1195,
-      "lon": 131.8982,
-      "kind": "viewpoint",
-      "opening_hours": "24/7",
-      "source": "mock"
-    },
-    {
-      "id": "mock:place:15",
+      "id": "mock:place/lazovsky-reserve",
       "name": "Лазовский заповедник",
-      "lat": 43.3742,
-      "lon": 133.9045,
+      "lat": 43.1408374,
+      "lon": 133.9439153,
       "kind": "nature",
-      "opening_hours": "Mo-Fr 09:00-17:00",
-      "source": "mock"
-    },
-    {
-      "id": "mock:place:khanka-shore",
-      "name": "Камень-Рыболов",
-      "lat": 44.740055,
-      "lon": 132.042187,
-      "kind": "sight",
       "opening_hours": null,
       "source": "mock"
     },
     {
-      "id": "mock:place:17",
+      "id": "mock:place/kravtsovskie-waterfalls",
+      "name": "Кравцовские водопады",
+      "lat": 43.3677145,
+      "lon": 131.6402046,
+      "kind": "nature",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/livadiyskaya",
       "name": "Гора Ливадийская (Пидан)",
-      "lat": 43.0417,
-      "lon": 132.6833,
+      "lat": 43.0710239,
+      "lon": 132.6934561,
       "kind": "nature",
       "opening_hours": null,
       "source": "mock"
     },
     {
-      "id": "mock:place:18",
-      "name": "Арсеньевский историко-краеведческий музей",
-      "lat": 44.1662,
-      "lon": 133.2702,
-      "kind": "museum",
-      "opening_hours": "Tu-Sa 10:00-18:00",
+      "id": "mock:place/mys-astafyeva",
+      "name": "Мыс Астафьева",
+      "lat": 42.6037481,
+      "lon": 131.2278962,
+      "kind": "nature",
+      "opening_hours": null,
       "source": "mock"
     },
     {
-      "id": "mock:place:19",
-      "name": "Дальнегорский музейно-выставочный центр",
-      "lat": 44.5662,
-      "lon": 135.6178,
-      "kind": "museum",
-      "opening_hours": "Mo-Fr 09:00-18:00",
+      "id": "mock:place/shkotovo-caves",
+      "name": "Пещера «Спящая красавица» (Шкотовские пещеры)",
+      "lat": 43.6407752,
+      "lon": 132.5614053,
+      "kind": "nature",
+      "opening_hours": null,
       "source": "mock"
     },
     {
-      "id": "mock:place:bar-nautilus",
-      "name": "Наутилус",
-      "lat": 43.1121594,
-      "lon": 131.8731153,
+      "id": "mock:place/land-of-leopard",
+      "name": "Заповедник «Земля леопарда»",
+      "lat": 43.2661838,
+      "lon": 131.3525535,
+      "kind": "nature",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/mys-tobizina",
+      "name": "Мыс Тобизина",
+      "lat": 42.94492,
+      "lon": 131.8706545,
+      "kind": "nature",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/orlinoe-gnezdo",
+      "name": "Сопка Орлиное гнездо (смотровая площадка)",
+      "lat": 43.1223764,
+      "lon": 131.8990512,
+      "kind": "viewpoint",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/arsenyev-museum",
+      "name": "Музей истории Дальнего Востока им. В. К. Арсеньева",
+      "lat": 43.1163613,
+      "lon": 131.8821714,
+      "kind": "museum",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/primorye-art-gallery",
+      "name": "Приморская государственная картинная галерея",
+      "lat": 43.1143182,
+      "lon": 131.8819272,
+      "kind": "museum",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/ussuriysk-museum",
+      "name": "Уссурийский историко-краеведческий музей",
+      "lat": 43.7904588,
+      "lon": 131.9610744,
+      "kind": "museum",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/restaurant-haekymgan",
+      "name": "Ресторан «Хэкымган»",
+      "lat": 43.1182366,
+      "lon": 131.8887365,
+      "kind": "food",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/bar-mechta-i-vodki",
+      "name": "Бар «Мечта и водки»",
+      "lat": 43.1183914,
+      "lon": 131.885001,
       "kind": "bar",
       "opening_hours": null,
       "source": "mock"
     },
     {
-      "id": "mock:place:club-stealth",
-      "name": "Стэлс",
-      "lat": 43.1154133,
-      "lon": 131.9027473,
-      "kind": "club",
-      "opening_hours": null,
-      "source": "mock"
-    },
-    {
-      "id": "mock:place:bar-soda",
+      "id": "mock:place/bar-soda",
       "name": "Soda Bar",
       "lat": 43.1155322,
       "lon": 131.8876773,
@@ -181,38 +181,191 @@
       "source": "mock"
     },
     {
-      "id": "mock:place:bar-mechta",
-      "name": "Мечта и водки",
-      "lat": 43.1183914,
-      "lon": 131.885001,
-      "kind": "bar",
-      "opening_hours": null,
-      "source": "mock"
-    },
-    {
-      "id": "mock:place:club-808",
-      "name": "808",
-      "lat": 43.1176222,
-      "lon": 131.8929778,
+      "id": "mock:place/club-nautilus",
+      "name": "Наутилус",
+      "lat": 43.1121594,
+      "lon": 131.8731153,
       "kind": "club",
       "opening_hours": null,
       "source": "mock"
     },
     {
-      "id": "mock:place:food-haekymgan",
-      "name": "Хэкымган",
-      "lat": 43.1182366,
-      "lon": 131.8887365,
+      "id": "mock:place/club-stels",
+      "name": "Стэлс",
+      "lat": 43.1154133,
+      "lon": 131.9027473,
+      "kind": "club",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/cafe-stanislavsky",
+      "name": "Арт-кафе «Станиславский»",
+      "lat": 43.115223,
+      "lon": 131.8914446,
       "kind": "food",
       "opening_hours": null,
       "source": "mock"
     },
     {
-      "id": "mock:place:food-stanislavsky",
-      "name": "Арт-кафе «Станиславский»",
-      "lat": 43.115223,
-      "lon": 131.8914446,
-      "kind": "food",
+      "id": "mock:place/vladivostok",
+      "name": "Владивосток",
+      "lat": 43.1150678,
+      "lon": 131.8855768,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/ussuriysk",
+      "name": "Уссурийск",
+      "lat": 43.7972447,
+      "lon": 131.9520752,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/nakhodka",
+      "name": "Находка",
+      "lat": 42.8246489,
+      "lon": 132.8926,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/artem",
+      "name": "Артём",
+      "lat": 43.3529909,
+      "lon": 132.1800977,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/arsenyev",
+      "name": "Арсеньев",
+      "lat": 44.1644451,
+      "lon": 133.2704255,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/dalnegorsk",
+      "name": "Дальнегорск",
+      "lat": 44.559457,
+      "lon": 135.5759241,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/spassk-dalny",
+      "name": "Спасск-Дальний",
+      "lat": 44.5980135,
+      "lon": 132.815701,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/partizansk",
+      "name": "Партизанск",
+      "lat": 43.1199311,
+      "lon": 133.122886,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/lesozavodsk",
+      "name": "Лесозаводск",
+      "lat": 45.4653394,
+      "lon": 133.4047457,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/dalnerechensk",
+      "name": "Дальнереченск",
+      "lat": 45.9337195,
+      "lon": 133.7349056,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/bolshoy-kamen",
+      "name": "Большой Камень",
+      "lat": 43.1121194,
+      "lon": 132.3509104,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/fokino",
+      "name": "Фокино",
+      "lat": 42.9772084,
+      "lon": 132.404905,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/slavyanka",
+      "name": "Славянка",
+      "lat": 42.8606833,
+      "lon": 131.3924115,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/andreevka",
+      "name": "Андреевка",
+      "lat": 42.6480475,
+      "lon": 131.1296462,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/terney",
+      "name": "Терней",
+      "lat": 45.0504046,
+      "lon": 136.6137293,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/kavalerovo",
+      "name": "Кавалерово",
+      "lat": 44.2673637,
+      "lon": 135.0554977,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/kamen-rybolov",
+      "name": "Камень-Рыболов",
+      "lat": 44.7421984,
+      "lon": 132.0467903,
+      "kind": "sight",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place/shkotovo",
+      "name": "Шкотово",
+      "lat": 43.3209601,
+      "lon": 132.360091,
+      "kind": "sight",
       "opening_hours": null,
       "source": "mock"
     }

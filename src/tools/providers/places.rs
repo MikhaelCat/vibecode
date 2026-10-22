@@ -357,7 +357,9 @@ fn osm_values(categories: &[String]) -> Vec<String> {
             "scuba_diving" | "дайвинг" => &["scuba_diving"],
             "surfing" | "серфинг" => &["surfing"],
             "rental" | "прокат" => &["rental"],
-            "trail" | "хайкинг" | "треккинг" => &["park", "nature_reserve", "viewpoint"],
+            "trail" | "хайкинг" | "треккинг" => {
+                &["park", "nature_reserve", "viewpoint"]
+            }
             "place_of_worship" | "церковь" | "храм" => &["place_of_worship"],
             "picnic_table" | "пикник" => &["picnic_table", "picnic_site"],
             "camp_site" | "кемпинг" => &["camp_site"],
@@ -698,14 +700,7 @@ fn osm_kind(tags: &HashMap<String, String>) -> &'static str {
 
 fn osm_map_matches(tags: &HashMap<String, String>, wanted: &[String]) -> bool {
     let keys = [
-        "amenity",
-        "shop",
-        "tourism",
-        "leisure",
-        "natural",
-        "man_made",
-        "sport",
-        "historic",
+        "amenity", "shop", "tourism", "leisure", "natural", "man_made", "sport", "historic",
     ];
     keys.iter().any(|key| {
         tags.get(*key)
@@ -829,10 +824,7 @@ fn overpass_filters(categories: &[String]) -> Vec<String> {
         ("серфинг", "surfing"),
     ] {
         if has(category) {
-            add_filter(
-                &mut filters,
-                format!("nwr[\"sport\"=\"{sport}\"]"),
-            );
+            add_filter(&mut filters, format!("nwr[\"sport\"=\"{sport}\"]"));
         }
     }
     if has("пикник") || has("picnic") {

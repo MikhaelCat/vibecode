@@ -276,10 +276,7 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
         (prefix("клуб") || prefix("ночн"), "nightlife"),
         // Family and activity requests. Each interest name is an OSM tag value,
         // so a new interest needs no extra mapping table to reach the search.
-        (
-            prefix("аквапарк"),
-            "water_park",
-        ),
+        (prefix("аквапарк"), "water_park"),
         (prefix("океанариум") || prefix("дельфинар"), "aquarium"),
         (prefix("зоопарк"), "zoo"),
         (prefix("бассейн"), "swimming_pool"),
@@ -1124,10 +1121,7 @@ mod tests {
     #[test]
     fn activity_requests_are_travel_not_off_topic() {
         let water_park = parse("поехали в аквапарк", today()).unwrap();
-        assert!(water_park
-            .interests
-            .iter()
-            .any(|item| item == "water_park"));
+        assert!(water_park.interests.iter().any(|item| item == "water_park"));
 
         let zoo = parse("в зоопарк с детьми", today()).unwrap();
         assert!(zoo.interests.iter().any(|item| item == "zoo"));
@@ -1143,10 +1137,7 @@ mod tests {
         assert!(lighthouse.interests.iter().any(|item| item == "lighthouse"));
 
         let cave = parse("поехали в пещеры", today()).unwrap();
-        assert!(cave
-            .interests
-            .iter()
-            .any(|item| item == "cave_entrance"));
+        assert!(cave.interests.iter().any(|item| item == "cave_entrance"));
 
         let swimming = parse("на выходные в бассейн", today()).unwrap();
         assert!(swimming

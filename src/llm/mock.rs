@@ -12,6 +12,10 @@ use crate::domain::trace::TokenUsage;
 use crate::llm::{ChatRequest, ChatResponse, LlmClient, LlmError, LlmToolCall};
 
 /// Deterministic offline LLM used for tests, local demo and when no API key is set.
+///
+/// Only the model is mocked: the agent still calls the regular tools, which hit
+/// the live providers (OSM/Overpass, Wikipedia, Nominatim, Open-Meteo, VL.ru)
+/// and fall back to `data/mock/*.json` only when a provider is unavailable.
 pub struct MockLlm {
     counter: AtomicUsize,
     model: String,
@@ -48,9 +52,11 @@ impl LlmClient for MockLlm {
 
         if !has_tool_result {
             let area = area_from_messages(&request.messages);
+            let (area_lat, area_lon) =
+                crate::domain::plan::city_center(&area).unwrap_or((43.1155, 131.8855));
             let weather_args = json!({
-                "lat": 43.1155,
-                "lon": 131.8855,
+                "lat": area_lat,
+                "lon": area_lon,
                 "start_date": intent.start_date.to_string(),
                 "end_date": intent.end_date.to_string()
             });
@@ -90,7 +96,7 @@ impl LlmClient for MockLlm {
                     "find_transport",
                     json!({
                         "from": "Владивосток",
-                        "to": "Приморский край",
+                        "to": area.clone(),
                         "date": intent.start_date.to_string()
                     })
                     .to_string(),
@@ -179,7 +185,10 @@ fn area_from_messages(messages: &[crate::llm::LlmMessage]) -> String {
         ("уссурийск", "Уссурийск"),
         ("находк", "Находка"),
         ("арсеньев", "Арсеньев"),
+        ("артём", "Артём"),
+        ("артем", "Артём"),
         ("дальнегорск", "Дальнегорск"),
+        ("дальнереченск", "Дальнереченск"),
         ("славянк", "Славянка"),
         ("андреевк", "Андреевка"),
         ("терней", "Терней"),

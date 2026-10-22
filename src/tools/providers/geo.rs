@@ -302,12 +302,22 @@ async fn resolve_area_uncached(ctx: &ToolCtx, area: &str, normalized: &str) -> O
     // A named settlement wins over any geocoder answer: "Кировский" must be
     // the settlement of that name, never the district or a namesake elsewhere.
     if let Some(settlement) = crate::domain::settlements::resolve(area) {
-        return Some(area_around(settlement.lat, settlement.lon, settlement.scope_km(), area));
+        return Some(area_around(
+            settlement.lat,
+            settlement.lon,
+            settlement.scope_km(),
+            area,
+        ));
     }
     // A multi-city area ("Владивосток и Артём") still resolves to its first
     // named settlement, so the search starts where the user asked.
     if let Some(settlement) = crate::domain::settlements::find_all_in_text(area).first() {
-        return Some(area_around(settlement.lat, settlement.lon, settlement.scope_km(), area));
+        return Some(area_around(
+            settlement.lat,
+            settlement.lon,
+            settlement.scope_km(),
+            area,
+        ));
     }
 
     if let Some((_name, lat, lon, radius_km)) = KNOWN_AREAS
@@ -339,7 +349,12 @@ fn area_around(lat: f64, lon: f64, radius_km: f64, label: &str) -> Area {
     Area {
         lat,
         lon,
-        bbox: (lat - delta_lat, lon - delta_lon, lat + delta_lat, lon + delta_lon),
+        bbox: (
+            lat - delta_lat,
+            lon - delta_lon,
+            lat + delta_lat,
+            lon + delta_lon,
+        ),
         label: label.trim().to_string(),
         radius_km,
     }
