@@ -1,6 +1,6 @@
 use crate::domain::dates::add_days;
 use crate::domain::facts::Facts;
-use crate::domain::geo::haversine_km;
+use crate::domain::geo::{haversine_km, on_land};
 use crate::domain::intent::{Intent, TransportMode};
 use crate::domain::plan::{enrich, DayDraft, Generation, ItemDraft, ItemKind, Plan, PlanDraft};
 
@@ -91,6 +91,9 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
         facts
             .lodging
             .values()
+            // Only land coordinates can host a night: bay and lake centroids
+            // in fixtures or cached results must not become the chosen stay.
+            .filter(|option| on_land(option.lat, option.lon))
             .min_by(|left, right| {
                 let left_distance = anchor
                     .map(|(lat, lon)| haversine_km((left.lat, left.lon), (lat, lon)))

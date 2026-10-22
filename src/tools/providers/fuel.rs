@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
-use crate::domain::geo::haversine_km;
+use crate::domain::geo::{haversine_km, on_land};
 use crate::tools::providers::{fallback_fuel, load_mock};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
@@ -139,6 +139,10 @@ fn parse_stations(value: &Value) -> Vec<Value> {
         let Some(lon) = element.get("lon").and_then(Value::as_f64) else {
             continue;
         };
+        // A station coordinate in the water is a data error; never offer it.
+        if !on_land(lat, lon) {
+            continue;
+        }
         let id = element
             .get("id")
             .and_then(Value::as_u64)

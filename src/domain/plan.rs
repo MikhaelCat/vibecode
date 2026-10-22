@@ -384,11 +384,29 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
         });
     }
 
+    // Lodging is a stop too: a centroid that falls into a bay or a lake must
+    // never end up on the map. Providers already filter live OSM results; this
+    // guard also covers fixtures and stale cached tool results.
+    let usable_lodging = |option: &Lodging| on_land(option.lat, option.lon);
+
     let mut lodging = Vec::new();
+    let mut water_lodging = 0usize;
     for lodging_id in &draft.lodging_ids {
         if let Some(option) = facts.lodging.get(lodging_id) {
-            lodging.push(option.clone());
+            if usable_lodging(option) {
+                lodging.push(option.clone());
+            } else {
+                water_lodging += 1;
+            }
         }
+    }
+    if water_lodging > 0 {
+        warnings.push(Warning {
+            code: "lodging_water_skipped".to_string(),
+            message: format!(
+                "Ночёвка отброшена: координаты в воде — выбран вариант на суше ({water_lodging})"
+            ),
+        });
     }
     if lodging.is_empty() && days.len() > 1 {
         let anchor = days
@@ -396,17 +414,21 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
             .flat_map(|day| day.items.iter())
             .next()
             .map(|item| (item.lat, item.lon));
-        let nearest = facts.lodging.values().min_by(|left, right| {
-            let left_distance = anchor
-                .map(|(lat, lon)| haversine_km((left.lat, left.lon), (lat, lon)))
-                .unwrap_or(0.0);
-            let right_distance = anchor
-                .map(|(lat, lon)| haversine_km((right.lat, right.lon), (lat, lon)))
-                .unwrap_or(0.0);
-            left_distance
-                .partial_cmp(&right_distance)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
+        let nearest = facts
+            .lodging
+            .values()
+            .filter(|option| usable_lodging(option))
+            .min_by(|left, right| {
+                let left_distance = anchor
+                    .map(|(lat, lon)| haversine_km((left.lat, left.lon), (lat, lon)))
+                    .unwrap_or(0.0);
+                let right_distance = anchor
+                    .map(|(lat, lon)| haversine_km((right.lat, right.lon), (lat, lon)))
+                    .unwrap_or(0.0);
+                left_distance
+                    .partial_cmp(&right_distance)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            });
         if let Some(option) = nearest {
             lodging.push(option.clone());
             warnings.push(Warning {
@@ -416,7 +438,12 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
         }
     }
 
-    let mut lodging_options: Vec<Lodging> = facts.lodging.values().cloned().collect();
+    let mut lodging_options: Vec<Lodging> = facts
+        .lodging
+        .values()
+        .filter(|option| usable_lodging(option))
+        .cloned()
+        .collect();
     lodging_options.sort_by_key(|option| option.price_per_night);
 
     let total_km = days

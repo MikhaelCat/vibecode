@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
-use crate::domain::geo::haversine_km;
+use crate::domain::geo::{haversine_km, on_land};
 use crate::tools::providers::geo;
 use crate::tools::providers::{fallback_lodging, limit_from, load_mock};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
@@ -54,11 +54,20 @@ impl Tool for LodgingTool {
             .unwrap_or_default()
             .into_iter()
             .filter(|option| {
-                option
-                    .get("settlement")
-                    .and_then(Value::as_str)
-                    .map(|value| value.to_lowercase().contains(&normalized))
-                    .unwrap_or(false)
+                // A lodging marker in a bay or a lake is never a stay: reject
+                // water coordinates already at the provider boundary, the same
+                // way the places providers do.
+                let on_shore = option
+                    .get("lat")
+                    .and_then(Value::as_f64)
+                    .zip(option.get("lon").and_then(Value::as_f64))
+                    .is_some_and(|(lat, lon)| on_land(lat, lon));
+                on_shore
+                    && option
+                        .get("settlement")
+                        .and_then(Value::as_str)
+                        .map(|value| value.to_lowercase().contains(&normalized))
+                        .unwrap_or(false)
             })
             .collect();
         local.truncate(limit);
@@ -154,6 +163,11 @@ async fn overpass_lodging(
         let (Some(lat), Some(lon)) = (lat, lon) else {
             continue;
         };
+        // OSM way centroids of large hotels or campsites can fall into a bay;
+        // such an option must not be offered as a stay.
+        if !on_land(lat, lon) {
+            continue;
+        }
         let element_type = element
             .get("type")
             .and_then(Value::as_str)
