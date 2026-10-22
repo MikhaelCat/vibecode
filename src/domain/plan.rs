@@ -733,12 +733,10 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
         // Stations the model asked for when they exist; otherwise the demo
         // catalogue, so a car trip always shows fuel on the map. Prices there
         // are demo estimates and the payload says so.
+        // Станции, которые нашла модель, когда они есть; иначе демо-каталог —
+        // слой АЗС нужен на карте в любой поездке, а не только на машине.
         let fuel_stations: Vec<FuelStation> = if facts.fuel.is_empty() {
-            if intent.transport == TransportMode::Car {
-                crate::domain::facts::mock_fuel()
-            } else {
-                Vec::new()
-            }
+            crate::domain::facts::mock_fuel()
         } else {
             facts.fuel.clone()
         };
@@ -1368,32 +1366,27 @@ mod tests {
     }
 
     #[test]
-    fn fuel_markers_are_for_car_trips_only() {
-        // "АЗС учитывается только на машине, в остальных случаях отсутствует":
-        // fuel is part of a car day, not of a walking or transit plan.
+    fn fuel_markers_are_present_for_every_trip() {
+        // Слой АЗС нужен на карте в любой поездке: пользователь ищет заправки
+        // независимо от способа передвижения.
         let (facts, place) = lodging_facts();
-        let mut intent = intent();
-        intent.transport = TransportMode::Car;
-        let car = enrich(draft_with(&place.id, intent.start_date), &intent, &facts);
-        assert!(
-            !car.days[0].fuel.is_empty(),
-            "a car day must carry fuel stations for the map"
-        );
-        assert!(car.days[0]
-            .fuel
-            .iter()
-            .all(|station| station.lat != 0.0 && station.lon != 0.0));
-
-        let mut foot_intent = intent.clone();
-        foot_intent.transport = TransportMode::Foot;
-        let foot = enrich(
-            draft_with(&place.id, foot_intent.start_date),
-            &foot_intent,
-            &facts,
-        );
-        assert!(
-            foot.days[0].fuel.is_empty(),
-            "a walking day must not show fuel stations"
-        );
+        for transport in [
+            TransportMode::Car,
+            TransportMode::Foot,
+            TransportMode::Bike,
+            TransportMode::Transit,
+        ] {
+            let mut intent = intent();
+            intent.transport = transport;
+            let plan = enrich(draft_with(&place.id, intent.start_date), &intent, &facts);
+            assert!(
+                !plan.days[0].fuel.is_empty(),
+                "fuel stations must be on the map for {transport}"
+            );
+            assert!(plan.days[0]
+                .fuel
+                .iter()
+                .all(|station| station.lat != 0.0 && station.lon != 0.0));
+        }
     }
 }

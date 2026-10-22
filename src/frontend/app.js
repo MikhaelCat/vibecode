@@ -787,8 +787,18 @@ function renderLodging() {
     : (Array.isArray(plan?.lodging) ? plan.lodging : []);
   const box = $('lodging-box');
   if (!list.length) {
-    box.hidden = true;
-    $('lodging').innerHTML = '';
+    // Не прячем секцию молча: при поездке с ночёвкой человек должен видеть,
+    // что проверенного жилья рядом нет и где его искать.
+    const nights = Math.max(0, (plan?.days || []).length - 1);
+    if (nights > 0) {
+      box.hidden = false;
+      $('lodging').innerHTML =
+        '<li class="empty-day"><b>Проверенного жилья рядом не нашлось.</b> '
+        + 'Ищите гостевые дома и базы отдыха в ближайшем городе — или уточните запрос.</li>';
+    } else {
+      box.hidden = true;
+      $('lodging').innerHTML = '';
+    }
     return;
   }
   box.hidden = false;
