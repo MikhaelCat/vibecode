@@ -162,6 +162,55 @@ impl Tool for PlacesTool {
         // For food/nightlife search it before Overpass so a blocked endpoint
         // cannot eat the whole tool timeout.
         let deadline = std::time::Instant::now() + SEARCH_BUDGET;
+
+        // A mixed request ("природа и поесть", a walk with a café) matches both
+        // sources, and running them one after another spent the whole budget on
+        // the first slow one. They are independent, so they travel together and
+        // the answers are merged; when the request belongs to a single source
+        // the usual sequential chain below stays in charge.
+        if !wikipedia_tried && wants_wikipedia(&categories) && wants_osm_business(&categories) {
+            let (osm, wikipedia) = tokio::join!(
+                osm_map_places(ctx, &area, &categories, limit, deadline),
+                wikipedia_matching_places(
+                    ctx,
+                    area.lat,
+                    area.lon,
+                    limit,
+                    &categories,
+                    area_is_water
+                ),
+            );
+            let mut merged: Vec<Value> =
+                scope_to_area(osm.unwrap_or_default(), &area, nearest_only, limit);
+            if let Some(places) = wikipedia {
+                let mut seen: HashSet<String> = merged
+                    .iter()
+                    .filter_map(|place| place.get("id").and_then(Value::as_str).map(str::to_string))
+                    .collect();
+                for place in scope_to_area(places, &area, nearest_only, limit) {
+                    if let Some(id) = place.get("id").and_then(Value::as_str) {
+                        if seen.insert(id.to_string()) {
+                            merged.push(place);
+                        }
+                    }
+                }
+            }
+            if !merged.is_empty() {
+                let merged = scope_to_area(merged, &area, nearest_only, limit);
+                let (places, supplemented) =
+                    with_local_supplement(ctx, &area, &categories, merged, nearest_only, limit);
+                return Ok(ToolOutput::ok(
+                    json!({"places": places}),
+                    SourceKind::Live,
+                    format!(
+                        "OSM и Википедия: {} объектов рядом с {}{}",
+                        places.len(),
+                        area.label,
+                        supplement_note(supplemented)
+                    ),
+                ));
+            }
+        }
         // The live providers get a hard time budget: the tool itself is killed
         // at TOOL_TIMEOUT_SECS (15 s), and a killed call returns nothing at all
         // — a bar search in Vladivostok once timed out that way and the plan
@@ -748,14 +797,15 @@ async fn osm_map_places(
         }
     };
 
-    // The centre tile and its four neighbours are one round of independent
-    // requests, so they travel together: fetched one after another they spent
-    // the whole search budget on the network alone (five slow tiles in a row
-    // is how a mixed query ran out of time before Overpass or Wikipedia could
-    // answer). Each tile keeps its own timeout and the parsing below stays
-    // nearest-first, stopping as soon as the set is rich enough or the budget
-    // is gone.
-    let (centre, neighbours) = tokio::join!(
+    // The centre tile, its four neighbours and the small centre retry are one
+    // round of independent requests, so they travel together: fetched one
+    // after another they spent the whole search budget on the network alone
+    // (five slow tiles in a row is how a mixed query ran out of time before
+    // Overpass or Wikipedia could answer). Each tile keeps its own timeout and
+    // the parsing below stays nearest-first, stopping as soon as the set is
+    // rich enough or the budget is gone; the retry is a tiny box and is only
+    // parsed when nothing else matched.
+    let (centre, neighbours, retry) = tokio::join!(
         fetch_osm_tile(ctx, area.lat, area.lon, 0.008, Duration::from_secs(3)),
         async {
             let mut tiles = Vec::with_capacity(4);
@@ -774,7 +824,11 @@ async fn osm_map_places(
                 ));
             }
             futures::future::join_all(tiles).await
-        }
+        },
+        // Dense city centres can hit the 50k-node limit on the wider tiles;
+        // this is the documented retry with a small centre box, fetched next
+        // to the others so the retry itself costs no extra wait.
+        fetch_osm_tile(ctx, area.lat, area.lon, 0.004, Duration::from_secs(2)),
     );
     take(centre, &mut all);
     for tile in neighbours {
@@ -785,12 +839,7 @@ async fn osm_map_places(
     }
 
     if all.is_empty() && std::time::Instant::now() < deadline {
-        // Dense city centres can hit the 50k-node limit on the wider tiles;
-        // retry once with a small centre box, unless the budget is already gone.
-        take(
-            fetch_osm_tile(ctx, area.lat, area.lon, 0.004, Duration::from_secs(2)).await,
-            &mut all,
-        );
+        take(retry, &mut all);
     }
     all.sort_by(|left, right| {
         let left = left
