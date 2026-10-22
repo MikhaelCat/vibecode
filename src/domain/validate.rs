@@ -199,9 +199,7 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
                 match check_open(hours, day.date, start) {
                     Some(false) => {
                         let message = format!("«{}» закрыто в это время", item.name);
-                        let violation = if plan.generation == Generation::Fallback
-                            && matches!(item.kind, ItemKind::Bar | ItemKind::Club)
-                        {
+                        let violation = if plan.generation == Generation::Fallback {
                             Violation::soft("V04", message)
                         } else {
                             Violation::hard("V04", message)

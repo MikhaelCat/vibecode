@@ -32,7 +32,7 @@ impl Tool for PlacesTool {
                     "items": {"type": "string"},
                     "description": "nature, museum, viewpoint, park, historic, beach, lake, river, restaurant, cafe, bar, club, hotel, attraction"
                 },
-                "limit": {"type": "integer", "minimum": 1, "maximum": 60},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 120},
                 "date": {"type": "string"}
             },
             "required": ["area"]
@@ -40,7 +40,7 @@ impl Tool for PlacesTool {
     }
 
     async fn call(&self, args: Value, ctx: &ToolCtx) -> Result<ToolOutput, ToolError> {
-        let limit = limit_from(&args, 10, 60);
+        let limit = limit_from(&args, 10, 120);
         let area_text = args
             .get("area")
             .and_then(Value::as_str)
@@ -323,41 +323,78 @@ async fn osm_map_places(
     if wanted.is_empty() {
         return None;
     }
-    let mut last = Vec::new();
-    for span in [0.012_f64, 0.008, 0.004, 0.016] {
-        let bbox = format!(
-            "{:.5},{:.5},{:.5},{:.5}",
-            area.lon - span * 1.2,
-            area.lat - span,
-            area.lon + span * 1.2,
-            area.lat + span
-        );
-        let url = format!("https://api.openstreetmap.org/api/0.6/map?bbox={bbox}");
-        let Some(response) = tokio::time::timeout(
-            Duration::from_secs(6),
-            ctx.http
-                .get(&url)
-                .header("User-Agent", &ctx.nominatim_user_agent)
-                .send(),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok) else {
-            continue;
-        };
-        if !response.status().is_success() {
-            continue;
+    // The city centre tile is not enough for a 12-points-a-day plan. Scan a
+    // small grid of tiles around the centre and merge the results.
+    let mut all: Vec<Value> = Vec::new();
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    let offsets = [
+        (0.0_f64, 0.0_f64),
+        (0.01, 0.0),
+        (-0.01, 0.0),
+        (0.0, 0.012),
+        (0.0, -0.012),
+    ];
+    for (delta_lat, delta_lon) in offsets {
+        let center_lat = area.lat + delta_lat;
+        let center_lon = area.lon + delta_lon;
+        let mut tile = Vec::new();
+        for span in [0.008_f64, 0.004, 0.012] {
+            let bbox = format!(
+                "{:.5},{:.5},{:.5},{:.5}",
+                center_lon - span * 1.2,
+                center_lat - span,
+                center_lon + span * 1.2,
+                center_lat + span
+            );
+            let url = format!("https://api.openstreetmap.org/api/0.6/map?bbox={bbox}");
+            let Some(response) = tokio::time::timeout(
+                Duration::from_secs(3),
+                ctx.http
+                    .get(&url)
+                    .header("User-Agent", &ctx.nominatim_user_agent)
+                    .send(),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok) else {
+                continue;
+            };
+            if !response.status().is_success() {
+                continue;
+            }
+            let Ok(xml) = response.text().await else {
+                continue;
+            };
+            tile = parse_osm_map(&xml, area, &wanted, limit);
+            if !tile.is_empty() {
+                break;
+            }
         }
-        let Ok(xml) = response.text().await else {
-            continue;
-        };
-        let places = parse_osm_map(&xml, area, &wanted, limit);
-        if !places.is_empty() {
-            return Some(places);
+        for place in tile {
+            if let Some(id) = place.get("id").and_then(Value::as_str) {
+                if seen_ids.insert(id.to_string()) {
+                    all.push(place);
+                }
+            }
         }
-        last = places;
+        if all.len() >= limit {
+            break;
+        }
     }
-    Some(last)
+    all.sort_by(|left, right| {
+        let left = left
+            .get("distance_meters")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::MAX);
+        let right = right
+            .get("distance_meters")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::MAX);
+        left.partial_cmp(&right)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    all.truncate(limit);
+    Some(all)
 }
 
 fn parse_osm_map(xml: &str, area: &geo::Area, wanted: &[String], limit: usize) -> Vec<Value> {
