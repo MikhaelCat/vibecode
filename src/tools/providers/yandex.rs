@@ -10,6 +10,7 @@ use std::collections::HashSet;
 use serde_json::{json, Value};
 
 use crate::domain::geo::{haversine_km, on_land};
+use crate::domain::spatial::KdTree;
 use crate::tools::providers::geo::Area;
 use crate::tools::registry::ToolCtx;
 
@@ -241,20 +242,32 @@ fn parse_features(value: &Value, area: &Area, limit: usize) -> Vec<Value> {
         }));
     }
 
-    places.sort_by(|a, b| {
-        let left = a
-            .get("distance_meters")
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::MAX);
-        let right = b
-            .get("distance_meters")
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::MAX);
-        left.partial_cmp(&right)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    places.truncate(limit.clamp(1, 50));
-    places
+    // Yandex answers with up to 50 businesses around the whole area. The k-d
+    // tree picks the closest ones in O(log n) and rewrites their distance, so
+    // "ближайшее" requests get the nearest venues instead of the first 50 the
+    // API happened to return.
+    let points: Vec<(f64, f64)> = places
+        .iter()
+        .filter_map(|place| Some((place.get("lat")?.as_f64()?, place.get("lon")?.as_f64()?)))
+        .collect();
+    let tree = KdTree::new(&points);
+    let limit = limit.clamp(1, 50);
+    let mut picked: Vec<Value> = tree
+        .nearest(area.lat, area.lon, limit.max(1).min(points.len()))
+        .into_iter()
+        .filter_map(|(index, distance_km)| {
+            let mut place = places.get(index)?.clone();
+            if let Some(object) = place.as_object_mut() {
+                object.insert(
+                    "distance_meters".to_string(),
+                    json!((distance_km * 1000.0).round()),
+                );
+            }
+            Some(place)
+        })
+        .collect();
+    picked.truncate(limit);
+    picked
 }
 
 /// Picks the most specific kind from all category classes. `sight` is the

@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
 use crate::domain::geo::{haversine_km, on_land, on_land_strict, waterbody_title};
+use crate::domain::spatial::KdTree;
 use crate::tools::providers::{fallback_places, geo, limit_from, load_mock, yandex};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
@@ -33,6 +34,10 @@ impl Tool for PlacesTool {
                     "description": "nature, museum, viewpoint, park, historic, beach, lake, river, restaurant, cafe, bar, club, hotel, attraction"
                 },
                 "limit": {"type": "integer", "minimum": 1, "maximum": 120},
+                "nearest": {
+                    "type": "boolean",
+                    "description": "Искать ближайшие к центру места, когда пользователь просит «ближайшее», «поблизости», «рядом»"
+                },
                 "date": {"type": "string"}
             },
             "required": ["area"]
@@ -45,6 +50,13 @@ impl Tool for PlacesTool {
             .get("area")
             .and_then(Value::as_str)
             .unwrap_or("Приморский край");
+        // "Ближайшее кафе к маяку" must return the closest ones, not the ones
+        // that merely fall inside the search bbox.
+        let nearest_only = args
+            .get("nearest")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+            || nearest_requested(&args);
         let query = args
             .get("query")
             .and_then(Value::as_str)
@@ -81,7 +93,7 @@ impl Tool for PlacesTool {
         // requests (or an explicit venue query) when a key is configured.
         if ctx.yandex_maps_api_key.is_some() && wants_yandex(&query, &categories) {
             if let Some(places) = yandex::search(ctx, &area, &query, &categories, limit).await {
-                let places = scope_to_area(places, &area);
+                let places = scope_to_area(places, &area, nearest_only, limit);
                 if !places.is_empty() {
                     return Ok(ToolOutput::ok(
                         json!({"places": places}),
@@ -109,7 +121,7 @@ impl Tool for PlacesTool {
             )
             .await
             {
-                let places = scope_to_area(places, &area);
+                let places = scope_to_area(places, &area, nearest_only, limit);
                 if !places.is_empty() {
                     return Ok(ToolOutput::ok(
                         json!({"places": places}),
@@ -129,7 +141,7 @@ impl Tool for PlacesTool {
         // cannot eat the whole tool timeout.
         if wants_osm_business(&categories) {
             if let Some(places) = osm_map_places(ctx, &area, &categories, limit).await {
-                let places = scope_to_area(places, &area);
+                let places = scope_to_area(places, &area, nearest_only, limit);
                 if !places.is_empty() {
                     return Ok(ToolOutput::ok(
                         json!({"places": places}),
@@ -145,7 +157,7 @@ impl Tool for PlacesTool {
         }
 
         if let Some(places) = overpass_places(ctx, &area, &categories, limit).await {
-            let places = scope_to_area(places, &area);
+            let places = scope_to_area(places, &area, nearest_only, limit);
             if !places.is_empty() {
                 return Ok(ToolOutput::ok(
                     json!({"places": places}),
@@ -166,7 +178,7 @@ impl Tool for PlacesTool {
             )
             .await
             {
-                let places = scope_to_area(places, &area);
+                let places = scope_to_area(places, &area, nearest_only, limit);
                 if !places.is_empty() {
                     return Ok(ToolOutput::ok(
                         json!({"places": places}),
@@ -181,7 +193,12 @@ impl Tool for PlacesTool {
             }
         }
 
-        let local = scope_to_area(local_places(ctx, &area, &categories, limit), &area);
+        let local = scope_to_area(
+            local_places(ctx, &area, &categories, limit),
+            &area,
+            nearest_only,
+            limit,
+        );
         let summary = if local.is_empty() {
             format!("В районе {} не найдено объектов по запросу", area.label)
         } else {
@@ -199,35 +216,83 @@ impl Tool for PlacesTool {
     }
 }
 
-/// Keeps only the results that belong to the requested place. Providers search
-/// by bbox, and a bbox around a small village would otherwise pull in the
-/// neighbouring town's cafés and museums; the radius of the resolved area is
-/// the authority on what counts as "in this place".
-fn scope_to_area(places: Vec<Value>, area: &geo::Area) -> Vec<Value> {
-    let mut kept: Vec<Value> = places
+/// A user who asks for the nearest café must get the nearest one, not merely
+/// the ones inside the search box. The model often keeps that wording in
+/// `query`, so both the flag and the text are checked.
+fn nearest_requested(args: &Value) -> bool {
+    let text = args
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::to_lowercase)
+        .unwrap_or_default();
+    ["ближайш", "поблизост", "неподалёк", "недалеко", "рядом"]
+        .iter()
+        .any(|needle| text.contains(needle))
+}
+
+/// Keeps the results that belong to the requested place, closest first.
+/// Providers search by bbox, and a bbox around a small village would otherwise
+/// pull in the neighbouring town's cafés and museums; the radius of the
+/// resolved area is the authority on what counts as "in this place". The k-d
+/// tree runs the radius filter and the nearest-first ordering in one pass,
+/// which is what "ближайшее" and "поблизости" requests rely on.
+fn scope_to_area(
+    places: Vec<Value>,
+    area: &geo::Area,
+    nearest_only: bool,
+    limit: usize,
+) -> Vec<Value> {
+    let mut with_coords: Vec<Value> = Vec::new();
+    let mut without_coords: Vec<Value> = Vec::new();
+    let mut points: Vec<(f64, f64)> = Vec::new();
+    for place in places {
+        // A bay, lake or river is an area, never a stop: the plan layer rejects
+        // such points anyway, and returning them costs the model its context
+        // and hides the useful places behind them.
+        if place
+            .get("name")
+            .and_then(Value::as_str)
+            .is_some_and(waterbody_title)
+        {
+            continue;
+        }
+        match (
+            place.get("lat").and_then(Value::as_f64),
+            place.get("lon").and_then(Value::as_f64),
+        ) {
+            (Some(lat), Some(lon)) => {
+                points.push((lat, lon));
+                with_coords.push(place);
+            }
+            _ => without_coords.push(place),
+        }
+    }
+    let tree = KdTree::new(&points);
+    let picked = if nearest_only {
+        // "Ближайшее кафе" — the closest ones, whatever the bbox says.
+        tree.nearest(area.lat, area.lon, limit.max(1))
+    } else {
+        tree.within(area.lat, area.lon, area.radius_km)
+    };
+    let mut kept: Vec<Value> = picked
         .into_iter()
-        .filter(|place| {
-            let (Some(lat), Some(lon)) = (
-                place.get("lat").and_then(Value::as_f64),
-                place.get("lon").and_then(Value::as_f64),
-            ) else {
-                return true;
-            };
-            area.contains_point(lat, lon)
+        .filter_map(|(index, distance_km)| {
+            let mut place = with_coords.get(index)?.clone();
+            if let Some(object) = place.as_object_mut() {
+                object.insert(
+                    "distance_meters".to_string(),
+                    json!((distance_km * 1000.0).round()),
+                );
+            }
+            Some(place)
         })
         .collect();
-    kept.sort_by(|left, right| {
-        let left = left
-            .get("distance_meters")
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::MAX);
-        let right = right
-            .get("distance_meters")
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::MAX);
-        left.partial_cmp(&right)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
+    kept.truncate(limit.max(1));
+    // A result without coordinates cannot be placed; keep it as a last resort
+    // only when the place search found nothing at all.
+    if kept.is_empty() {
+        kept.extend(without_coords.into_iter().take(limit.max(1)));
+    }
     kept
 }
 
@@ -387,9 +452,8 @@ async fn osm_map_places(
         return None;
     }
     // The city centre tile is not enough for a 12-points-a-day plan. Scan a
-    // small grid of tiles around the centre and merge the results.
-    let mut all: Vec<Value> = Vec::new();
-    let mut seen_ids: HashSet<String> = HashSet::new();
+    // small grid of tiles around the centre — in parallel, so a search stays
+    // fast even when the model calls it several times.
     let offsets = [
         (0.0_f64, 0.0_f64),
         (0.01, 0.0),
@@ -397,51 +461,72 @@ async fn osm_map_places(
         (0.0, 0.012),
         (0.0, -0.012),
     ];
-    for (delta_lat, delta_lon) in offsets {
+    let requests = offsets.into_iter().map(|(delta_lat, delta_lon)| {
         let center_lat = area.lat + delta_lat;
         let center_lon = area.lon + delta_lon;
-        let mut tile = Vec::new();
-        for span in [0.008_f64, 0.004, 0.012] {
-            let bbox = format!(
-                "{:.5},{:.5},{:.5},{:.5}",
-                center_lon - span * 1.2,
-                center_lat - span,
-                center_lon + span * 1.2,
-                center_lat + span
-            );
-            let url = format!("https://api.openstreetmap.org/api/0.6/map?bbox={bbox}");
-            let Some(response) = tokio::time::timeout(
-                Duration::from_secs(3),
-                ctx.http
-                    .get(&url)
-                    .header("User-Agent", &ctx.nominatim_user_agent)
-                    .send(),
+        let span = 0.008_f64;
+        let bbox = format!(
+            "{:.5},{:.5},{:.5},{:.5}",
+            center_lon - span * 1.2,
+            center_lat - span,
+            center_lon + span * 1.2,
+            center_lat + span
+        );
+        let url = format!("https://api.openstreetmap.org/api/0.6/map?bbox={bbox}");
+        let http = ctx.http.clone();
+        let user_agent = ctx.nominatim_user_agent.clone();
+        async move {
+            let response = tokio::time::timeout(
+                Duration::from_secs(4),
+                http.get(&url).header("User-Agent", user_agent).send(),
             )
             .await
-            .ok()
-            .and_then(Result::ok) else {
-                continue;
-            };
+            .ok()?
+            .ok()?;
             if !response.status().is_success() {
-                continue;
+                return None;
             }
-            let Ok(xml) = response.text().await else {
-                continue;
-            };
-            tile = parse_osm_map(&xml, area, &wanted, limit);
-            if !tile.is_empty() {
-                break;
-            }
+            response.text().await.ok()
         }
-        for place in tile {
+    });
+    let responses = futures::future::join_all(requests).await;
+    let mut all: Vec<Value> = Vec::new();
+    let mut seen_ids: HashSet<String> = HashSet::new();
+    for xml in responses.into_iter().flatten() {
+        for place in parse_osm_map(&xml, area, &wanted, limit) {
             if let Some(id) = place.get("id").and_then(Value::as_str) {
                 if seen_ids.insert(id.to_string()) {
                     all.push(place);
                 }
             }
         }
-        if all.len() >= limit {
-            break;
+    }
+    if all.is_empty() {
+        // Dense city centres can hit the 50k-node limit on the wider tiles;
+        // retry once with a small centre box.
+        let span = 0.004_f64;
+        let bbox = format!(
+            "{:.5},{:.5},{:.5},{:.5}",
+            area.lon - span * 1.2,
+            area.lat - span,
+            area.lon + span * 1.2,
+            area.lat + span
+        );
+        let url = format!("https://api.openstreetmap.org/api/0.6/map?bbox={bbox}");
+        if let Ok(Ok(response)) = tokio::time::timeout(
+            Duration::from_secs(4),
+            ctx.http
+                .get(&url)
+                .header("User-Agent", &ctx.nominatim_user_agent)
+                .send(),
+        )
+        .await
+        {
+            if response.status().is_success() {
+                if let Ok(xml) = response.text().await {
+                    all = parse_osm_map(&xml, area, &wanted, limit);
+                }
+            }
         }
     }
     all.sort_by(|left, right| {
@@ -1205,7 +1290,9 @@ fn local_places(
     limit: usize,
 ) -> Vec<Value> {
     let mock = load_mock(ctx.data_dir.as_path(), "places.json", fallback_places());
-    let mut places: Vec<Value> = mock
+    // The offline catalogue uses the same nearest-first selection as the live
+    // providers, so a village request cannot fall back to a city 60 km away.
+    let candidates: Vec<Value> = mock
         .get("places")
         .and_then(Value::as_array)
         .cloned()
@@ -1223,12 +1310,28 @@ fn local_places(
             };
             !waterbody_title(name)
                 && on_land(lat, lon)
-                && haversine_km((area.lat, area.lon), (lat, lon)) <= 60.0
                 && matches_categories(place.get("kind").and_then(Value::as_str), categories)
         })
         .collect();
-    places.truncate(limit);
-    places
+    let points: Vec<(f64, f64)> = candidates
+        .iter()
+        .filter_map(|place| Some((place.get("lat")?.as_f64()?, place.get("lon")?.as_f64()?)))
+        .collect();
+    let tree = KdTree::new(&points);
+    tree.within(area.lat, area.lon, area.radius_km)
+        .into_iter()
+        .filter_map(|(index, distance_km)| {
+            let mut place = candidates.get(index)?.clone();
+            if let Some(object) = place.as_object_mut() {
+                object.insert(
+                    "distance_meters".to_string(),
+                    json!((distance_km * 1000.0).round()),
+                );
+            }
+            Some(place)
+        })
+        .take(limit)
+        .collect()
 }
 
 fn matches_categories(kind: Option<&str>, categories: &[String]) -> bool {

@@ -320,6 +320,13 @@ async fn resolve_area_uncached(ctx: &ToolCtx, area: &str, normalized: &str) -> O
         ));
     }
 
+    // Bays, capes, mountains and districts that are not settlements resolve to
+    // their agglomeration: "бухта Триозёрье" searches the Nakhodka coast, never
+    // a geocoder answer from another region.
+    if let Some(hub) = crate::domain::hubs::find(area) {
+        return Some(area_around(hub.lat, hub.lon, 30.0, area));
+    }
+
     if let Some((_name, lat, lon, radius_km)) = KNOWN_AREAS
         .iter()
         .find(|(name, _, _, _)| normalized.split_whitespace().any(|word| word == *name))
@@ -544,6 +551,15 @@ mod tests {
         assert!(!crate::domain::settlements::mentions_region(
             &crate::domain::settlements::normalize("поехали в Приморский")
         ));
+    }
+
+    #[test]
+    fn bays_and_capes_resolve_to_their_hub() {
+        let bay = crate::domain::hubs::find("отдых в бухте Триозёрье").expect("hub");
+        assert_eq!(bay.id, "nakhodka-coast");
+        assert!(bay.lat < 43.2 && bay.lat > 42.5);
+        let small = crate::domain::hubs::find("погулять в Южно-Морском").expect("hub");
+        assert_eq!(small.id, "nakhodka-coast");
     }
 
     #[test]

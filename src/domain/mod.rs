@@ -4,14 +4,17 @@
 //! stores verified tool output by id. `plan` expands a model draft into
 //! concrete days, deduplicates places and builds legs. `validate` applies the
 //! hard V01–V15 rules; `fallback` assembles a safe plan when the model cannot.
-//! `geo` and `dates` are shared deterministic helpers.
+//! `geo` and `dates` are shared deterministic helpers; `spatial` answers
+//! "what is nearest" over any set of places.
 pub mod dates;
 pub mod facts;
 pub mod fallback;
 pub mod geo;
+pub mod hubs;
 pub mod intent;
 pub mod plan;
 pub mod settlements;
+pub mod spatial;
 pub mod trace;
 pub mod validate;
 

@@ -17,7 +17,9 @@ sudoedit /opt/travel-ai/.env
   (`openrouter/deepseek/deepseek-v4.1-flash`).
 - **OpenRouter:** `OPENROUTER_API_KEY` и `OPENROUTER_MODEL`.
 
-Без ключа поставьте `MOCK_LLM=1` — приложение работает офлайн. Для публичного
+Без ключа поставьте `MOCK_LLM=1` — подменяется только LLM, инструменты при
+наличии сети по-прежнему берут живые данные (OSM, Wikipedia, Open-Meteo, VL.ru),
+а при их недоступности — каталог `data/mock`. Для публичного
 демо задайте `APP_TOKEN`, `DAILY_BUDGET_USD` и `DAILY_TOKEN_BUDGET`; `APP_TOKEN`
 передаётся в `x-app-token` или `Authorization: Bearer`.
 Для systemd укажите `DATABASE_URL=sqlite:///var/lib/travel-ai/app.db` (каталог

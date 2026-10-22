@@ -15,7 +15,8 @@ use serde::{Deserialize, Serialize};
 use crate::domain::facts::{Facts, PlaceFact};
 use crate::domain::geo::{on_land, waterbody_title};
 use crate::domain::intent::{Intent, TransportMode};
-use crate::domain::plan::{parse_time, Generation, ItemKind, Plan};
+use crate::domain::plan::{is_vladivostok, parse_time, Generation, ItemKind, Plan, LODGING_MAX_KM};
+use crate::domain::spatial::KdTree;
 
 /// Whether a violation blocks the plan (hard) or only lowers the score (soft).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -395,12 +396,62 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
         }
     }
 
-    // V12 — ночёвка
+    // V12 — ночёвка. When the tool honestly found nothing within reach the
+    // plan says so instead of booking a hotel across the region, so an empty
+    // lodging list is only a warning then.
     if plan.nights() > 0 && plan.lodging.is_empty() {
-        violations.push(Violation::hard(
-            "V12",
-            "В плане есть ночёвка, но не выбрано жильё",
-        ));
+        let nothing_near = plan
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "lodging_none_near");
+        if nothing_near {
+            violations.push(Violation::soft(
+                "V12",
+                "Рядом с маршрутом нет проверенного жилья — ночёвку нужно подобрать вручную",
+            ));
+        } else {
+            violations.push(Violation::hard(
+                "V12",
+                "В плане есть ночёвка, но не выбрано жильё",
+            ));
+        }
+    }
+
+    // V16 — ночёвка рядом с маршрутом. The last line of defence against the
+    // reported bug: a trip in Южно-Морской or бухта Триозёрье must not be
+    // answered with a Vladivostok hotel 170 km away.
+    if !plan.lodging.is_empty() {
+        let points: Vec<(f64, f64)> = plan
+            .all_items()
+            .map(|item| (item.lat, item.lon))
+            .filter(|(lat, lon)| *lat != 0.0 || *lon != 0.0)
+            .collect();
+        let tree = KdTree::new(&points);
+        let trip_in_vladivostok = tree.any_within(43.1155, 131.8855, 30.0);
+        for lodging in &plan.lodging {
+            if lodging.lat == 0.0 && lodging.lon == 0.0 {
+                continue;
+            }
+            if !points.is_empty() && !tree.any_within(lodging.lat, lodging.lon, LODGING_MAX_KM) {
+                violations.push(Violation::soft(
+                    "V16",
+                    format!(
+                        "Ночёвка «{}» ({}) дальше {:.0} км от точек маршрута",
+                        lodging.name, lodging.settlement, LODGING_MAX_KM
+                    ),
+                ));
+                continue;
+            }
+            if !trip_in_vladivostok && is_vladivostok(lodging) {
+                violations.push(Violation::soft(
+                    "V16",
+                    format!(
+                        "Ночёвка «{}» во Владивостоке, а маршрут проходит в другой части края",
+                        lodging.name
+                    ),
+                ));
+            }
+        }
     }
 
     // V13 — дубли. `enrich` already drops repeats; this check keeps any future

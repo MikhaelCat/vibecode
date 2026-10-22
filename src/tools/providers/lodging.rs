@@ -19,7 +19,7 @@ impl Tool for LodgingTool {
     }
 
     fn description(&self) -> &'static str {
-        "Варианты ночёвки в любом населённом пункте или рядом с ориентиром Приморья (маяк, пляж, озеро): локальные цены или отели/гостевые дома из OSM. Наличие и цены нужно проверять перед выездом."
+        "Варианты ночёвки в любом населённом пункте или рядом с ориентиром Приморья (маяк, пляж, озеро), отсортированные по расстоянию: сначала сам посёлок, затем ближайший город в радиусе 35 км (например, Находка для Южно-Морского). Владивостокские отели возвращаются только для владивостокских запросов. Наличие и цены нужно проверять перед выездом."
     }
 
     fn parameters(&self) -> Value {
@@ -37,72 +37,202 @@ impl Tool for LodgingTool {
     }
 
     async fn call(&self, args: Value, ctx: &ToolCtx) -> Result<ToolOutput, ToolError> {
-        let settlement = args
+        // No silent default: a Vladivostok hotel booked for a Khasan or Nakhodka
+        // trip is exactly the reported bug, so an unnamed place asks instead.
+        let requested = args
             .get("settlement")
             .and_then(Value::as_str)
-            .unwrap_or("Владивосток")
+            .unwrap_or("")
             .trim()
             .to_string();
-        let normalized = settlement.to_lowercase();
-        let limit = limit_from(&args, 3, 10);
-
-        let mock = load_mock(ctx.data_dir.as_path(), "lodging.json", fallback_lodging());
-        let mut local: Vec<Value> = mock
-            .get("options")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .filter(|option| {
-                option
-                    .get("settlement")
-                    .and_then(Value::as_str)
-                    .map(|value| value.to_lowercase().contains(&normalized))
-                    .unwrap_or(false)
-            })
-            .collect();
-        local.truncate(limit);
-        if !local.is_empty() {
+        if requested.is_empty() {
             return Ok(ToolOutput::ok(
-                json!({"options": local, "area": settlement}),
-                SourceKind::Mock,
-                format!("Жильё: {} вариантов (локальные цены)", local.len()),
+                json!({"options": []}),
+                SourceKind::Stale,
+                "Жильё: укажите населённый пункт, бухту или район".to_string(),
             ));
         }
+        let limit = limit_from(&args, 3, 10);
 
-        let Some(area) = geo::resolve_area(ctx, &settlement).await else {
+        let Some(area) = geo::resolve_area(ctx, &requested).await else {
             return Ok(ToolOutput::ok(
-                json!({"options": [], "area": settlement}),
+                json!({"options": [], "area": requested}),
                 SourceKind::Stale,
-                format!("Жильё: не удалось определить «{settlement}»"),
+                format!("Жильё: не удалось определить «{requested}»"),
             ));
         };
 
-        let options = overpass_lodging(ctx, &area, &settlement, limit).await;
+        // Level 1: the hub turns a small place, bay or cape into the hotels of
+        // the place itself plus the nearest town ("Находка" for "Южно-Морской").
+        let candidates = crate::domain::hubs::lodging_candidates(&requested);
+
+        // Level 2: one live query around the reference point covers the hub, so
+        // a 22 km neighbour town is found without a request per settlement.
+        let mut options = overpass_lodging(ctx, &area).await;
+        options.extend(local_lodging(ctx, &requested, &candidates));
+        let options = rank_lodging(options, &area, &requested, limit);
+
+        let live = options
+            .iter()
+            .any(|option| option.get("source").and_then(Value::as_str) == Some("live"));
         let summary = if options.is_empty() {
-            format!("Жильё в {} не найдено в OSM", area.label)
+            let hint = nearest_town(&area);
+            format!("Жильё в {requested} не найдено{hint}")
         } else {
-            format!("Жильё в {}: {} вариантов из OSM", area.label, options.len())
+            format!(
+                "Жильё в {} и рядом: {} вариантов",
+                area.label,
+                options.len()
+            )
         };
         Ok(ToolOutput::ok(
             json!({"options": options, "area": area.label}),
-            SourceKind::Live,
+            if live {
+                SourceKind::Live
+            } else {
+                SourceKind::Mock
+            },
             summary,
         ))
     }
 }
 
-async fn overpass_lodging(
-    ctx: &ToolCtx,
+/// Keeps the options that belong to the place: closest 15 km first, then the
+/// nearest town within 35 km, always sorted by distance and labelled with the
+/// distance from the requested place ("Находка (22 км от Южно-Морского)").
+fn rank_lodging(
+    mut options: Vec<Value>,
     area: &geo::Area,
-    settlement: &str,
+    requested: &str,
     limit: usize,
 ) -> Vec<Value> {
-    let (south, west, north, east) = area.bbox;
+    if options.is_empty() {
+        return options;
+    }
+    let mut nearby: Vec<(f64, Value)> = Vec::new();
+    for mut option in options.drain(..) {
+        let (Some(lat), Some(lon)) = (
+            option.get("lat").and_then(Value::as_f64),
+            option.get("lon").and_then(Value::as_f64),
+        ) else {
+            continue;
+        };
+        let distance_km = haversine_km((area.lat, area.lon), (lat, lon));
+        if distance_km > 35.0 {
+            continue;
+        }
+        let settlement = settlement_label(lat, lon, requested, distance_km);
+        if let Some(object) = option.as_object_mut() {
+            object.insert("settlement".to_string(), json!(settlement));
+            object.insert(
+                "distance_meters".to_string(),
+                json!((distance_km * 1000.0).round()),
+            );
+            object.insert(
+                "distance_km".to_string(),
+                json!((distance_km * 10.0).round() / 10.0),
+            );
+        }
+        nearby.push((distance_km, option));
+    }
+    // Within 15 km the place is served by its own guest houses; only when the
+    // village has almost nothing does the search reach the nearest town.
+    let within_15 = nearby
+        .iter()
+        .filter(|(distance, _)| *distance <= 15.0)
+        .count();
+    if within_15 < 2 {
+        nearby.retain(|(distance, _)| *distance <= 35.0);
+    } else {
+        nearby.retain(|(distance, _)| *distance <= 15.0);
+    }
+    nearby.sort_by(|left, right| {
+        left.0
+            .partial_cmp(&right.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    nearby.truncate(limit);
+    nearby.into_iter().map(|(_, option)| option).collect()
+}
+
+/// A hotel in another settlement is shown with its own name and its distance.
+fn settlement_label(lat: f64, lon: f64, requested: &str, distance_km: f64) -> String {
+    let nearest = crate::domain::settlements::nearest(lat, lon)
+        .map(|settlement| settlement.name.clone())
+        .filter(|name| !name.eq_ignore_ascii_case(requested));
+    match nearest {
+        Some(name) if distance_km > 10.0 => {
+            format!("{name} ({:.0} км от {requested})", distance_km)
+        }
+        Some(name) => name,
+        None if distance_km > 10.0 => format!("{requested} ({:.0} км)", distance_km),
+        None => requested.to_string(),
+    }
+}
+
+/// "…в ближайшем городе: Находка" — what to do when the village has no hotels.
+fn nearest_town(area: &geo::Area) -> String {
+    let hub = crate::domain::hubs::nearest(area.lat, area.lon)
+        .and_then(crate::domain::hubs::primary_city)
+        .map(str::to_string);
+    match hub {
+        Some(city) => format!(" — ищите гостевые дома или базы отдыха в ближайшем городе: {city}"),
+        None => " — попробуйте назвать ближайший город".to_string(),
+    }
+}
+
+/// Offline catalogue entries for the place and its hub, matched by settlement.
+fn local_lodging(ctx: &ToolCtx, requested: &str, candidates: &[String]) -> Vec<Value> {
+    let mock = load_mock(ctx.data_dir.as_path(), "lodging.json", fallback_lodging());
+    let known = mock
+        .get("options")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut matched: Vec<Value> = Vec::new();
+    for candidate in candidates {
+        let needle = candidate.to_lowercase();
+        for option in &known {
+            let settlement = option
+                .get("settlement")
+                .and_then(Value::as_str)
+                .unwrap_or("")
+                .to_lowercase();
+            if settlement.contains(&needle)
+                && !matched.iter().any(|kept| {
+                    kept.get("id").and_then(Value::as_str)
+                        == option.get("id").and_then(Value::as_str)
+                })
+            {
+                matched.push(option.clone());
+            }
+        }
+    }
+    if matched.is_empty() {
+        let needle = requested.to_lowercase();
+        matched.extend(known.into_iter().filter(|option| {
+            option
+                .get("settlement")
+                .and_then(Value::as_str)
+                .map(|value| value.to_lowercase().contains(&needle))
+                .unwrap_or(false)
+        }));
+    }
+    matched
+}
+
+async fn overpass_lodging(ctx: &ToolCtx, area: &geo::Area) -> Vec<Value> {
+    // One query covers the place itself and the nearest town: the reported
+    // example is 22 km from Южно-Морской to Находка, so a 35 km box is used
+    // and the ranking step decides which distances are acceptable.
+    let lat_delta = 35.0 / 111.0;
+    let lon_delta = 35.0 / (111.0 * area.lat.to_radians().cos().abs().max(0.2));
+    let (south, north) = (area.lat - lat_delta, area.lat + lat_delta);
+    let (west, east) = (area.lon - lon_delta, area.lon + lon_delta);
     let query = format!(
         "[out:json][timeout:8];\
          (nwr[\"tourism\"~\"hotel|guest_house|hostel|apartment|camp_site|chalet\"]({south:.4},{west:.4},{north:.4},{east:.4}););\
-         out center 40;"
+         out center 60;"
     );
     let _permit = match crate::tools::providers::OVERPASS_SLOTS.acquire().await {
         Ok(permit) => permit,
@@ -175,7 +305,7 @@ async fn overpass_lodging(
         options.push(json!({
             "id": id,
             "name": name,
-            "settlement": settlement,
+            "settlement": "",
             "lat": lat,
             "lon": lon,
             "price_per_night": 0,
@@ -184,18 +314,5 @@ async fn overpass_lodging(
             "distance_meters": (haversine_km((area.lat, area.lon), (lat, lon)) * 1000.0).round()
         }));
     }
-    options.sort_by(|a, b| {
-        let left = a
-            .get("distance_meters")
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::MAX);
-        let right = b
-            .get("distance_meters")
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::MAX);
-        left.partial_cmp(&right)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    options.truncate(limit);
     options
 }

@@ -8,7 +8,7 @@ use std::sync::OnceLock;
 
 use serde::Deserialize;
 
-use crate::domain::geo::haversine_km;
+use crate::domain::spatial::KdTree;
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Settlement {
@@ -39,11 +39,24 @@ impl Settlement {
 }
 
 static SETTLEMENTS: OnceLock<Vec<Settlement>> = OnceLock::new();
+/// Spatial index over the gazetteer, built once. Nearest lookups stay O(log n)
+/// even though every plan point asks for its city after the plan is built.
+static SETTLEMENTS_TREE: OnceLock<KdTree> = OnceLock::new();
 
 fn all() -> &'static Vec<Settlement> {
     SETTLEMENTS.get_or_init(|| {
         serde_json::from_str(include_str!("../../data/geo/primorye_settlements.json"))
             .unwrap_or_default()
+    })
+}
+
+fn tree() -> &'static KdTree {
+    SETTLEMENTS_TREE.get_or_init(|| {
+        let points: Vec<(f64, f64)> = all()
+            .iter()
+            .map(|settlement| (settlement.lat, settlement.lon))
+            .collect();
+        KdTree::new(&points)
     })
 }
 
@@ -236,21 +249,11 @@ pub fn scope_km(name: &str) -> f64 {
 }
 
 pub fn nearest(lat: f64, lon: f64) -> Option<&'static Settlement> {
-    all()
-        .iter()
-        .map(|settlement| {
-            (
-                settlement,
-                haversine_km((lat, lon), (settlement.lat, settlement.lon)),
-            )
-        })
-        .filter(|(_, distance)| *distance <= 30.0)
-        .min_by(|left, right| {
-            left.1
-                .partial_cmp(&right.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(settlement, _)| settlement)
+    let (index, distance) = tree().nearest(lat, lon, 1).into_iter().next()?;
+    if distance > 30.0 {
+        return None;
+    }
+    all().get(index)
 }
 
 #[cfg(test)]

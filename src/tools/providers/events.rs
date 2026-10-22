@@ -135,36 +135,34 @@ impl Tool for EventsTool {
             .filter_map(|event| event.get("id").and_then(Value::as_str))
             .map(str::to_string)
             .collect();
-        for page in 1..=5 {
+        // Pull the extra AJAX pages in parallel: five sequential requests were
+        // eating most of the tool budget on a plan with many days.
+        let requests = (1..=5).map(|page| {
             let ajax_url = format!("{url}/ajax/events?page={page}");
-            let response = tokio::time::timeout(
-                Duration::from_secs(3),
-                ctx.http
-                    .get(&ajax_url)
-                    .header("User-Agent", EVENTS_USER_AGENT)
-                    .header("Accept", "application/json")
-                    .send(),
-            )
-            .await
-            .ok()
-            .and_then(Result::ok);
-            let Some(response) = response else {
-                break;
-            };
-            if !response.status().is_success() {
-                break;
+            let http = ctx.http.clone();
+            async move {
+                let response = tokio::time::timeout(
+                    Duration::from_secs(4),
+                    http.get(&ajax_url)
+                        .header("User-Agent", EVENTS_USER_AGENT)
+                        .header("Accept", "application/json")
+                        .send(),
+                )
+                .await
+                .ok()?
+                .ok()?;
+                if !response.status().is_success() {
+                    return None;
+                }
+                response.json::<Value>().await.ok()
             }
-            let Ok(value) = response.json::<Value>().await else {
-                break;
-            };
+        });
+        let pages = futures::future::join_all(requests).await;
+        for value in pages.into_iter().flatten() {
             let Some(page_html) = value.get("events").and_then(Value::as_str) else {
-                break;
+                continue;
             };
-            let extra = parse_events(page_html, start, end);
-            if extra.is_empty() {
-                break;
-            }
-            for event in extra {
+            for event in parse_events(page_html, start, end) {
                 let id = event
                     .get("id")
                     .and_then(Value::as_str)
@@ -173,13 +171,6 @@ impl Tool for EventsTool {
                 if id.is_empty() || seen.insert(id) {
                     events.push(event);
                 }
-            }
-            if value
-                .get("isLastPage")
-                .and_then(Value::as_bool)
-                .unwrap_or(false)
-            {
-                break;
             }
         }
         events.truncate(200);

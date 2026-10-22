@@ -91,6 +91,35 @@ impl Intent {
             .find_map(|item| item.strip_prefix("город: ").map(str::trim))
             .filter(|value| !value.is_empty())
     }
+
+    /// The user asked for the nearest place ("ближайшее", "поблизости").
+    pub fn wants_nearest(&self) -> bool {
+        self.assumptions
+            .iter()
+            .any(|item| item == "искать ближайшее")
+    }
+
+    /// Agglomeration hub the query belongs to, e.g. `nakhodka-coast`.
+    pub fn hub(&self) -> Option<&str> {
+        self.assumptions
+            .iter()
+            .find_map(|item| item.strip_prefix("хаб: ").map(str::trim))
+            .filter(|value| !value.is_empty())
+    }
+}
+
+/// Detects "ближайшее / поблизости / рядом / недалеко" wording.
+fn wants_nearest_text(lower: &str) -> bool {
+    [
+        "ближайш",
+        "поблизост",
+        "неподалёк",
+        "неподалек",
+        "недалеко",
+        "рядом",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -224,6 +253,25 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
     if let Some(city) = parse_city(&lower) {
         assumptions.push(format!("город: {city}"));
     }
+    // "Ближайшее кафе", "поблизости", "рядом" — the search must return the
+    // closest places rather than whatever falls inside the search box.
+    if wants_nearest_text(&lower) {
+        assumptions.push("искать ближайшее".to_string());
+    }
+    // A bay, cape, mountain or small settlement resolves to its agglomeration
+    // hub, so lodging and stops are searched in the right part of the region.
+    // "По Приморью" is the region itself, and "из Владивостока в Андреевку" is a
+    // route between two places: neither may be narrowed to a single hub.
+    let named_places = crate::domain::settlements::find_all_in_text(query).len();
+    if named_places <= 1
+        && !crate::domain::settlements::mentions_region(&crate::domain::settlements::normalize(
+            &lower,
+        ))
+    {
+        if let Some(hub) = crate::domain::hubs::find(&lower) {
+            assumptions.push(format!("хаб: {}", hub.id));
+        }
+    }
 
     let words: Vec<&str> = lower
         .split(|c: char| !c.is_alphabetic())
@@ -236,6 +284,12 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
         (prefix("музе"), "museum"),
         (prefix("мор"), "sea"),
         (prefix("пляж"), "beach"),
+        (
+            // "Погулять", "прогулка", "провести время": the place itself — its
+            // embankment, viewpoints and sights — is what the user asks for.
+            prefix("погуля") || prefix("гуля") || prefix("прогул") || prefix("провести время"),
+            "walk",
+        ),
         (
             exact(&["гор", "горы", "горах", "горам"]) || prefix("горн") || prefix("сопк"),
             "mountains",
@@ -1116,6 +1170,27 @@ mod tests {
         let bars = parse("поехали в бары и клубы владивостока", today()).unwrap();
         assert!(bars.must_see.is_empty());
         assert!(bars.interests.iter().any(|item| item == "nightlife"));
+    }
+
+    #[test]
+    fn region_query_is_not_narrowed_to_vladivostok_hub() {
+        let intent = parse("Хочу на выходные по Приморью на машине", today()).unwrap();
+        assert!(intent.hub().is_none());
+
+        let bay = parse("Хочу на выходные в бухту Триозёрье", today()).unwrap();
+        assert_eq!(bay.hub(), Some("nakhodka-coast"));
+
+        let village = parse("Поехали в Андреевку на два дня", today()).unwrap();
+        assert_eq!(village.hub(), Some("khasan-sea"));
+
+        // A route between two named places is not one agglomeration.
+        let route = parse(
+            "Поездка на машине из Владивостока в Андреевку на два дня",
+            today(),
+        )
+        .unwrap();
+        assert!(route.hub().is_none());
+        assert!(route.city().is_none());
     }
 
     #[test]

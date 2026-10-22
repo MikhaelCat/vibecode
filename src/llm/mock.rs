@@ -52,8 +52,11 @@ impl LlmClient for MockLlm {
 
         if !has_tool_result {
             let area = area_from_messages(&request.messages);
-            let (area_lat, area_lon) =
-                crate::domain::plan::city_center(&area).unwrap_or((43.1155, 131.8855));
+            // A bay, cape or small settlement is not in the settlements
+            // gazetteer; its hub carries the coordinates of the area.
+            let (area_lat, area_lon) = crate::domain::plan::city_center(&area)
+                .or_else(|| crate::domain::hubs::find(&area).map(|hub| (hub.lat, hub.lon)))
+                .unwrap_or((43.1155, 131.8855));
             let weather_args = json!({
                 "lat": area_lat,
                 "lon": area_lon,
@@ -215,6 +218,11 @@ fn area_from_messages(messages: &[crate::llm::LlmMessage]) -> String {
         .iter()
         .find(|(needle, _)| query.contains(needle))
         .map(|(_, area)| (*area).to_string())
+        .or_else(|| {
+            // "Южно-Морской", "бухта Триозёрье", "Пидан": keep the user's own
+            // wording as the area, the tools resolve the agglomeration.
+            crate::domain::hubs::matched_trigger(&query).map(|(_, trigger)| trigger.to_string())
+        })
         .unwrap_or_else(|| "Владивосток".to_string())
 }
 
@@ -483,9 +491,12 @@ fn categories_from_interests(intent: &Intent) -> Vec<String> {
             "food" => &["restaurant", "cafe"],
             "nightlife" => &["bar", "club"],
             "nature" => &["nature", "park", "beach"],
-            "sea" | "beach" => &["beach", "nature"],
+            "sea" | "beach" => &["beach", "nature", "viewpoint"],
             "museum" | "history" => &["museum", "historic"],
             "attractions" => &["attraction", "museum", "historic", "viewpoint", "park"],
+            // "Погулять" in a coastal village means the village itself: its
+            // embankment, viewpoints and sights, not only beaches.
+            "walk" => &["attraction", "nature", "viewpoint", "park", "historic"],
             "cinema" => &["cinema"],
             "theater" => &["theater"],
             "concert" => &["theatre", "arts_centre"],

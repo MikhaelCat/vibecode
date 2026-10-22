@@ -917,6 +917,11 @@ fn enforce_search_intent(name: &str, args: &mut Value, intent: &Intent) {
     if query_is_empty && !intent.must_see.is_empty() {
         object.insert("query".to_string(), json!(intent.must_see.join(" ")));
     }
+    // "Ближайшее кафе" / "поблизости" — the tool must return the nearest
+    // places, not everything that happens to be inside the search box.
+    if intent.wants_nearest() {
+        object.insert("nearest".to_string(), json!(true));
+    }
     if wanted.is_empty() && intent.must_see.is_empty() {
         return;
     }
@@ -930,9 +935,12 @@ fn search_categories(intent: &Intent) -> Vec<String> {
             "food" => &["restaurant", "cafe"],
             "nightlife" => &["bar", "club"],
             "nature" => &["nature", "park", "beach"],
-            "sea" | "beach" => &["beach", "nature"],
+            "sea" | "beach" => &["beach", "nature", "viewpoint"],
             "museum" | "history" => &["museum", "historic"],
             "attractions" => &["attraction", "museum", "historic", "viewpoint", "park"],
+            // A walk around a village looks for the village itself, not only
+            // its beaches: embankment, viewpoints, parks and its own sights.
+            "walk" => &["attraction", "nature", "viewpoint", "park", "historic"],
             "cinema" => &["cinema"],
             "theater" => &["theater"],
             "concert" => &["theatre", "arts_centre"],

@@ -8,6 +8,7 @@ use crate::domain::dates::{add_days, days_inclusive};
 use crate::domain::facts::{EventFact, Facts, Lodging, PlaceFact, SourceKind, SourceRef};
 use crate::domain::geo::{haversine_km, on_land, travel_minutes, waterbody_title};
 use crate::domain::intent::{Intent, TransportMode};
+use crate::domain::spatial::KdTree;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "lowercase")]
@@ -345,6 +346,89 @@ pub fn plan_events_for_day(
     events
 }
 
+/// A night stay farther than this from every point of the trip is not a night
+/// stay for this trip. Distances follow the hub algorithm: village first,
+/// nearest town second, honest "nothing found" third.
+pub(crate) const LODGING_MAX_KM: f64 = 45.0;
+
+fn lodging_belongs(
+    option: &Lodging,
+    anchor_tree: &KdTree,
+    anchors: &[(f64, f64)],
+    allows_vladivostok: bool,
+    max_km: f64,
+) -> bool {
+    if !allows_vladivostok && is_vladivostok(option) {
+        return false;
+    }
+    if option.lat == 0.0 && option.lon == 0.0 {
+        // Without coordinates only the settlement text can be judged.
+        return true;
+    }
+    if anchors.is_empty() {
+        return true;
+    }
+    anchor_tree.any_within(option.lat, option.lon, max_km)
+}
+
+/// A Vladivostok hotel offered for a Khasan or Nakhodka trip is the reported
+/// bug; the settlement text and the pin both count.
+pub(crate) fn is_vladivostok(option: &Lodging) -> bool {
+    let settlement = option.settlement.to_lowercase();
+    if ["владивосток", "русск", "артём", "артем"]
+        .iter()
+        .any(|needle| settlement.contains(needle))
+    {
+        return true;
+    }
+    // A hotel pinned inside the agglomeration but labelled with another name.
+    option.lat != 0.0
+        && option.lon != 0.0
+        && haversine_km((option.lat, option.lon), (43.1155, 131.8855)) <= 25.0
+}
+
+fn sort_lodging_by_distance(options: &mut [Lodging], anchors: &[(f64, f64)]) {
+    let points: Vec<(f64, f64)> = anchors.to_vec();
+    let tree = KdTree::new(&points);
+    options.sort_by(|left, right| {
+        let left_distance = lodging_distance(&tree, left);
+        let right_distance = lodging_distance(&tree, right);
+        left_distance
+            .partial_cmp(&right_distance)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.price_per_night.cmp(&right.price_per_night))
+    });
+}
+
+fn lodging_distance(tree: &KdTree, option: &Lodging) -> f64 {
+    if tree.is_empty() || (option.lat == 0.0 && option.lon == 0.0) {
+        return f64::MAX;
+    }
+    tree.nearest(option.lat, option.lon, 1)
+        .first()
+        .map(|(_, distance)| *distance)
+        .unwrap_or(f64::MAX)
+}
+
+/// "…ищите гостевые дома или базы отдыха" gets a concrete place to look.
+fn lodging_hint(anchors: &[(f64, f64)]) -> String {
+    let Some((lat, lon)) = anchors.last().copied() else {
+        return String::new();
+    };
+    let hub = crate::domain::hubs::nearest(lat, lon)
+        .and_then(crate::domain::hubs::primary_city)
+        .map(str::to_string);
+    let settlement = crate::domain::settlements::nearest(lat, lon).map(|item| item.name.clone());
+    match (hub, settlement) {
+        (Some(hub), Some(settlement)) if hub != settlement => {
+            format!(" в ближайшем городе: {hub} или {settlement}")
+        }
+        (Some(hub), _) => format!(" в ближайшем городе: {hub}"),
+        (None, Some(settlement)) => format!(" в ближайшем населённом пункте: {settlement}"),
+        (None, None) => String::new(),
+    }
+}
+
 pub fn city_center(name: &str) -> Option<(f64, f64)> {
     crate::domain::settlements::center(name)
 }
@@ -453,6 +537,19 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
                         outside_items += 1;
                         continue;
                     }
+                }
+            } else if let Some(hub) = intent
+                .hub()
+                .and_then(|id| crate::domain::hubs::all().iter().find(|hub| hub.id == id))
+            {
+                // A bay, cape or district query names no settlement; the hub is
+                // then the reference, so "бухта Триозёрье" cannot collect
+                // Vladivostok stops 170 km away.
+                if fact.is_some_and(|place| {
+                    haversine_km((place.lat, place.lon), (hub.lat, hub.lon)) > 40.0
+                }) {
+                    outside_items += 1;
+                    continue;
                 }
             }
 
@@ -570,30 +667,58 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
         });
     }
 
+    // Lodging belongs to the trip, not to a city 200 km away: every night stay
+    // and every offered option is checked against the plan's own points. This is
+    // what stops "Отдых в бухте Триозёрье" from offering Vladivostok hotels.
+    let anchor_points: Vec<(f64, f64)> = days
+        .iter()
+        .flat_map(|day| day.items.iter())
+        .map(|item| (item.lat, item.lon))
+        .filter(|(lat, lon)| *lat != 0.0 || *lon != 0.0)
+        .collect();
+    let anchor_tree = KdTree::new(&anchor_points);
+    // Vladivostok lodging is allowed only when the trip itself is there: the
+    // query names that hub, no place at all was named (Vladivostok is the
+    // default), or the plan's own points are in the agglomeration.
+    let allows_vladivostok = intent.hub().is_none()
+        || intent.hub() == Some("vladivostok")
+        || anchor_tree.any_within(43.1155, 131.8855, 30.0);
+    let mut lodging_options: Vec<Lodging> = facts
+        .lodging
+        .values()
+        .filter(|option| {
+            lodging_belongs(
+                option,
+                &anchor_tree,
+                &anchor_points,
+                allows_vladivostok,
+                LODGING_MAX_KM,
+            )
+        })
+        .cloned()
+        .collect();
+    // The nearest options first — a guest house 4 km away is more useful than a
+    // hotel across the region, whatever it costs.
+    sort_lodging_by_distance(&mut lodging_options, &anchor_points);
+
     let mut lodging = Vec::new();
     for lodging_id in &draft.lodging_ids {
         if let Some(option) = facts.lodging.get(lodging_id) {
-            lodging.push(option.clone());
+            if lodging_options.iter().any(|kept| kept.id == option.id) {
+                lodging.push(option.clone());
+            } else {
+                warnings.push(Warning {
+                    code: "lodging_too_far".to_string(),
+                    message: format!(
+                        "Отель «{}» ({}) слишком далеко от точек маршрута — заменён ближайшим вариантом",
+                        option.name, option.settlement
+                    ),
+                });
+            }
         }
     }
     if lodging.is_empty() && days.len() > 1 {
-        let anchor = days
-            .iter()
-            .flat_map(|day| day.items.iter())
-            .next()
-            .map(|item| (item.lat, item.lon));
-        let nearest = facts.lodging.values().min_by(|left, right| {
-            let left_distance = anchor
-                .map(|(lat, lon)| haversine_km((left.lat, left.lon), (lat, lon)))
-                .unwrap_or(0.0);
-            let right_distance = anchor
-                .map(|(lat, lon)| haversine_km((right.lat, right.lon), (lat, lon)))
-                .unwrap_or(0.0);
-            left_distance
-                .partial_cmp(&right_distance)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        });
-        if let Some(option) = nearest {
+        if let Some(option) = lodging_options.first() {
             lodging.push(option.clone());
             warnings.push(Warning {
                 code: "lodging_auto".to_string(),
@@ -601,9 +726,22 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
             });
         }
     }
-
-    let mut lodging_options: Vec<Lodging> = facts.lodging.values().cloned().collect();
-    lodging_options.sort_by_key(|option| option.price_per_night);
+    if lodging_options.is_empty()
+        && !anchor_points.is_empty()
+        && days.len() > 1
+        && !facts.lodging.is_empty()
+    {
+        // Honest empty answer instead of a hotel on the other side of the region.
+        // Only when the tool did return options: an empty facts set means the
+        // model never asked for lodging, which stays a hard validation error.
+        let hint = lodging_hint(&anchor_points);
+        warnings.push(Warning {
+            code: "lodging_none_near".to_string(),
+            message: format!(
+                "Рядом с точками маршрута нет проверенных отелей в нашей базе — ищите гостевые дома или базы отдыха{hint}."
+            ),
+        });
+    }
 
     let total_km = days
         .iter()
@@ -912,5 +1050,151 @@ mod tests {
             .warnings
             .iter()
             .any(|warning| warning.code == "waterbody_skipped"));
+    }
+
+    /// The reported bug: "Хочу погулять в Южно-Морском" was answered with a
+    /// Vladivostok hotel 170 km away.
+    fn lodging_facts() -> (Facts, PlaceFact) {
+        let place = PlaceFact {
+            id: "test:yuzhno-morskoy".to_string(),
+            name: "Набережная Южно-Морского".to_string(),
+            lat: 42.86,
+            lon: 132.68,
+            kind: "beach".to_string(),
+            opening_hours: None,
+            source: SourceKind::Live,
+        };
+        let mut facts = Facts::default();
+        facts.places.insert(place.id.clone(), place.clone());
+        for (id, name, settlement, lat, lon) in [
+            (
+                "test:lodging-vvo",
+                "Отель Владивосток",
+                "Владивосток",
+                43.1155,
+                131.8855,
+            ),
+            (
+                "test:lodging-nhk",
+                "Отель Находка",
+                "Находка",
+                42.8169,
+                132.8855,
+            ),
+            (
+                "test:lodging-livadiya",
+                "База Ливадия",
+                "Ливадия",
+                42.8667,
+                132.6833,
+            ),
+        ] {
+            facts.lodging.insert(
+                id.to_string(),
+                Lodging {
+                    id: id.to_string(),
+                    name: name.to_string(),
+                    settlement: settlement.to_string(),
+                    lat,
+                    lon,
+                    price_per_night: 4000,
+                    kind: "hotel".to_string(),
+                    source: SourceKind::Live,
+                },
+            );
+        }
+        (facts, place)
+    }
+
+    fn draft_with(place_id: &str, date: NaiveDate) -> PlanDraft {
+        PlanDraft {
+            title: "Тест".to_string(),
+            summary: "Тест".to_string(),
+            days: vec![DayDraft {
+                date,
+                items: vec![ItemDraft {
+                    place_id: place_id.to_string(),
+                    name: String::new(),
+                    kind: ItemKind::Sight,
+                    start: None,
+                    end: None,
+                    note: None,
+                }],
+            }],
+            lodging_ids: vec![],
+            transport: Some(TransportMode::Car),
+        }
+    }
+
+    #[test]
+    fn lodging_far_from_the_trip_is_dropped() {
+        let (facts, place) = lodging_facts();
+        let mut intent = intent();
+        intent.assumptions = vec!["хаб: nakhodka-coast".to_string()];
+        let plan = enrich(draft_with(&place.id, intent.start_date), &intent, &facts);
+        let offered: Vec<&str> = plan
+            .lodging_options
+            .iter()
+            .map(|option| option.id.as_str())
+            .collect();
+        assert!(
+            !offered.contains(&"test:lodging-vvo"),
+            "Vladivostok hotel must not be offered for a Nakhodka-coast trip: {offered:?}"
+        );
+        assert!(offered.contains(&"test:lodging-livadiya"));
+        // Closest first: Ливадия is ~2 km away, Находка ~20 km.
+        assert_eq!(plan.lodging_options[0].id, "test:lodging-livadiya");
+    }
+
+    #[test]
+    fn vladivostok_trip_keeps_vladivostok_lodging() {
+        let (mut facts, _) = lodging_facts();
+        let place = PlaceFact {
+            id: "test:vvo".to_string(),
+            name: "Набережная".to_string(),
+            lat: 43.1155,
+            lon: 131.8855,
+            kind: "sight".to_string(),
+            opening_hours: None,
+            source: SourceKind::Live,
+        };
+        facts.places.insert(place.id.clone(), place.clone());
+        let mut intent = intent();
+        intent.assumptions = vec!["хаб: vladivostok".to_string()];
+        let plan = enrich(draft_with(&place.id, intent.start_date), &intent, &facts);
+        assert!(
+            plan.lodging_options
+                .iter()
+                .any(|option| option.id == "test:lodging-vvo"),
+            "a Vladivostok trip must keep its own hotels"
+        );
+    }
+
+    #[test]
+    fn lodging_none_near_warns_instead_of_offering_a_far_hotel() {
+        let (facts, place) = lodging_facts();
+        let mut intent = intent();
+        intent.assumptions = vec!["хаб: terney-north".to_string()];
+        let mut draft = draft_with(&place.id, intent.start_date);
+        // Терней is ~600 km from Южно-Морской: nothing nearby may be offered.
+        draft.days[0].items[0].place_id = "test:terney".to_string();
+        let terney = PlaceFact {
+            id: "test:terney".to_string(),
+            name: "Терней".to_string(),
+            lat: 45.0504,
+            lon: 136.6137,
+            kind: "sight".to_string(),
+            opening_hours: None,
+            source: SourceKind::Live,
+        };
+        let mut facts = facts;
+        facts.places.insert(terney.id.clone(), terney);
+        let plan = enrich(draft, &intent, &facts);
+        assert!(plan.lodging_options.is_empty());
+        assert!(plan
+            .warnings
+            .iter()
+            .any(|warning| warning.code == "lodging_none_near"));
+        assert!(plan.lodging.is_empty());
     }
 }

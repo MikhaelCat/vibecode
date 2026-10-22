@@ -110,6 +110,11 @@ impl KdTree {
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
         best.truncate(k);
+        // The search compares squared distances; callers get real kilometres,
+        // exactly like `within` does.
+        for (_, distance) in best.iter_mut() {
+            *distance = distance.sqrt();
+        }
         best
     }
 
@@ -127,7 +132,11 @@ impl KdTree {
             if distance <= radius_km {
                 found.push((node.item, distance));
             }
-            let key = if axis == 0 { node.point.0 } else { node.point.1 };
+            let key = if axis == 0 {
+                node.point.0
+            } else {
+                node.point.1
+            };
             let query = if axis == 0 { lat } else { lon };
             let (near, far) = if query < key {
                 (node.left, node.right)
@@ -162,7 +171,11 @@ impl KdTree {
             if distance_km(lat, lon, node.point.0, node.point.1) <= radius_km {
                 return true;
             }
-            let key = if axis == 0 { node.point.0 } else { node.point.1 };
+            let key = if axis == 0 {
+                node.point.0
+            } else {
+                node.point.1
+            };
             let query = if axis == 0 { lat } else { lon };
             let (near, far) = if query < key {
                 (node.left, node.right)
@@ -179,14 +192,7 @@ impl KdTree {
         false
     }
 
-    fn search(
-        &self,
-        node_index: i32,
-        lat: f64,
-        lon: f64,
-        k: usize,
-        best: &mut Vec<(usize, f64)>,
-    ) {
+    fn search(&self, node_index: i32, lat: f64, lon: f64, k: usize, best: &mut Vec<(usize, f64)>) {
         let node = self.nodes[node_index as usize];
         let distance = squared_distance(lat, lon, node.point.0, node.point.1);
         if best.len() < k {
@@ -195,7 +201,8 @@ impl KdTree {
             .iter()
             .enumerate()
             .max_by(|left, right| {
-                left.1 .1
+                left.1
+                     .1
                     .partial_cmp(&right.1 .1)
                     .unwrap_or(std::cmp::Ordering::Equal)
             })
@@ -206,7 +213,11 @@ impl KdTree {
             }
         }
         let axis = node.axis;
-        let key = if axis == 0 { node.point.0 } else { node.point.1 };
+        let key = if axis == 0 {
+            node.point.0
+        } else {
+            node.point.1
+        };
         let query = if axis == 0 { lat } else { lon };
         let (near, far) = if query < key {
             (node.left, node.right)
@@ -229,13 +240,6 @@ impl KdTree {
         if far >= 0 && plane * plane <= threshold {
             self.search(far, lat, lon, k, best);
         }
-    }
-}
-
-/// Converts squared "kilometre-ish" distances kept inside the tree into real km.
-pub fn tree_distances_to_km(items: &mut [(usize, f64)]) {
-    for (_, distance) in items.iter_mut() {
-        *distance = distance.sqrt();
     }
 }
 
@@ -304,8 +308,21 @@ mod tests {
         let nearest = tree.nearest(query.0, query.1, 3);
         assert_eq!(
             nearest.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
-            linear.iter().take(3).map(|(index, _)| *index).collect::<Vec<_>>()
+            linear
+                .iter()
+                .take(3)
+                .map(|(index, _)| *index)
+                .collect::<Vec<_>>()
         );
+        // `nearest` returns kilometres, not the squared values used internally.
+        for (found, expected) in nearest.iter().zip(linear.iter().take(3)) {
+            assert!(
+                (found.1 - expected.1).abs() < 0.01,
+                "distance mismatch: {} vs {}",
+                found.1,
+                expected.1
+            );
+        }
     }
 
     #[test]
