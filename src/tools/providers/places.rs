@@ -418,15 +418,11 @@ fn merge_live_sources(osm: Vec<Value>, wikipedia: Vec<Value>, limit: usize) -> V
             place.get("lat").and_then(Value::as_f64),
             place.get("lon").and_then(Value::as_f64),
         ) {
-            (Some(lat), Some(lon)) => {
-                osm_names
-                    .iter()
-                    .any(|(known, known_lat, known_lon)| {
-                        !name.is_empty()
-                            && *known == name
-                            && haversine_km((lat, lon), (*known_lat, *known_lon)) < 0.5
-                    })
-            }
+            (Some(lat), Some(lon)) => osm_names.iter().any(|(known, known_lat, known_lon)| {
+                !name.is_empty()
+                    && *known == name
+                    && haversine_km((lat, lon), (*known_lat, *known_lon)) < 0.5
+            }),
             _ => false,
         };
         if !twin {
@@ -455,7 +451,7 @@ fn merge_live_sources(osm: Vec<Value>, wikipedia: Vec<Value>, limit: usize) -> V
 /// Says out loud when a live answer was topped up from the demo catalogue.
 fn supplement_note(supplemented: bool) -> &'static str {
     if supplemented {
-        " + локальный справочник (демо-данные)".into()
+        " + локальный справочник (демо-данные)"
     } else {
         ""
     }

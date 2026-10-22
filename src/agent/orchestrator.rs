@@ -248,7 +248,8 @@ impl Orchestrator {
         // fetches start here and run next to the first LLM turn instead of
         // holding it back; their results only matter for `submit_plan` (and
         // for the fallback), so they are collected right before that point.
-        let mut events_prefetch = start_events_prefetch(self.registry.clone(), intent.clone(), &query);
+        let mut events_prefetch =
+            start_events_prefetch(self.registry.clone(), intent.clone(), &query);
         let mut usage = TokenUsage::default();
         let mut tools_used: Vec<String> = Vec::new();
         let mut repairs = 0usize;

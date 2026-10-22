@@ -237,6 +237,7 @@ if (mapCard && 'IntersectionObserver' in window) {
 
 // ---------- состояние ----------
 let plan = null;
+let lodgingPlan = null;
 let day = 0;
 let autoStart = '';
 let autoEnd = '';
@@ -599,7 +600,12 @@ function renderPlan() {
     </button>`).join('');
   if (!map) initMap();
   renderDay();
-  renderLodging();
+  // The lodging cards depend on the plan, not on the active day; a tab switch
+  // must not rebuild them.
+  if (lodgingPlan !== plan) {
+    lodgingPlan = plan;
+    renderLodging();
+  }
 }
 
 $('tabs').addEventListener('click', (event) => {
