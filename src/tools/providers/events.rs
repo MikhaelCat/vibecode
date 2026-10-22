@@ -108,35 +108,10 @@ impl Tool for EventsTool {
             ));
         }
 
-        let response = ctx
-            .http
-            .get(url)
-            .header("User-Agent", EVENTS_USER_AGENT)
-            .header("Accept", "text/html,application/xhtml+xml")
-            .send()
-            .await
-            .map_err(|error| ToolError::Upstream(format!("VL.ru: {error}")))?;
-        if !response.status().is_success() {
-            return Err(ToolError::Upstream(format!(
-                "VL.ru вернул HTTP {}",
-                response.status()
-            )));
-        }
-        let html = response
-            .text()
-            .await
-            .map_err(|error| ToolError::Upstream(format!("VL.ru: {error}")))?;
-
-        let mut events = parse_events(&html, start, end);
-        // The first page is only a subset. Pull a few AJAX pages so a busy
-        // Vladivostok day can show up to 20 events, not 8-10.
-        let mut seen: HashSet<String> = events
-            .iter()
-            .filter_map(|event| event.get("id").and_then(Value::as_str))
-            .map(str::to_string)
-            .collect();
-        // Pull the extra AJAX pages in parallel: five sequential requests were
-        // eating most of the tool budget on a plan with many days.
+        // The poster page and its AJAX pages are independent requests: start
+        // them all at once. Waiting for the main page first meant the extra
+        // pages only began after the slow HTML document (>6 s on a slow link)
+        // had fully arrived, and the poster is on the plan's critical path.
         let requests = (1..=5).map(|page| {
             let ajax_url = format!("{url}/ajax/events?page={page}");
             let http = ctx.http.clone();
@@ -157,7 +132,39 @@ impl Tool for EventsTool {
                 response.json::<Value>().await.ok()
             }
         });
-        let pages = futures::future::join_all(requests).await;
+        let (page, pages) = tokio::join!(
+            async {
+                let response = ctx
+                    .http
+                    .get(url)
+                    .header("User-Agent", EVENTS_USER_AGENT)
+                    .header("Accept", "text/html,application/xhtml+xml")
+                    .send()
+                    .await
+                    .map_err(|error| ToolError::Upstream(format!("VL.ru: {error}")))?;
+                if !response.status().is_success() {
+                    return Err(ToolError::Upstream(format!(
+                        "VL.ru вернул HTTP {}",
+                        response.status()
+                    )));
+                }
+                response
+                    .text()
+                    .await
+                    .map_err(|error| ToolError::Upstream(format!("VL.ru: {error}")))
+            },
+            futures::future::join_all(requests),
+        );
+        let html = page?;
+
+        let mut events = parse_events(&html, start, end);
+        // The first page is only a subset. Pull a few AJAX pages so a busy
+        // Vladivostok day can show up to 20 events, not 8-10.
+        let mut seen: HashSet<String> = events
+            .iter()
+            .filter_map(|event| event.get("id").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect();
         for value in pages.into_iter().flatten() {
             let Some(page_html) = value.get("events").and_then(Value::as_str) else {
                 continue;

@@ -147,13 +147,29 @@ let map = null;
 let layer = null;
 let markers = [];
 let mapTilesLoaded = false;
+// One Leaflet layer group per day, built once per plan: switching day tabs
+// then swaps a single group instead of clearing the map and recreating every
+// polyline, fuel pin and stop marker with its tooltip, popup and icon DOM.
+const dayLayers = new Map();
+let activeDay = null;
+let fitted = null; // { plan, day } of the last fitBounds call
 
 function fitMap() {
   if (map) map.invalidateSize();
 }
 
 function initMap() {
-  if (map || !window.L) return;
+  if (map) return;
+  if (!window.L) {
+    // The Leaflet bundle loads from a CDN chain and can settle after the first
+    // attempt; without a retry the map never appeared and the route/fuel layers
+    // silently vanished with it.
+    if (!initMap.retries || initMap.retries < 40) {
+      initMap.retries = (initMap.retries || 0) + 1;
+      setTimeout(initMap, 250);
+    }
+    return;
+  }
   // Touch devices keep one-finger page scrolling; the map is panned with the
   // zoom buttons. Desktop wheel zoom works only while the cursor is over it.
   const touchMap = navigator.maxTouchPoints > 0 || window.matchMedia('(any-pointer: coarse)').matches;
@@ -193,6 +209,10 @@ function initMap() {
   tiles.addTo(map);
   layer = L.layerGroup().addTo(map);
   map.whenReady(fitMap);
+  // The plan may have been rendered before the map existed (the map is created
+  // lazily when its card nears the viewport, and a plan can arrive first).
+  // Redraw the active day so route lines and fuel pins always show up.
+  if (plan) renderDay();
   setTimeout(() => {
     if (!mapTilesLoaded && mapLoading) {
       mapLoading.textContent = 'Карта недоступна — точки маршрута загружены';
@@ -479,6 +499,10 @@ function reset() {
   $('map-caption').textContent = '';
   $('map-caption').hidden = true;
   stageMap.clear();
+  dayLayers.clear();
+  activeDay = null;
+  fitted = null;
+  lodgingPlan = null;
   if (layer) layer.clearLayers();
   markers = [];
   plan = null;
@@ -615,11 +639,38 @@ function renderDay() {
   $('stops').innerHTML = html;
   renderEvents(current.events || []);
 
-  if (layer) layer.clearLayers();
-  markers = [];
-  if (!map || !window.L) return;
-  // Route geometry of the active day first: Leaflet keeps paths in the overlay
-  // pane, below the marker pane, so the line is drawn under both marker types.
+  if (!map || !layer || !window.L) {
+    markers = [];
+    return;
+  }
+  // The day's layers are built once and cached; a tab switch only swaps the
+  // group, it never recreates markers, tooltips or polylines.
+  const entry = dayMapLayers(current, day);
+  if (activeDay !== entry) {
+    if (activeDay) layer.removeLayer(activeDay.group);
+    layer.addLayer(entry.group);
+    activeDay = entry;
+  }
+  markers = entry.markers;
+  // Re-rendering the same day must not move a map the user has panned away;
+  // a real day switch still fits that day's bounds.
+  if (entry.points.length && (!fitted || fitted.plan !== plan || fitted.day !== day)) {
+    map.fitBounds(L.latLngBounds(entry.points).pad(0.25), { maxZoom: 12 });
+    fitted = { plan, day };
+  }
+}
+
+// Builds and caches the Leaflet layers of one day. The group is filled while
+// detached and put on the map in a single add, so the DOM work for icons,
+// tooltips and popups happens once per plan instead of once per tab switch.
+function dayMapLayers(current, index) {
+  const cached = dayLayers.get(index);
+  if (cached && cached.plan === plan) return cached;
+  const items = planItems(current);
+  const legs = current.legs || [];
+  const group = L.layerGroup();
+  // Route geometry of the day first: Leaflet keeps paths in the overlay pane,
+  // below the marker pane, so the line is drawn under both marker types.
   // A leg without usable geometry draws nothing.
   legs.forEach((leg) => {
     const line = legLine(leg);
@@ -631,11 +682,10 @@ function renderDay() {
       lineCap: 'round',
       lineJoin: 'round',
       interactive: false,
-    }).addTo(layer);
+    }).addTo(group);
   });
-  // Fuel stations of the active day: orange square markers with a tooltip and
-  // a popup. They are independent of the stop list and are cleared with the
-  // layer whenever another day is rendered.
+  // Fuel stations of the day: orange square markers with a tooltip and a
+  // popup. They are independent of the stop list and belong to the day's group.
   const fuel = Array.isArray(current.fuel) ? current.fuel : [];
   fuel.forEach((station) => {
     const point = mapPoint(station);
@@ -650,10 +700,11 @@ function renderDay() {
     })
       .bindTooltip(fuelTooltipText(station), { direction: 'top', offset: [0, -12] })
       .bindPopup(fuelPopupHtml(station))
-      .addTo(layer);
+      .addTo(group);
   });
   const points = [];
-  items.forEach((stop, index) => {
+  const dayMarkers = [];
+  items.forEach((stop, itemIndex) => {
     const point = mapPoint(stop);
     if (!point) return;
     points.push(point);
@@ -663,16 +714,16 @@ function renderDay() {
     const marker = L.marker([lat, lon], {
       icon: L.divIcon({
         className: 'pin-wrap',
-        html: `<div class="pin"><span>${index + 1}</span></div>`,
+        html: `<div class="pin"><span>${itemIndex + 1}</span></div>`,
         iconSize: [34, 42],
         iconAnchor: [17, 40],
       }),
-    }).bindPopup(popup).addTo(layer);
-    markers[index] = marker;
+    }).bindPopup(popup).addTo(group);
+    dayMarkers[itemIndex] = marker;
   });
-  if (points.length) {
-    map.fitBounds(L.latLngBounds(points).pad(0.25), { maxZoom: 12 });
-  }
+  const entry = { plan, group, markers: dayMarkers, points };
+  dayLayers.set(index, entry);
+  return entry;
 }
 
 function stopDescription(stop) {

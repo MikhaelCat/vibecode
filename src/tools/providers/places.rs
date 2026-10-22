@@ -167,7 +167,63 @@ impl Tool for PlacesTool {
         // — a bar search in Vladivostok once timed out that way and the plan
         // came out empty. Whatever is not ready in time is skipped, and the
         // local catalogue below always answers.
-        if wants_osm_business(&categories) && std::time::Instant::now() < deadline {
+        //
+        // A mixed request — nature plus food, sights plus cafés — needs both
+        // the OSM business rows and the Wikipedia articles. Neither source
+        // needs the other's answer, so both are asked at once and merged
+        // instead of in turn, where the second source only started after the
+        // first one had spent the whole budget on slow map tiles. Pure
+        // business searches keep the plain OSM → Overpass order, where a
+        // Wikipedia article cannot contribute a precise café anyway.
+        let mut prefetched_wikipedia: Option<Vec<Value>> = None;
+        if !wikipedia_first && wants_osm_business(&categories) && wants_wikipedia(&categories) {
+            let (osm, wikipedia) = tokio::join!(
+                osm_map_places(ctx, &area, &categories, limit, deadline),
+                wikipedia_matching_places(
+                    ctx,
+                    area.lat,
+                    area.lon,
+                    limit,
+                    &categories,
+                    area_is_water,
+                ),
+            );
+            wikipedia_tried = true;
+            let wikipedia = wikipedia
+                .map(|places| scope_to_area(places, &area, nearest_only, limit))
+                .filter(|places| !places.is_empty());
+            let osm = osm
+                .map(|places| scope_to_area(places, &area, nearest_only, limit))
+                .filter(|places| !places.is_empty());
+            if let Some(osm) = osm {
+                // A source that alone fills the request answers alone; a thin
+                // OSM list is merged with the Wikipedia rows so a "nature and
+                // food" day gets both halves.
+                let places = match &wikipedia {
+                    Some(wikipedia) if osm.len() < limit => {
+                        merge_live_sources(osm, wikipedia.clone(), limit)
+                    }
+                    _ => osm,
+                };
+                let (places, supplemented) =
+                    with_local_supplement(ctx, &area, &categories, places, nearest_only, limit);
+                return Ok(ToolOutput::ok(
+                    json!({"places": places}),
+                    SourceKind::Live,
+                    format!(
+                        "OpenStreetMap и Википедия: {} мест рядом с {}{}",
+                        places.len(),
+                        area.label,
+                        supplement_note(supplemented)
+                    ),
+                ));
+            }
+            // The map API found nothing: Overpass goes first, exactly as it
+            // does for business searches, and the Wikipedia rows are kept for
+            // the step after it — that keeps the order and does not repeat
+            // the request.
+            prefetched_wikipedia = wikipedia;
+        } else if wants_osm_business(&categories) && std::time::Instant::now() < deadline {
             if let Some(places) = osm_map_places(ctx, &area, &categories, limit, deadline).await {
                 let places = scope_to_area(places, &area, nearest_only, limit);
                 if !places.is_empty() {
@@ -234,6 +290,27 @@ impl Tool for PlacesTool {
                         ),
                     ));
                 }
+            }
+        }
+
+        // The mixed search asked Wikipedia next to the map tiles; those rows
+        // answer now without another request, even when the live budget is
+        // spent — the data is already in hand, only the demo catalogue below
+        // is a fallback.
+        if let Some(places) = prefetched_wikipedia {
+            if !places.is_empty() {
+                let (places, supplemented) =
+                    with_local_supplement(ctx, &area, &categories, places, nearest_only, limit);
+                return Ok(ToolOutput::ok(
+                    json!({"places": places}),
+                    SourceKind::Live,
+                    format!(
+                        "Википедия: {} объектов рядом с {}{}",
+                        places.len(),
+                        area.label,
+                        supplement_note(supplemented)
+                    ),
+                ));
             }
         }
 
@@ -304,6 +381,73 @@ const DEFAULT_AREA_CITY: &str = "Владивосток";
 /// Time the live providers of one search may spend before the tool gives the
 /// remaining seconds to the local catalogue instead of being killed.
 const SEARCH_BUDGET: Duration = Duration::from_secs(6);
+
+/// Merges the OSM and Wikipedia rows of one mixed search. Both lists arrive
+/// sorted by distance; the same object is often mapped in both sources under
+/// different ids, so a matching name within half a kilometre drops the
+/// Wikipedia twin instead of showing the same place twice.
+fn merge_live_sources(osm: Vec<Value>, wikipedia: Vec<Value>, limit: usize) -> Vec<Value> {
+    let mut merged = osm;
+    let mut seen: HashSet<String> = merged
+        .iter()
+        .filter_map(|place| place.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    let osm_names: Vec<(String, f64, f64)> = merged
+        .iter()
+        .filter_map(|place| {
+            Some((
+                normalize_title(place.get("name").and_then(Value::as_str)?),
+                place.get("lat").and_then(Value::as_f64)?,
+                place.get("lon").and_then(Value::as_f64)?,
+            ))
+        })
+        .collect();
+    for place in wikipedia {
+        let Some(id) = place.get("id").and_then(Value::as_str).map(str::to_string) else {
+            continue;
+        };
+        if !seen.insert(id) {
+            continue;
+        }
+        let name = place
+            .get("name")
+            .and_then(Value::as_str)
+            .map(normalize_title)
+            .unwrap_or_default();
+        let twin = match (
+            place.get("lat").and_then(Value::as_f64),
+            place.get("lon").and_then(Value::as_f64),
+        ) {
+            (Some(lat), Some(lon)) => {
+                osm_names
+                    .iter()
+                    .any(|(known, known_lat, known_lon)| {
+                        !name.is_empty()
+                            && *known == name
+                            && haversine_km((lat, lon), (*known_lat, *known_lon)) < 0.5
+                    })
+            }
+            _ => false,
+        };
+        if !twin {
+            merged.push(place);
+        }
+    }
+    merged.sort_by(|left, right| {
+        let left = left
+            .get("distance_meters")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::MAX);
+        let right = right
+            .get("distance_meters")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::MAX);
+        left.partial_cmp(&right)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    merged.truncate(limit.max(1));
+    merged
+}
 
 /// A user who asks for the nearest café must get the nearest one, not merely
 /// the ones inside the search box. The model often keeps that wording in
@@ -608,30 +752,40 @@ async fn osm_map_places(
         }
     };
 
-    take(
-        fetch_osm_tile(ctx, area.lat, area.lon, 0.008, Duration::from_secs(3)).await,
-        &mut all,
+    // The centre tile and its four neighbours are one round of independent
+    // requests, so they travel together: fetched one after another they spent
+    // the whole search budget on the network alone (five slow tiles in a row
+    // is how a mixed query ran out of time before Overpass or Wikipedia could
+    // answer). Each tile keeps its own timeout and the parsing below stays
+    // nearest-first, stopping as soon as the set is rich enough or the budget
+    // is gone.
+    let (centre, neighbours) = tokio::join!(
+        fetch_osm_tile(ctx, area.lat, area.lon, 0.008, Duration::from_secs(3)),
+        async {
+            let mut tiles = Vec::with_capacity(4);
+            for (delta_lat, delta_lon) in [
+                (0.01_f64, 0.0_f64),
+                (-0.01, 0.0),
+                (0.0, 0.012),
+                (0.0, -0.012),
+            ] {
+                tiles.push(fetch_osm_tile(
+                    ctx,
+                    area.lat + delta_lat,
+                    area.lon + delta_lon,
+                    0.008,
+                    Duration::from_secs(2),
+                ));
+            }
+            futures::future::join_all(tiles).await
+        }
     );
-    for (delta_lat, delta_lon) in [
-        (0.01_f64, 0.0_f64),
-        (-0.01, 0.0),
-        (0.0, 0.012),
-        (0.0, -0.012),
-    ] {
+    take(centre, &mut all);
+    for tile in neighbours {
         if all.len() >= limit / 2 || std::time::Instant::now() >= deadline {
             break;
         }
-        take(
-            fetch_osm_tile(
-                ctx,
-                area.lat + delta_lat,
-                area.lon + delta_lon,
-                0.008,
-                Duration::from_secs(2),
-            )
-            .await,
-            &mut all,
-        );
+        take(tile, &mut all);
     }
 
     if all.is_empty() && std::time::Instant::now() < deadline {

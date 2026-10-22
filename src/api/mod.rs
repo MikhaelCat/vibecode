@@ -11,7 +11,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use axum::extract::{Path, State};
-use axum::http::{HeaderMap, StatusCode};
+use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post};
 use axum::{Json, Router};
@@ -56,6 +56,10 @@ pub fn router(state: AppState) -> Router {
         .route("/api/stats", get(stats))
         .route("/api/runs/{id}", get(run_by_id))
         .fallback_service(ServeDir::new(web_dir).fallback(ServeFile::new(index)))
+        // The SPA has no build hashes in its file names, so a stale bundle in
+        // the browser cache hid new map layers ("нет маршрутов и заправок").
+        // Static answers revalidate; API responses are untouched.
+        .layer(axum::middleware::from_fn(static_no_cache))
         .layer(RequestBodyLimitLayer::new(16 * 1024))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
@@ -200,6 +204,23 @@ async fn run_by_id(
             hint: None,
         }),
     }
+}
+
+/// Marks the served SPA files as revalidated: the browser must not reuse an
+/// old `app.js` blindly. API responses keep their own headers.
+async fn static_no_cache(
+    request: axum::extract::Request,
+    next: axum::middleware::Next,
+) -> Response {
+    let is_api = request.uri().path().starts_with("/api/");
+    let mut response = next.run(request).await;
+    if !is_api {
+        response.headers_mut().insert(
+            header::CACHE_CONTROL,
+            HeaderValue::from_static("no-cache, must-revalidate"),
+        );
+    }
+    response
 }
 
 fn check_auth(state: &AppState, headers: &HeaderMap) -> Result<(), ApiError> {

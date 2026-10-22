@@ -21,7 +21,7 @@ use crate::agent::guard::{self, GuardDecision};
 use crate::agent::prompt::PromptSet;
 use crate::config::Config;
 use crate::domain::dates::today_vladivostok;
-use crate::domain::facts::Facts;
+use crate::domain::facts::{Facts, ToolOutput};
 use crate::domain::fallback;
 use crate::domain::intent::{Intent, Refusal, TransportMode, MAX_TRIP_DAYS};
 use crate::domain::plan::{enrich, Generation, Plan, PlanDraft};
@@ -244,22 +244,11 @@ impl Orchestrator {
 
         let mut facts = Facts::default();
         // The poster is worth loading even if the model forgets to call the
-        // tool: events are attached to the plan separately from places.
-        for area in event_areas_for_query(&query) {
-            let events_args = json!({
-                "area": area,
-                "start_date": intent.start_date.to_string(),
-                "end_date": intent.end_date.to_string()
-            });
-            if let Ok(Ok(output)) = tokio::time::timeout(
-                std::time::Duration::from_secs(6),
-                self.registry.call("find_events", events_args, &intent),
-            )
-            .await
-            {
-                facts.ingest("find_events", &output);
-            }
-        }
+        // tool: events are attached to the plan separately from places. The
+        // fetches start here and run next to the first LLM turn instead of
+        // holding it back; their results only matter for `submit_plan` (and
+        // for the fallback), so they are collected right before that point.
+        let mut events_prefetch = start_events_prefetch(self.registry.clone(), intent.clone(), &query);
         let mut usage = TokenUsage::default();
         let mut tools_used: Vec<String> = Vec::new();
         let mut repairs = 0usize;
@@ -398,6 +387,17 @@ impl Orchestrator {
                 }
             }
 
+            // A prefetched poster for a city the model is asking about right
+            // now would duplicate the request; the model's own call wins and
+            // the prefetch for that city is dropped.
+            for (_, name, args) in &regular_calls {
+                if name == "find_events" {
+                    if let Some(area) = args.get("area").and_then(Value::as_str) {
+                        abort_events_prefetch(&mut events_prefetch, area);
+                    }
+                }
+            }
+
             if !regular_calls.is_empty() {
                 let registry = self.registry.clone();
                 let intent = intent.clone();
@@ -482,6 +482,11 @@ impl Orchestrator {
                 }
             }
 
+            if !submit_calls.is_empty() {
+                // The validator reads `facts`, so the prefetched posters must
+                // be in before the plan is judged.
+                drain_events_prefetch(&mut events_prefetch, &mut facts).await;
+            }
             for (call_id, name, args) in submit_calls {
                 let submit_started = Instant::now();
                 let (content, ok) = self
@@ -538,6 +543,11 @@ impl Orchestrator {
                 ));
             }
         }
+
+        // The loop can end without a submit (LLM error, repair limit, steps
+        // exhausted); the fallback path also reads `facts`, so collect the
+        // prefetched posters before it runs. A no-op when already collected.
+        drain_events_prefetch(&mut events_prefetch, &mut facts).await;
 
         self.emit(
             &sink,
@@ -871,6 +881,81 @@ fn event_areas_for_query(query: &str) -> Vec<&'static str> {
         }
     }
     areas
+}
+
+/// One background poster fetch: the city it covers plus its task handle.
+struct EventsPrefetch {
+    area: String,
+    handle: tokio::task::JoinHandle<Option<ToolOutput>>,
+}
+
+/// Starts one poster fetch per city the query names. Each task keeps the same
+/// six-second cap the prefetch always had; running in the background lets a
+/// live LLM turn absorb the wait instead of adding it, and the results are
+/// collected only where `facts` is read, so a slow poster never extends a plan
+/// that never uses it.
+fn start_events_prefetch(
+    registry: Arc<Registry>,
+    intent: Intent,
+    query: &str,
+) -> Vec<EventsPrefetch> {
+    event_areas_for_query(query)
+        .into_iter()
+        .map(|area| {
+            let args = json!({
+                "area": area,
+                "start_date": intent.start_date.to_string(),
+                "end_date": intent.end_date.to_string()
+            });
+            let registry = registry.clone();
+            let task_intent = intent.clone();
+            let handle = tokio::spawn(async move {
+                match tokio::time::timeout(
+                    std::time::Duration::from_secs(6),
+                    registry.call("find_events", args, &task_intent),
+                )
+                .await
+                {
+                    Ok(Ok(output)) => Some(output),
+                    _ => None,
+                }
+            });
+            EventsPrefetch {
+                area: area.to_string(),
+                handle,
+            }
+        })
+        .collect()
+}
+
+/// Drops the prefetch for a city the model is already calling `find_events`
+/// for, so one poster is never fetched twice in the same run.
+fn abort_events_prefetch(prefetch: &mut Vec<EventsPrefetch>, area: &str) {
+    let area = area.trim().to_lowercase();
+    if area.is_empty() {
+        return;
+    }
+    prefetch.retain(|item| {
+        let known = item.area.to_lowercase();
+        let same_city = known.contains(&area) || area.contains(&known);
+        if same_city {
+            item.handle.abort();
+            false
+        } else {
+            true
+        }
+    });
+}
+
+/// Collects the background poster fetches into `facts`. Called before the
+/// validator sees a plan and before the fallback is assembled; the second call
+/// is a no-op because the list is taken by the first one.
+async fn drain_events_prefetch(prefetch: &mut Vec<EventsPrefetch>, facts: &mut Facts) {
+    for item in std::mem::take(prefetch) {
+        if let Ok(Some(output)) = item.handle.await {
+            facts.ingest("find_events", &output);
+        }
+    }
 }
 
 /// Makes `search_places` follow the parsed request even when the model picks
