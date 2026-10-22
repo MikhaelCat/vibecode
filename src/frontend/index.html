@@ -51,12 +51,26 @@
         <form id="form" class="panel">
           <label class="sr-only" for="q">Описание поездки</label>
           <textarea id="q" rows="4" maxlength="1000" required
-            placeholder="Например: хочу на выходные к морю и маякам, без долгих переездов"></textarea>
+            placeholder="Например: хочу на выходные к морю и маякам, без долгих переездов&#10;Если место не задано, поиск проходит во Владивостоке"></textarea>
           <div class="counter"><span id="count">0</span> / 1000</div>
 
           <div class="controls">
-            <label class="field"><span>Дата начала</span><input id="start_date" type="date" required></label>
-            <label class="field"><span>Дата конца</span><input id="end_date" type="date" required></label>
+            <div class="field field-date">
+              <span>Дата начала</span>
+              <input id="start_date" type="date" required tabindex="-1" aria-hidden="true">
+              <button type="button" class="date-trigger" data-input="start_date" aria-haspopup="dialog" aria-expanded="false">
+                <span class="date-value"></span>
+                <svg class="date-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/></svg>
+              </button>
+            </div>
+            <div class="field field-date">
+              <span>Дата конца</span>
+              <input id="end_date" type="date" required tabindex="-1" aria-hidden="true">
+              <button type="button" class="date-trigger" data-input="end_date" aria-haspopup="dialog" aria-expanded="false">
+                <span class="date-value"></span>
+                <svg class="date-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4.5" width="18" height="16" rx="3"/><path d="M3 9.5h18M8 2.5v4M16 2.5v4"/></svg>
+              </button>
+            </div>
             <div class="field field-transport">
               <span id="transport-label">Транспорт</span>
               <select id="transport" class="sr-only" tabindex="-1" aria-labelledby="transport-label">
@@ -67,15 +81,30 @@
                 <option value="transit">Автобус / поезд</option>
               </select>
               <div class="transport-group" role="radiogroup" aria-labelledby="transport-label">
-                <button type="button" class="transport-opt" data-value="" aria-pressed="true">Как в тексте</button>
-                <button type="button" class="transport-opt" data-value="car" aria-pressed="false">Авто</button>
-                <button type="button" class="transport-opt" data-value="foot" aria-pressed="false">Пешком</button>
-                <button type="button" class="transport-opt" data-value="bike" aria-pressed="false">Велосипед</button>
-                <button type="button" class="transport-opt" data-value="transit" aria-pressed="false">Автобус</button>
+                <button type="button" class="transport-opt" data-value="" aria-pressed="true">
+                  <svg class="transport-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 7.5h14M5 12h9M5 16.5h6"/></svg>
+                  <span>Как в тексте</span>
+                </button>
+                <button type="button" class="transport-opt" data-value="car" aria-pressed="false">
+                  <svg class="transport-icon" viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 15.5h15"/><path d="M6 15.5l1.6-5.7A2 2 0 0 1 9.5 8.4h5a2 2 0 0 1 1.9 1.4L18 15.5"/><circle cx="8" cy="17.6" r="1.5"/><circle cx="16" cy="17.6" r="1.5"/></svg>
+                  <span>Авто</span>
+                </button>
+                <button type="button" class="transport-opt" data-value="foot" aria-pressed="false">
+                  <svg class="transport-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="13" cy="4.7" r="1.7"/><path d="M12.6 7.4 10.2 12l1.8 2-1.2 5.2"/><path d="M12.6 7.4 15 9.6l2.6.9"/><path d="M10.2 12l-2.4 1.6"/></svg>
+                  <span>Пешком</span>
+                </button>
+                <button type="button" class="transport-opt" data-value="bike" aria-pressed="false">
+                  <svg class="transport-icon" viewBox="0 0 24 24" aria-hidden="true"><circle cx="6" cy="16" r="3.1"/><circle cx="18" cy="16" r="3.1"/><path d="M6 16l3.2-7h5.2l3.6 7"/><path d="M9.2 9h5.2"/><path d="M13.6 9l2.4-2.4"/></svg>
+                  <span>Велосипед</span>
+                </button>
+                <button type="button" class="transport-opt" data-value="transit" aria-pressed="false">
+                  <svg class="transport-icon" viewBox="0 0 24 24" aria-hidden="true"><rect x="5" y="4.5" width="14" height="12.5" rx="3"/><path d="M5 10.5h14"/><path d="M8.2 17v2M15.8 17v2"/><path d="M9 13.8h.01M15 13.8h.01"/></svg>
+                  <span>Автобус</span>
+                </button>
               </div>
             </div>
           </div>
-          <p class="hint">Если транспорт не выбран, по умолчанию — автомобиль. Если в тексте явно указано «пешком» или «велосипед», используем его. Даты из формы главнее текста.</p>
+          <p class="hint">Если место не задано, поиск проходит во Владивостоке. Если транспорт не выбран, по умолчанию — автомобиль. Если в тексте явно указано «пешком» или «велосипед», используем его. Даты из формы главнее текста.</p>
 
           <div class="row">
             <button id="go" class="btn" type="submit">
@@ -162,6 +191,16 @@
   </section>
 </main>
 
+<div class="calendar" id="calendar" role="dialog" aria-label="Выбор даты" hidden>
+  <div class="cal-head">
+    <button type="button" class="cal-nav" data-dir="-1" aria-label="Предыдущий месяц">‹</button>
+    <span class="cal-title"></span>
+    <button type="button" class="cal-nav" data-dir="1" aria-label="Следующий месяц">›</button>
+  </div>
+  <div class="cal-weekdays"></div>
+  <div class="cal-grid"></div>
+</div>
+
 <footer class="foot">
   <div class="foot-brand">
     <div class="brand"><span class="brand-mark" aria-hidden="true"></span>vibecode</div>
@@ -206,6 +245,132 @@
 
   select.addEventListener('change', sync);
   sync();
+})();
+</script>
+<script>
+/* Кастомный календарь. Нативные #start_date/#end_date остаются скрытыми:
+   app.js читает их .value/.min/.max и реагирует на событие change. */
+(function () {
+  var pop = document.getElementById('calendar');
+  if (!pop) return;
+  var title = pop.querySelector('.cal-title');
+  var grid = pop.querySelector('.cal-grid');
+  var weekdays = pop.querySelector('.cal-weekdays');
+  var triggers = [].slice.call(document.querySelectorAll('.date-trigger'));
+  var MONTHS = ['Январь', 'Февраль', 'Март', 'Апрель', 'Май', 'Июнь', 'Июль', 'Август', 'Сентябрь', 'Октябрь', 'Ноябрь', 'Декабрь'];
+  var MONTHS_SHORT = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
+  var DOW = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'];
+  var active = null, view = null, selected = null;
+
+  weekdays.innerHTML = DOW.map(function (d) { return '<span class="cal-dow">' + d + '</span>'; }).join('');
+
+  function pad(n) { return n < 10 ? '0' + n : '' + n; }
+  function iso(d) { return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()); }
+  function parseISO(s) {
+    var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(s || '');
+    return m ? new Date(+m[1], +m[2] - 1, +m[3]) : null;
+  }
+  function today() { var t = new Date(); return new Date(t.getFullYear(), t.getMonth(), t.getDate()); }
+  function sameDay(a, b) {
+    return !!a && !!b && a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  }
+  function inputFor(tr) { return document.getElementById(tr.dataset.input); }
+  function fmt(d) { return d ? d.getDate() + ' ' + MONTHS_SHORT[d.getMonth()] + ' ' + d.getFullYear() : ''; }
+
+  function render() {
+    if (!active) return;
+    var inp = inputFor(active);
+    var min = parseISO(inp.min), max = parseISO(inp.max);
+    title.textContent = MONTHS[view.getMonth()] + ' ' + view.getFullYear();
+    var year = view.getFullYear(), month = view.getMonth();
+    var offset = (new Date(year, month, 1).getDay() + 6) % 7;
+    var total = new Date(year, month + 1, 0).getDate();
+    var t = today(), html = '';
+    for (var i = 0; i < offset; i++) html += '<button type="button" class="cal-day out" tabindex="-1" disabled></button>';
+    for (var day = 1; day <= total; day++) {
+      var d = new Date(year, month, day);
+      var dis = (min && d < min) || (max && d > max);
+      var cls = 'cal-day';
+      if (sameDay(d, t)) cls += ' today';
+      if (sameDay(d, selected)) cls += ' selected';
+      html += '<button type="button" class="' + cls + '" data-iso="' + iso(d) + '"' + (dis ? ' disabled' : '') + '>' + day + '</button>';
+    }
+    grid.innerHTML = html;
+  }
+
+  function position() {
+    if (!active) return;
+    var r = active.getBoundingClientRect();
+    pop.hidden = false;
+    pop.style.visibility = 'hidden';
+    var w = pop.offsetWidth, h = pop.offsetHeight;
+    var left = Math.min(Math.max(8, r.left), window.innerWidth - w - 8);
+    var top = r.bottom + 8;
+    if (top + h > window.innerHeight - 8) top = Math.max(8, r.top - h - 8);
+    pop.style.left = left + 'px';
+    pop.style.top = top + 'px';
+    pop.style.visibility = '';
+  }
+
+  function open(tr) {
+    active = tr;
+    var d = parseISO(inputFor(tr).value);
+    selected = d;
+    view = d ? new Date(d.getFullYear(), d.getMonth(), 1) : new Date(today().getFullYear(), today().getMonth(), 1);
+    triggers.forEach(function (x) { x.setAttribute('aria-expanded', String(x === tr)); });
+    render();
+    position();
+  }
+
+  function close() {
+    if (!active) return;
+    active.setAttribute('aria-expanded', 'false');
+    active = null;
+    pop.hidden = true;
+  }
+
+  triggers.forEach(function (tr) {
+    tr.addEventListener('click', function (e) {
+      e.stopPropagation();
+      if (active === tr) close(); else open(tr);
+    });
+  });
+
+  pop.addEventListener('click', function (e) {
+    var nav = e.target.closest('.cal-nav');
+    if (nav) {
+      view = new Date(view.getFullYear(), view.getMonth() + Number(nav.dataset.dir), 1);
+      render();
+      return;
+    }
+    var day = e.target.closest('.cal-day');
+    if (!day || day.disabled) return;
+    var inp = inputFor(active);
+    inp.value = day.dataset.iso;
+    inp.dispatchEvent(new Event('change', { bubbles: true }));
+    syncAll();
+    close();
+  });
+
+  document.addEventListener('click', function (e) {
+    if (active && !e.target.closest('.calendar') && !e.target.closest('.date-trigger')) close();
+  });
+  document.addEventListener('keydown', function (e) {
+    if (e.key === 'Escape' && active) close();
+  });
+  window.addEventListener('resize', function () { if (active) position(); });
+  window.addEventListener('scroll', function () { if (active) position(); }, true);
+
+  function syncAll() {
+    triggers.forEach(function (tr) {
+      var d = parseISO(inputFor(tr).value);
+      var v = tr.querySelector('.date-value');
+      v.textContent = d ? fmt(d) : 'Выберите дату';
+      v.classList.toggle('is-empty', !d);
+    });
+  }
+  syncAll();
+  setInterval(syncAll, 500);
 })();
 </script>
 </body>
