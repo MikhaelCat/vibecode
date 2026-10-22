@@ -429,6 +429,20 @@ fn lodging_hint(anchors: &[(f64, f64)]) -> String {
     }
 }
 
+/// How far a day's stops may spread from the trip's centre, by transport and
+/// trip length. A two-day car trip cannot span the whole region: without this
+/// the deterministic planner and the offline model pulled stops 500–1700 km
+/// apart and the daily-mileage rule rejected the plan.
+pub fn trip_radius_km(transport: TransportMode, days: u8) -> f64 {
+    let days = f64::from(days.clamp(1, 7));
+    match transport {
+        TransportMode::Foot => 20.0,
+        TransportMode::Bike => 50.0,
+        TransportMode::Car => (60.0 * days).clamp(60.0, 300.0),
+        TransportMode::Transit => (70.0 * days).clamp(70.0, 400.0),
+    }
+}
+
 pub fn city_center(name: &str) -> Option<(f64, f64)> {
     crate::domain::settlements::center(name)
 }

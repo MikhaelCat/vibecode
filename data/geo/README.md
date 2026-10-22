@@ -1,13 +1,26 @@
-# Geo data
+# Геоданные
 
-- `primorye_krai.geojson` — administrative boundary of Primorsky Krai
-  (OSM relation 151225, fetched through Nominatim), simplified to 0.001°.
-  Source: OpenStreetMap contributors, ODbL 1.0.
-- `primorye_land.geojson` — land polygons clipped to 129.4–139.9°E,
-  41.8–49.0°N and simplified to 0.0003°. Derived from GSHHS 2.3.6 full
-  resolution (`basemap-data-hires` 2.0.0), LGPL-3.0-or-later. A small
-  manual polygon covers the Tokarevsky lighthouse islet, which GSHHS omits.
+- `primorye_krai.geojson` — административная граница Приморского края
+  (relation 151225 в OSM, получена через Nominatim), упрощена до 0.001°.
+  Источник: участники OpenStreetMap, ODbL 1.0.
+- `primorye_land.geojson` — полигоны суши, обрезанные по 129.4–139.9° в.д. и
+  41.8–49.0° с.ш., упрощены до 0.0003°. Производная от GSHHS 2.3.6 full
+  resolution (пакет `basemap-data-hires` 2.0.0), LGPL-3.0-or-later. Маленький
+  ручной полигон добавлен для островка Токаревского маяка, который GSHHS не
+  содержит.
+- `primorye_settlements.json` — справочник 211 населённых пунктов Приморья:
+  название, координаты и тип объекта OSM (`city|town|village|hamlet`).
+  Координаты и типы пересняты из OSM/Nominatim 2026-10-22 (исправлено 208 из
+  211; для трёх названий без узла в OSM остались прежние координаты).
+- `primorye_hubs.json` — 11 агломераций (бухты, мысы, горы, районы) с опорной
+  точкой, триггерными словами и приоритетным списком населённых пунктов для
+  поиска жилья.
 
-Regeneration needs Python 3 with `numpy`, `shapely` and the
-`basemap-data-hires` package. Keep the simplification values: finer data
-costs binary size, coarser data drops bays and capes.
+Границу и сушу читает `src/domain/geo.rs`, справочники —
+`src/domain/settlements.rs` и `src/domain/hubs.rs`; все четыре файла встроены в
+бинарник через `include_str!`, поэтому после регенерации нужна пересборка.
+
+Для регенерации нужен Python 3 с `numpy`, `shapely` и `basemap-data-hires`.
+Значения упрощения не менять: более точные данные дороже по размеру бинарника,
+более грубые теряют бухты и мысы. Населённые пункты пересняты из OSM через
+Nominatim; Overpass из этой сети недоступен, Nominatim работает.

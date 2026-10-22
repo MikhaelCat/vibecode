@@ -6,9 +6,6 @@ JavaScript + Leaflet без сборщика.
 
 ## Из чего состоит проект
 
-Проект разделён на четыре независимых слоя. У каждого своя папка и своя
-ответственность; HTTP-обработчики не ходят во внешние API напрямую.
-
 | Слой | Папка | Что делает |
 |---|---|---|
 | **Backend** | `src/api/`, `src/agent/`, `src/domain/`, `src/store/`, `src/llm/` | HTTP/SSE, агентный цикл, правила плана, SQLite |
@@ -20,13 +17,13 @@ JavaScript + Leaflet без сборщика.
 src/
 ├── main.rs              # запуск сервера
 ├── lib.rs               # сборка состояния и LLM-клиента
-├── api/                 # axum: /api/plan, /api/plan/sync, health, stats
+├── api/                 # axum: /api/plan, /api/plan/sync, /api/runs/{id}, health, stats
 ├── agent/               # guard → tools → submit_plan → validate → repair
-├── domain/              # Intent, Plan, Facts, geo, validator V01–V15, fallback
+├── domain/              # Intent, Plan, Facts, geo, settlements, hubs, spatial, validator V01–V18
 ├── llm/                 # OpenAI-совместимый клиент + MockLlm
 ├── store/               # SQLite: runs и дневной бюджет
 ├── tools/               # registry, cache и providers/*
-├── prompts/             # system/preflight/repair-промпты
+├── prompts/             # system_v1/v2/v3, preflight_v1, repair_v1
 └── frontend/            # index.html, app.js, styles.css, dist/
 ```
 
@@ -37,20 +34,82 @@ src/
 3. Агент вызывает инструменты; результаты складываются в `Facts` с `place_id`
    и источником. Независимые вызовы идут параллельно.
 4. Модель вызывает `submit_plan`; `domain::plan::enrich` раскладывает точки по
-   дням, убирает дубли и считает переезды.
-5. Валидатор проверяет регион, даты, погоду, часы работы, жильё и провенанс.
-   При ошибке — repair, затем безопасный fallback.
+   дням, убирает дубли, считает перегоны и отбирает жильё.
+5. Валидатор проверяет регион, даты, погоду, часы работы, жильё и провенанс
+   (V01–V18). При ошибке — repair, затем безопасный fallback.
 6. Готовый план уходит в SSE; фронтенд рисует дни и маркеры.
 
-### Карта
+### Инструменты
+
+Вызываются только из агентного цикла, описания и схемы лежат в
+`src/tools/registry.rs`, реализации — в `src/tools/providers/`.
+
+| Инструмент | Что делает |
+|---|---|
+| `geocode` | Координаты по названию (Nominatim → Photon, только Приморье) |
+| `search_places` | Места по району и категориям: Яндекс Карты → Wikipedia → OSM map API → Overpass → локальный справочник |
+| `get_nearby_attractions` | Объекты Wikipedia вокруг точки |
+| `get_weather` | Прогноз Open-Meteo, фолбэк — VL.ru |
+| `get_route` | Расстояние и время (OSRM, при недоступности — по прямой) |
+| `find_lodging` | Ночёвка: живой OSM в радиусе 35 км, затем локальный справочник |
+| `find_transport` | Автобусы/электрички/паромы по расписаниям |
+| `find_fuel` | АЗС вдоль маршрута |
+| `find_events` | События VL.ru (JSON-LD) на даты поездки |
+
+### Где ищутся места
+
+`search_places` не ищет «по всему краю»: район запроса разрешается в точку с
+радиусом, и всё, что дальше радиуса, отбрасывается.
+
+1. Край или область («по Приморью») → поиск стартует от Владивостока: список
+   точек, растянутый на 1000 км, не станет двухдневным маршрутом. Об этом
+   сказано в summary инструмента, и модель может явно запросить другой город.
+2. Курируемый справочник `data/geo/primorye_settlements.json` — 211 населённых
+   пунктов с координатами и типом из OSM (`city|town|village|hamlet`);
+   радиус поиска зависит от типа: 25 / 15 / 9 / 6 км (`Settlement::scope_km`).
+3. `data/geo/primorye_hubs.json` — 11 агломераций (берег Находки, партизанская
+   тайга, Хасан, Уссурийск, Лазовский, восточное побережье, Терней,
+   Приханкайский, Владивосток и т. д.). Бухты, мысы, горы и районы
+   («бухта Триозёрье», «Пидан», «Южно-Морской») разрешаются в свой узел, а не
+   в случайный одноимённый объект другого региона.
+4. Неизвестные названия — геокодеры Nominatim → Photon (1 запрос/с, кэш 30
+   минут) с фильтром по Приморью.
+
+Результаты фильтруются k-d-деревом (`domain::spatial`): сначала ближайшие,
+затем радиус. Запросы «ближайшее кафе», «поблизости», «рядом» передают флаг
+`nearest` и получают именно ближайшие объекты. Озёра, реки и бухты — это
+районы поиска, а не точки: такой объект никогда не станет остановкой в плане.
+
+Дальность выдачи зависит от транспорта и длины поездки (`plan::trip_radius_km`):
+пешком 20 км, велосипед 50 км, автомобиль 60 км × число дней (не больше 300),
+транспорт 70 × дни (не больше 400). Благодаря этому выходной план не
+растягивается на полкрая — правило используют и fallback, и офлайн-модель.
+
+### Жильё и ночёвка
+
+- У `find_lodging` нет молчаливого дефолта: без названного места он вернёт
+  пустой список и попросит уточнить (раньше подставлялся Владивосток).
+- Сначала живой OSM в боксе 35 км, затем локальный справочник по населённым
+  пунктам узла. Отбор: в пределах 15 км, если вариантов меньше двух — до 35 км,
+  всегда по возрастанию расстояния.
+- Отель из соседнего города показывается с расстоянием:
+  `Находка (20 км от Южно-Морского)`.
+- `plan::enrich` держит ночёвку и варианты не дальше 45 км от точек маршрута;
+  отель во Владивостоке не предлагается для поездки в другую часть края. Если
+  рядом ничего нет — пустой список и предупреждение с ближайшим городом
+  (V12 остаётся мягким), а не отель за 200 км.
+
+### Погода, суша и безопасность плана
 
 Маркер создаётся только для конечных координат внутри Приморья
 (`42.2…48.5`, `130.0…139.1`). Бэкенд дополнительно проверяет сушу: точки в
-бухтах, озёрах и море отбрасываются (`domain::geo::on_land`), а берег имеет
-допуск ~200 м, чтобы пляжи, мысы и пирсы оставались в плане. Озёра и реки
-используются как районы поиска, точки выбираются на берегу. Бары и клубы
-ищутся только по явному запросу. Линия маршрута дня рисуется фронтендом по
-геометрии OSRM и не попадает в контекст LLM.
+бухтах, озёрах и море отбрасываются (`domain::geo::on_land`), допуск ~200 м
+оставляет в плане пляжи, мысы и пирсы. Бары и клубы ищутся только по явному
+запросу. План не выдумывает факты: если прогноза нет, в `note`/`summary`
+появляется предупреждение, а не «+20 и солнце». Перегоны между точками дня
+приходят из `get_route` (расстояние и время), геометрия OSRM не запрашивается
+(`overview=false`) и линия на карте не рисуется — на карте только маркеры
+остановок активного дня.
 
 ## Быстрый старт
 
@@ -71,8 +130,9 @@ npm --prefix src/frontend run build
 ```bash
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
-bash scripts/qa.sh            # mock-сервер, smoke, браузерный тест
-bash scripts/docker_smoke.sh  # сборка образа и проверка контейнера
+bash scripts/qa.sh                        # fmt, clippy, тесты, mock-сервер :18090, smoke, браузерный тест, инварианты плана
+BASE_URL=http://127.0.0.1:8080 bash scripts/edge_cases.sh   # живые адверсариальные кейсы
+bash scripts/docker_smoke.sh              # сборка образа и проверка контейнера
 ```
 
 ## LLM
@@ -86,10 +146,16 @@ bash scripts/docker_smoke.sh  # сборка образа и проверка к
 
 Без ключа работает `MockLlm`: агент, инструменты, валидатор, SSE и эвалы
 проверяются офлайн. `MOCK_LLM=1` подменяет только модель — инструменты
-по-прежнему сначала обращаются к живым провайдерам (OSM/Overpass, Wikipedia,
-Nominatim, Open-Meteo, VL.ru) и переходят на `data/mock` лишь при их
-недоступности. Ключи хранятся только в `.env` (файл в `.gitignore`);
-в репозитории есть только `.env.example`.
+по-прежнему сначала обращаются к живым провайдерам (OSM, Wikipedia, Nominatim,
+Open-Meteo, VL.ru) и переходят на `data/mock` лишь при их недоступности.
+Ключи хранятся только в `.env` (файл в `.gitignore`); в репозитории есть
+только `.env.example`.
+
+Версии промптов лежат в `src/prompts`: `system_v1.md` (её читает
+`PromptSet::load` по умолчанию, поэтому `/api/health` показывает `system_v1`),
+`system_v2.md`, `system_v3.md` (быстрый вариант), `repair_v1.md`,
+`preflight_v1.md`. Какую версию и модель берёт эвал, задают
+`configs/*.toml`.
 
 Для публичного демо задайте `APP_TOKEN` — оба POST-эндпоинта начнут требовать
 `x-app-token`. Расход ограничивают `DAILY_BUDGET_USD` и `DAILY_TOKEN_BUDGET`.
@@ -98,22 +164,27 @@ Nominatim, Open-Meteo, VL.ru) и переходят на `data/mock` лишь п
 
 | Данные | Источник | Fallback |
 |---|---|---|
-| Места, еда, отели, АЗС | OpenStreetMap Overpass | `data/mock/*.json` |
-| Кафе, бары, заведения | Яндекс Карты Search API (если задан ключ) / OSM Overpass | `data/mock/*.json` |
+| Район поиска | Справочник посёлков + агломерации, затем Nominatim / Photon | список известных районов |
+| Места, еда, отели, АЗС | OpenStreetMap map API / Overpass | `data/mock/*.json` |
+| Кафе, бары, заведения | Яндекс Карты Search API (если задан ключ) / OSM | `data/mock/*.json` |
 | Достопримечательности | Wikipedia geosearch | `data/mock/*.json` |
-| Города, озёра, реки | Nominatim / Photon | список известных районов |
 | Погода | Open-Meteo | VL.ru |
 | Маршруты | OSRM | расчёт по прямой |
 | События | VL.ru (JSON-LD) | пустой список |
-| Жильё | OSM + локальный справочник | `data/mock/lodging.json` |
+| Жильё | OSM в радиусе 35 км | `data/mock/lodging.json` |
+| Транспорт | мок-расписания демо-рейсов | `data/mock/transport.json` |
 | Суша и границы | OSM Nominatim (граница края) + GSHHS (суша) | bbox края |
 
-`data/mock` — единственный источник локальных заглушек: каталог реальных
-объектов Приморья (координаты сверены с OSM через Nominatim/Photon).
-Живые данные помечаются `source: live`, fallback — `mock`/`stale`; валидатор
-не выдаёт непроверенную погоду за прогноз. Геоданные лежат в `data/geo/`:
-граница края из OSM и суша из GSHHS, источники и лицензии — в
-`data/geo/README.md`.
+`data/mock` — единственный источник локальных данных: каталог реальных
+объектов Приморья (41 место, 14 отелей, 12 АЗС, 9 маршрутов; координаты
+сверены с OSM через Nominatim/Photon). Живые данные помечаются
+`source: live`, fallback — `mock`/`stale`; валидатор не выдаёт непроверенную
+погоду за прогноз. Геоданные лежат в `data/geo/`: граница края из OSM, суша из
+GSHHS, справочник 211 посёлков и 11 агломераций — источники и лицензии в
+[data/geo/README.md](data/geo/README.md).
+
+Если город или село не назван, ассистент планирует по Владивостоку и говорит
+об этом в подсказке формы.
 
 ## API
 
@@ -121,12 +192,13 @@ Nominatim, Open-Meteo, VL.ru) и переходят на `data/mock` лишь п
 |---|---|---|
 | `POST` | `/api/plan` | запрос → SSE-поток |
 | `POST` | `/api/plan/sync` | тот же результат без SSE |
-| `GET` | `/api/runs/{id}` | план + trace |
+| `GET` | `/api/runs/{id}` | план + trace по `run_id` |
 | `GET` | `/api/stats` | запуски, токены, стоимость за сегодня |
-| `GET` | `/api/health` | статус, модель, остаток бюджета |
+| `GET` | `/api/health` | статус, модель, версия промпта, остаток бюджета |
 
 SSE-события: `stage`, `intent`, `tool_call`, `tool_result`, `plan`,
-`validation`, `usage`, `refusal`, `done`. Подробнее — [docs/API.md](docs/API.md).
+`validation`, `usage`, `refusal`, `done`, `error`. Подробнее —
+[docs/API.md](docs/API.md).
 
 ## SQLite и Redis
 
@@ -134,25 +206,28 @@ SSE-события: `stage`, `intent`, `tool_call`, `tool_result`, `plan`,
   `daily_budget`. `/api/runs/{id}`, `/api/stats` и бюджет в `/api/health`
   читают только её.
 - **Redis** (`REDIS_URL`, необязательно) — общий кэш результатов инструментов
-  на 10 минут. Если Redis недоступен, используется кэш в памяти. SQLite от
-  Redis не зависит.
+  на 10 минут. Если Redis недоступен или `REDIS_URL` пуст, используется кэш в
+  памяти. SQLite от Redis не зависит.
 
 ## Docker и деплой
 
 ```bash
 cp .env.example .env          # без ключей включится MockLlm
-docker compose up --build -d
+docker build -f deploy/Dockerfile -t travel-ai:local .
+docker run -d --name travel-ai --network host --env-file .env \
+  -e BIND=0.0.0.0:8080 \
+  -e DATABASE_URL=sqlite:///var/lib/travel-ai/app.db \
+  -e PROMPTS_DIR=/app/src/prompts -e DATA_DIR=/app/data \
+  -e WEB_DIR=/app/src/frontend/dist -e REDIS_URL= \
+  -e DAILY_BUDGET_USD=1000000 -e DAILY_TOKEN_BUDGET=2000000000000000000 \
+  -v travel-ai-data:/var/lib/travel-ai travel-ai:local
 curl -fsS http://127.0.0.1:8080/api/health
 ```
 
-Если compose-плагина нет:
-
-```bash
-docker build -f deploy/Dockerfile -t travel-ai:local .
-docker run -d --name travel-ai --env-file .env -p 8080:8080 \
-  -v travel-ai-data:/var/lib/travel-ai travel-ai:local
-# без ключей: docker run ... -e MOCK_LLM=1 ...
-```
+`--network host` нужен, чтобы контейнер видел прокси-хост LLM (на bridge-сети
+он не резолвится). `-e REDIS_URL=` отключает Redis, кэш остаётся в памяти.
+Если compose-плагин доступен, есть и `docker compose up --build -d`
+(приложение + Redis + volume).
 
 Проверка образа целиком (build, запуск, health, sync, SSE, SPA):
 
@@ -162,21 +237,23 @@ bash scripts/docker_smoke.sh
 
 - `deploy/Dockerfile` — multi-stage сборка, зависимости кэшируются отдельным слоем, non-root пользователь.
 - `docker-compose.yml` — приложение, Redis, volume для SQLite.
-- `deploy/install.sh` + `deploy/travel-ai.service` — установка на VM.
+- `deploy/install.sh` + `deploy/travel-ai.service` — установка на VM без Docker.
 - CI (`.github/workflows/ci.yml`) гоняет fmt, clippy, тесты и собирает образ.
 
 Подробности: [deploy/README.md](deploy/README.md).
 
 ## Документация
 
-- [Архитектура](docs/ARCHITECTURE.md) — слои, поток данных, правила.
+- [Архитектура](docs/ARCHITECTURE.md) — слои, поток данных, правила и коды V01–V18.
 - [API](docs/API.md) — контракт SSE и sync.
 - [UI](docs/UI.md) — экран и состояния.
 - [Замеры](docs/EVAL.md) — методология и результаты.
+- [Геоданные](data/geo/README.md) — источники границ, суши, посёлков и агломераций.
+- [Деплой](deploy/README.md) — образ, VM, systemd.
 
 ## Лицензии
 
-- © OpenStreetMap contributors, ODbL.
+- © OpenStreetMap contributors, ODbL (данные и тайлы карты).
 - Open-Meteo, CC BY 4.0.
 - VL.ru — афиша (JSON-LD, robots.txt разрешает страницу).
 - OSRM — по условиям провайдера.

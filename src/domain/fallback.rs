@@ -42,12 +42,8 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
         let lon = places.iter().map(|place| place.lon).sum::<f64>() / places.len() as f64;
         (lat, lon)
     };
-    let radius_km = match intent.transport {
-        TransportMode::Foot => 20.0,
-        TransportMode::Bike => 50.0,
-        TransportMode::Car => 300.0,
-        TransportMode::Transit => 400.0,
-    };
+    // Trip length matters: a weekend car trip must not spread over the region.
+    let radius_km = crate::domain::plan::trip_radius_km(intent.transport, intent.days());
     let nearby: Vec<_> = places
         .iter()
         .filter(|place| haversine_km(base, (place.lat, place.lon)) <= radius_km)

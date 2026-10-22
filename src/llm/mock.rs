@@ -321,12 +321,9 @@ fn select_places(mut places: Vec<MockPlace>, intent: &Intent, rainy: bool) -> Ve
         let lon = places.iter().map(|place| place.lon).sum::<f64>() / places.len() as f64;
         (lat, lon)
     };
-    let radius_km = match intent.transport {
-        TransportMode::Foot => 20.0,
-        TransportMode::Bike => 50.0,
-        TransportMode::Car => 300.0,
-        TransportMode::Transit => 400.0,
-    };
+    // Same radius rule as the deterministic fallback: the offline model must
+    // not build a two-day route across the whole region.
+    let radius_km = crate::domain::plan::trip_radius_km(intent.transport, intent.days());
     let nearby: Vec<MockPlace> = places
         .iter()
         .filter(|place| haversine_km(base, (place.lat, place.lon)) <= radius_km)

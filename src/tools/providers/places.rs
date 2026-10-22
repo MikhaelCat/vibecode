@@ -82,6 +82,25 @@ impl Tool for PlacesTool {
                 format!("Не удалось определить район «{area_text}» — уточните населённый пункт"),
             ));
         };
+        // "По Приморью" is the whole krai: a stop list spread over 1000 km can
+        // never become a two-day route (the daily-mileage rule rejects it), so
+        // a region-wide request starts from the default city. The model can ask
+        // for other cities explicitly when the trip really spans the region,
+        // and every summary names the default so it can do exactly that.
+        let area = if area.radius_km >= 100.0 {
+            match geo::resolve_area(ctx, DEFAULT_AREA_CITY).await {
+                Some(mut city) => {
+                    city.label = format!(
+                        "{} (старт по умолчанию — назовите другой город, если он нужен)",
+                        city.label
+                    );
+                    city
+                }
+                None => area,
+            }
+        } else {
+            area
+        };
 
         // A lake or a river is a search area, not a marker in the water. Around
         // such an area any precise land object (shore village, beach, cape,
@@ -215,6 +234,9 @@ impl Tool for PlacesTool {
         ))
     }
 }
+
+/// Default starting point when the query names the region, not a place.
+const DEFAULT_AREA_CITY: &str = "Владивосток";
 
 /// A user who asks for the nearest café must get the nearest one, not merely
 /// the ones inside the search box. The model often keeps that wording in

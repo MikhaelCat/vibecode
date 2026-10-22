@@ -1,6 +1,6 @@
 //! Deterministic plan validation.
 //!
-//! `validate` runs the fixed V01–V15 checks over a `Plan`, the verified
+//! `validate` runs the fixed V01–V18 checks over a `Plan`, the verified
 //! `Facts` and the parsed `Intent`. It performs no I/O and never calls the
 //! LLM, so the same inputs always produce the same `ValidationReport`. Hard
 //! violations block the plan and are fed back to the model for repair; soft
@@ -118,7 +118,9 @@ impl ValidationReport {
 /// for places, weather, routes and schedules.
 pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport {
     let mut violations = Vec::new();
-    const CHECKS: u32 = 17;
+    // V01–V18: the counter is the number of checks that run, not the highest
+    // code, so it must be bumped when a new rule is added.
+    const CHECKS: u32 = 18;
 
     // V01 — регион
     for item in plan.all_items() {
@@ -417,7 +419,7 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
         }
     }
 
-    // V16 — ночёвка рядом с маршрутом. The last line of defence against the
+    // V18 — ночёвка рядом с маршрутом. The last line of defence against the
     // reported bug: a trip in Южно-Морской or бухта Триозёрье must not be
     // answered with a Vladivostok hotel 170 km away.
     if !plan.lodging.is_empty() {
@@ -434,7 +436,7 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
             }
             if !points.is_empty() && !tree.any_within(lodging.lat, lodging.lon, LODGING_MAX_KM) {
                 violations.push(Violation::soft(
-                    "V16",
+                    "V18",
                     format!(
                         "Ночёвка «{}» ({}) дальше {:.0} км от точек маршрута",
                         lodging.name, lodging.settlement, LODGING_MAX_KM
@@ -444,7 +446,7 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
             }
             if !trip_in_vladivostok && is_vladivostok(lodging) {
                 violations.push(Violation::soft(
-                    "V16",
+                    "V18",
                     format!(
                         "Ночёвка «{}» во Владивостоке, а маршрут проходит в другой части края",
                         lodging.name
