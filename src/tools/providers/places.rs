@@ -355,6 +355,21 @@ async fn osm_map_places(
 }
 
 fn parse_osm_map(xml: &str, area: &geo::Area, wanted: &[String], limit: usize) -> Vec<Value> {
+    let mut node_coords: HashMap<String, (f64, f64)> = HashMap::new();
+    for chunk in xml.split("<node ").skip(1) {
+        let Some(header_end) = chunk.find('>') else {
+            continue;
+        };
+        let header = &chunk[..header_end];
+        let (Some(id), Some(lat), Some(lon)) = (
+            xml_attr(header, "id"),
+            xml_attr(header, "lat").and_then(|value| value.parse::<f64>().ok()),
+            xml_attr(header, "lon").and_then(|value| value.parse::<f64>().ok()),
+        ) else {
+            continue;
+        };
+        node_coords.insert(id.to_string(), (lat, lon));
+    }
     let mut places = Vec::new();
     let mut seen_ids = HashSet::new();
     let mut seen_names: Vec<(String, f64, f64)> = Vec::new();
@@ -410,6 +425,89 @@ fn parse_osm_map(xml: &str, area: &geo::Area, wanted: &[String], limit: usize) -
             continue;
         }
         let id = format!("osm:node/{id}");
+        if !seen_ids.insert(id.clone()) {
+            continue;
+        }
+        let key = name.to_lowercase();
+        if seen_names.iter().any(|(known, known_lat, known_lon)| {
+            *known == key && haversine_km((lat, lon), (*known_lat, *known_lon)) < 0.1
+        }) {
+            continue;
+        }
+        seen_names.push((key, lat, lon));
+        places.push(json!({
+            "id": id,
+            "name": name,
+            "lat": lat,
+            "lon": lon,
+            "kind": osm_kind(&tags),
+            "opening_hours": tags.get("opening_hours"),
+            "source": "live",
+            "distance_meters": (haversine_km((area.lat, area.lon), (lat, lon)) * 1000.0).round()
+        }));
+    }
+    // Cinemas, malls, theatres and many shops are mapped as ways, not nodes.
+    // Build their centre from the referenced nodes so tag search finds them.
+    for chunk in xml.split("<way ").skip(1) {
+        let Some(header_end) = chunk.find('>') else {
+            continue;
+        };
+        let header = &chunk[..header_end];
+        let Some(id) = xml_attr(header, "id") else {
+            continue;
+        };
+        let body = chunk[header_end + 1..].split("</way>").next().unwrap_or("");
+        let mut tags: HashMap<String, String> = HashMap::new();
+        for tag in body.split("<tag ").skip(1) {
+            let end = tag
+                .find("/>")
+                .or_else(|| tag.find('>'))
+                .unwrap_or(tag.len());
+            let segment = &tag[..end];
+            if let (Some(key), Some(value)) = (xml_attr(segment, "k"), xml_attr(segment, "v")) {
+                tags.insert(key.to_string(), xml_unescape(value));
+            }
+        }
+        let matched = ["amenity", "shop", "tourism", "leisure"].iter().any(|key| {
+            tags.get(*key)
+                .is_some_and(|value| wanted.iter().any(|wanted| wanted == value))
+        }) || (wanted.iter().any(|wanted| wanted == "historic")
+            && tags.contains_key("historic"));
+        if !matched {
+            continue;
+        }
+        let mut sum_lat = 0.0;
+        let mut sum_lon = 0.0;
+        let mut count = 0usize;
+        for nd in body.split("<nd ").skip(1) {
+            let end = nd.find("/>").or_else(|| nd.find('>')).unwrap_or(nd.len());
+            let segment = &nd[..end];
+            let Some(reference) = xml_attr(segment, "ref") else {
+                continue;
+            };
+            let Some((lat, lon)) = node_coords.get(reference) else {
+                continue;
+            };
+            sum_lat += lat;
+            sum_lon += lon;
+            count += 1;
+        }
+        if count == 0 {
+            continue;
+        }
+        let lat = sum_lat / count as f64;
+        let lon = sum_lon / count as f64;
+        if !on_land_strict(lat, lon) {
+            continue;
+        }
+        let Some(name) = tags.get("name:ru").or_else(|| tags.get("name")) else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let id = format!("osm:way/{id}");
         if !seen_ids.insert(id.clone()) {
             continue;
         }

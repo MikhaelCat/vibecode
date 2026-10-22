@@ -360,10 +360,10 @@ impl Orchestrator {
                     }
                 };
 
-                // Bound search tool usage per run. Models tend to issue one
-                // search per category; after six results are enough to plan.
+                // Bound search tool usage per run. A multi-city plan needs
+                // more than a couple of category searches, but still finite.
                 if matches!(name.as_str(), "search_places" | "get_nearby_attractions") {
-                    if search_calls >= 6 {
+                    if search_calls >= 12 {
                         let content = json!({
                             "error": "search budget exhausted; use existing facts and call submit_plan"
                         })
@@ -506,12 +506,14 @@ impl Orchestrator {
                 messages.push(LlmMessage::tool(call_id, content));
             }
 
-            if let Some((plan, report)) = pending_submit.take() {
+            if let Some((mut plan, report)) = pending_submit.take() {
                 let generation = if repairs > 0 {
                     Generation::Repaired
                 } else {
                     Generation::Llm
                 };
+                self.ensure_plan_events(&mut plan, &mut facts, &intent)
+                    .await;
                 return self
                     .finish_plan(
                         run_id, query, intent, plan, report, usage, trace, started, sink,
@@ -547,6 +549,8 @@ impl Orchestrator {
         let mut plan = fallback::assemble(&mut facts, &intent);
         let report = validate(&plan, &facts, &intent);
         plan.generation = Generation::Fallback;
+        self.ensure_plan_events(&mut plan, &mut facts, &intent)
+            .await;
         self.finish_plan(
             run_id,
             query,
@@ -560,6 +564,47 @@ impl Orchestrator {
             Generation::Fallback,
         )
         .await
+    }
+
+    /// Loads the poster for every city the finished plan actually visits, so
+    /// a Ussuriysk/Artyom/Fokino day is not left without events just because
+    /// the model forgot to call find_events for that city.
+    async fn ensure_plan_events(&self, plan: &mut Plan, facts: &mut Facts, intent: &Intent) {
+        let mut areas: Vec<&'static str> = Vec::new();
+        for day in &plan.days {
+            for item in &day.items {
+                if let Some(city) = crate::domain::plan::city_for_point(item.lat, item.lon) {
+                    if !areas.contains(&city) {
+                        areas.push(city);
+                    }
+                }
+            }
+        }
+        for area in areas {
+            let already = facts.events.iter().any(|event| {
+                event.area.to_lowercase().contains(&area.to_lowercase())
+                    || area.to_lowercase().contains(&event.area.to_lowercase())
+            });
+            if already {
+                continue;
+            }
+            let args = json!({
+                "area": area,
+                "start_date": intent.start_date.to_string(),
+                "end_date": intent.end_date.to_string()
+            });
+            if let Ok(Ok(output)) = tokio::time::timeout(
+                std::time::Duration::from_secs(6),
+                self.registry.call("find_events", args, intent),
+            )
+            .await
+            {
+                facts.ingest("find_events", &output);
+            }
+        }
+        for day in &mut plan.days {
+            day.events = crate::domain::plan::plan_events_for_day(day.date, &day.items, facts);
+        }
     }
 
     /// Parses and enriches a `submit_plan` call, then validates it.

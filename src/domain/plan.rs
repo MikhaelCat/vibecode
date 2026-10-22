@@ -305,7 +305,64 @@ fn event_matches_day(event: &EventFact, items: &[PlanItem]) -> bool {
     };
     items
         .iter()
-        .any(|item| haversine_km(center, (item.lat, item.lon)) <= 60.0)
+        .any(|item| haversine_km(center, (item.lat, item.lon)) <= 30.0)
+}
+
+pub fn plan_events_for_day(date: NaiveDate, items: &[PlanItem], facts: &Facts) -> Vec<PlanEvent> {
+    let mut events: Vec<PlanEvent> = facts
+        .events
+        .iter()
+        .filter(|event| {
+            event_matches_day(event, items)
+                && event.date.is_some_and(|start| {
+                    let end = event.end_date.unwrap_or(start);
+                    date >= start && date <= end
+                })
+        })
+        .map(|event| PlanEvent {
+            id: event.id.clone(),
+            title: event.title.clone(),
+            date: event.date,
+            end_date: event.end_date,
+            place: event.place.clone(),
+            url: event.url.clone(),
+        })
+        .collect();
+    events.sort_by(|left, right| left.title.cmp(&right.title));
+    let mut seen = HashSet::new();
+    events.retain(|event| seen.insert(event.id.clone()));
+    events.truncate(12);
+    events
+}
+
+/// Nearest poster city for a plan point. Used after the plan is built to load
+/// events for every city the plan actually visits.
+pub fn city_for_point(lat: f64, lon: f64) -> Option<&'static str> {
+    const CITIES: &[(&str, f64, f64)] = &[
+        ("Владивосток", 43.1155, 131.8855),
+        ("Находка", 42.8169, 132.8892),
+        ("Уссурийск", 43.7992, 131.9495),
+        ("Большой Камень", 43.1175, 132.354),
+        ("Артём", 43.355, 132.19),
+        ("Спасск", 44.6, 132.82),
+        ("Партизанск", 43.12, 133.12),
+        ("Арсеньев", 44.1662, 133.2702),
+        ("Дальнегорск", 44.566, 135.618),
+        ("Лесозаводск", 45.466, 133.4),
+        ("Фокино", 42.97, 132.4),
+        ("Кавалерово", 44.27, 135.05),
+        ("Черниговка", 44.35, 132.57),
+    ];
+    CITIES
+        .iter()
+        .map(|(name, city_lat, city_lon)| (*name, haversine_km((lat, lon), (*city_lat, *city_lon))))
+        .filter(|(_, distance)| *distance <= 30.0)
+        .min_by(|left, right| {
+            left.1
+                .partial_cmp(&right.1)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|(name, _)| name)
 }
 
 fn item_kind(fact: Option<&PlaceFact>, fallback: ItemKind) -> ItemKind {
@@ -450,31 +507,7 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
 
         let index = days.len();
         let lodging_id = draft.lodging_ids.get(index).cloned();
-        // VL.ru events are Vladivostok-only; do not show them on a Nakhodka or
-        // Ussuriysk day just because the trip also visits the capital.
-        let mut events: Vec<PlanEvent> = facts
-            .events
-            .iter()
-            .filter(|event| {
-                event_matches_day(event, &items)
-                    && event.date.is_some_and(|start| {
-                        let end = event.end_date.unwrap_or(start);
-                        date >= start && date <= end
-                    })
-            })
-            .map(|event| PlanEvent {
-                id: event.id.clone(),
-                title: event.title.clone(),
-                date: event.date,
-                end_date: event.end_date,
-                place: event.place.clone(),
-                url: event.url.clone(),
-            })
-            .collect();
-        events.sort_by(|left, right| left.title.cmp(&right.title));
-        let mut seen_events = HashSet::new();
-        events.retain(|event| seen_events.insert(event.id.clone()));
-        events.truncate(12);
+        let events = plan_events_for_day(date, &items, facts);
         days.push(DayPlan {
             date,
             title: match items.first() {
