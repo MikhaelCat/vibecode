@@ -142,13 +142,16 @@ impl Tool for PlacesTool {
             {
                 let places = scope_to_area(places, &area, nearest_only, limit);
                 if !places.is_empty() {
+                    let (places, supplemented) =
+                        with_local_supplement(ctx, &area, &categories, places, nearest_only, limit);
                     return Ok(ToolOutput::ok(
                         json!({"places": places}),
                         SourceKind::Live,
                         format!(
-                            "Википедия: {} объектов рядом с {}",
+                            "Википедия: {} объектов рядом с {}{}",
                             places.len(),
-                            area.label
+                            area.label,
+                            supplement_note(supplemented)
                         ),
                     ));
                 }
@@ -168,13 +171,16 @@ impl Tool for PlacesTool {
             if let Some(places) = osm_map_places(ctx, &area, &categories, limit, deadline).await {
                 let places = scope_to_area(places, &area, nearest_only, limit);
                 if !places.is_empty() {
+                    let (places, supplemented) =
+                        with_local_supplement(ctx, &area, &categories, places, nearest_only, limit);
                     return Ok(ToolOutput::ok(
                         json!({"places": places}),
                         SourceKind::Live,
                         format!(
-                            "OpenStreetMap API: {} заведений рядом с {}",
+                            "OpenStreetMap API: {} заведений рядом с {}{}",
                             places.len(),
-                            area.label
+                            area.label,
+                            supplement_note(supplemented)
                         ),
                     ));
                 }
@@ -185,10 +191,17 @@ impl Tool for PlacesTool {
             if let Some(places) = overpass_places(ctx, &area, &categories, limit, deadline).await {
                 let places = scope_to_area(places, &area, nearest_only, limit);
                 if !places.is_empty() {
+                    let (places, supplemented) =
+                        with_local_supplement(ctx, &area, &categories, places, nearest_only, limit);
                     return Ok(ToolOutput::ok(
                         json!({"places": places}),
                         SourceKind::Live,
-                        format!("OSM: {} объектов в районе {}", places.len(), area.label),
+                        format!(
+                            "OSM: {} объектов в районе {}{}",
+                            places.len(),
+                            area.label,
+                            supplement_note(supplemented)
+                        ),
                     ));
                 }
             }
@@ -208,13 +221,16 @@ impl Tool for PlacesTool {
             {
                 let places = scope_to_area(places, &area, nearest_only, limit);
                 if !places.is_empty() {
+                    let (places, supplemented) =
+                        with_local_supplement(ctx, &area, &categories, places, nearest_only, limit);
                     return Ok(ToolOutput::ok(
                         json!({"places": places}),
                         SourceKind::Live,
                         format!(
-                            "Википедия: {} объектов рядом с {}",
+                            "Википедия: {} объектов рядом с {}{}",
                             places.len(),
-                            area.label
+                            area.label,
+                            supplement_note(supplemented)
                         ),
                     ));
                 }
@@ -244,6 +260,44 @@ impl Tool for PlacesTool {
     }
 }
 
+/// A live answer with fewer places than this is topped up from the offline
+/// catalogue: a slow or blocked OSM left a two-day plan with two stops, and the
+/// catalogue is the documented reserve. Every entry keeps its own `source`, so
+/// the model and the UI can tell live OSM rows from demo ones.
+const MIN_LIVE_PLACES: usize = 8;
+
+fn with_local_supplement(
+    ctx: &ToolCtx,
+    area: &geo::Area,
+    categories: &[String],
+    places: Vec<Value>,
+    nearest_only: bool,
+    limit: usize,
+) -> (Vec<Value>, bool) {
+    if places.len() >= MIN_LIVE_PLACES {
+        return (places, false);
+    }
+    let mut merged = places;
+    let mut seen: HashSet<String> = merged
+        .iter()
+        .filter_map(|place| place.get("id").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    for place in scope_to_area(
+        local_places(ctx, area, categories, limit),
+        area,
+        nearest_only,
+        limit,
+    ) {
+        if let Some(id) = place.get("id").and_then(Value::as_str) {
+            if seen.insert(id.to_string()) {
+                merged.push(place);
+            }
+        }
+    }
+    let merged = scope_to_area(merged, area, nearest_only, limit);
+    (merged, true)
+}
+
 /// Default starting point when the query names the region, not a place.
 const DEFAULT_AREA_CITY: &str = "Владивосток";
 
@@ -254,6 +308,15 @@ const SEARCH_BUDGET: Duration = Duration::from_secs(6);
 /// A user who asks for the nearest café must get the nearest one, not merely
 /// the ones inside the search box. The model often keeps that wording in
 /// `query`, so both the flag and the text are checked.
+/// Says out loud when a live answer was topped up from the demo catalogue.
+fn supplement_note(supplemented: bool) -> &'static str {
+    if supplemented {
+        " + локальный справочник (демо-данные)".into()
+    } else {
+        ""
+    }
+}
+
 fn nearest_requested(args: &Value) -> bool {
     let text = args
         .get("query")

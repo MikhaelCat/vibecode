@@ -925,7 +925,7 @@ fn enforce_search_intent(name: &str, args: &mut Value, intent: &Intent) {
     if wanted.is_empty() && intent.must_see.is_empty() {
         return;
     }
-    object.insert("limit".to_string(), json!(40));
+    object.insert("limit".to_string(), json!(80));
 }
 
 fn search_categories(intent: &Intent) -> Vec<String> {

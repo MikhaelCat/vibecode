@@ -490,30 +490,47 @@ pub fn fuel_for_day(
         return Vec::new();
     }
     let tree = KdTree::new(&points);
-    let mut stations: Vec<(f64, FuelStation)> = stations
+    let mut ranked: Vec<(f64, FuelStation)> = stations
         .iter()
         .filter_map(|station| {
             let (_, distance) = tree
                 .nearest(station.lat, station.lon, 1)
                 .into_iter()
                 .next()?;
-            if distance > FUEL_NEAR_ROUTE_KM {
-                return None;
-            }
             Some((distance, station.clone()))
         })
         .collect();
-    stations.sort_by(|left, right| {
+    ranked.sort_by(|left, right| {
         left.0
             .partial_cmp(&right.0)
             .unwrap_or(std::cmp::Ordering::Equal)
     });
-    stations.truncate(limit);
-    stations.into_iter().map(|(_, station)| station).collect()
+    // Stations right by the route first. When the model found fuel along a long
+    // drive, those stations can all sit far from the day's stops (Андреевка's
+    // stops are 100 km from the Vladivostok stations): the map still needs a few
+    // pins, and "по пути" is the honest answer.
+    let near: Vec<FuelStation> = ranked
+        .iter()
+        .filter(|(distance, _)| *distance <= FUEL_NEAR_ROUTE_KM)
+        .map(|(_, station)| station.clone())
+        .take(limit)
+        .collect();
+    if !near.is_empty() {
+        return near;
+    }
+    ranked
+        .into_iter()
+        .filter(|(distance, _)| *distance <= FUEL_ALONG_THE_WAY_KM)
+        .take(limit.min(3))
+        .map(|(_, station)| station)
+        .collect()
 }
 
 /// How far a fuel station may sit from the day's stops to be shown on the map.
 const FUEL_NEAR_ROUTE_KM: f64 = 25.0;
+
+/// Second pass: stations further along the same drive, when nothing is nearby.
+const FUEL_ALONG_THE_WAY_KM: f64 = 150.0;
 
 pub fn city_center(name: &str) -> Option<(f64, f64)> {
     crate::domain::settlements::center(name)
