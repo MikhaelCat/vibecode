@@ -209,6 +209,8 @@ pub struct EventFact {
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
+    pub score: f64,
+    #[serde(default)]
     pub source: SourceKind,
 }
 

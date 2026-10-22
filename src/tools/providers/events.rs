@@ -6,6 +6,7 @@
 //! with `live` provenance; upstream failures surface as `ToolError::Upstream`.
 
 use std::collections::HashSet;
+use std::time::Duration;
 
 use async_trait::async_trait;
 use chrono::NaiveDate;
@@ -127,7 +128,61 @@ impl Tool for EventsTool {
             .map_err(|error| ToolError::Upstream(format!("VL.ru: {error}")))?;
 
         let mut events = parse_events(&html, start, end);
-        events.truncate(120);
+        // The first page is only a subset. Pull a few AJAX pages so a busy
+        // Vladivostok day can show up to 20 events, not 8-10.
+        let mut seen: HashSet<String> = events
+            .iter()
+            .filter_map(|event| event.get("id").and_then(Value::as_str))
+            .map(str::to_string)
+            .collect();
+        for page in 1..=5 {
+            let ajax_url = format!("{url}/ajax/events?page={page}");
+            let response = tokio::time::timeout(
+                Duration::from_secs(3),
+                ctx.http
+                    .get(&ajax_url)
+                    .header("User-Agent", EVENTS_USER_AGENT)
+                    .header("Accept", "application/json")
+                    .send(),
+            )
+            .await
+            .ok()
+            .and_then(Result::ok);
+            let Some(response) = response else {
+                break;
+            };
+            if !response.status().is_success() {
+                break;
+            }
+            let Ok(value) = response.json::<Value>().await else {
+                break;
+            };
+            let Some(page_html) = value.get("events").and_then(Value::as_str) else {
+                break;
+            };
+            let extra = parse_events(page_html, start, end);
+            if extra.is_empty() {
+                break;
+            }
+            for event in extra {
+                let id = event
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+                if id.is_empty() || seen.insert(id) {
+                    events.push(event);
+                }
+            }
+            if value
+                .get("isLastPage")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                break;
+            }
+        }
+        events.truncate(200);
         for event in &mut events {
             if let Some(object) = event.as_object_mut() {
                 object.insert("area".to_string(), json!(area));
@@ -186,6 +241,7 @@ fn parse_events(html: &str, start: NaiveDate, end: NaiveDate) -> Vec<Value> {
                 "end_date": event_end,
                 "place": event.place,
                 "url": event.url,
+                "score": event.score,
                 "source": "live"
             }));
         }
@@ -206,6 +262,7 @@ struct ParsedEvent {
     end: Option<NaiveDate>,
     place: String,
     url: Option<String>,
+    score: f64,
 }
 
 /// Reads one schema.org `Event`; requires a title and a parseable start date.
@@ -257,6 +314,64 @@ fn event_from_json(value: &Value) -> Option<ParsedEvent> {
             title
         )
     });
+    let description = value
+        .get("description")
+        .and_then(Value::as_str)
+        .unwrap_or("");
+    let mut score = (description.chars().count().min(300) as f64) / 100.0;
+    if value.get("image").is_some() {
+        score += 1.0;
+    }
+    if value
+        .get("location")
+        .and_then(|location| location.get("url"))
+        .is_some()
+    {
+        score += 0.5;
+    }
+    if let Some(rating) = value
+        .get("aggregateRating")
+        .and_then(|rating| rating.get("ratingValue"))
+        .and_then(|value| {
+            value
+                .as_f64()
+                .or_else(|| value.as_str().and_then(|text| text.parse().ok()))
+        })
+    {
+        score += rating;
+    }
+    let place_lower = place.to_lowercase();
+    if [
+        "филармония",
+        "театр",
+        "концерт холл",
+        "fesco",
+        "приморская сцена",
+        "опера",
+        "балет",
+        "арена",
+        "цирк",
+    ]
+    .iter()
+    .any(|word| place_lower.contains(word))
+    {
+        score += 3.0;
+    }
+    let title_lower = title.to_lowercase();
+    if [
+        "премьер",
+        "фестивал",
+        "концерт",
+        "спектакл",
+        "выставк",
+        "стендап",
+        "турнир",
+    ]
+    .iter()
+    .any(|word| title_lower.contains(word))
+    {
+        score += 1.0;
+    }
     Some(ParsedEvent {
         id,
         title,
@@ -264,6 +379,7 @@ fn event_from_json(value: &Value) -> Option<ParsedEvent> {
         end,
         place,
         url,
+        score,
     })
 }
 

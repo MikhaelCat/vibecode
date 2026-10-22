@@ -198,8 +198,16 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
             if let Some(hours) = item.opening_hours.as_deref() {
                 match check_open(hours, day.date, start) {
                     Some(false) => {
+                        let message = format!("«{}» закрыто в это время", item.name);
+                        let violation = if plan.generation == Generation::Fallback
+                            && matches!(item.kind, ItemKind::Bar | ItemKind::Club)
+                        {
+                            Violation::soft("V04", message)
+                        } else {
+                            Violation::hard("V04", message)
+                        };
                         violations.push(
-                            Violation::hard("V04", format!("«{}» закрыто в это время", item.name))
+                            violation
                                 .with_place(&item.place_id)
                                 .with_hint(format!("Часы работы: {hours}")),
                         );
@@ -624,7 +632,14 @@ fn check_open(hours: &str, date: NaiveDate, time: NaiveTime) -> Option<bool> {
             let Some((from, to)) = range.split_once('-') else {
                 continue;
             };
-            let (Some(from), Some(to)) = (parse_time(from), parse_time(to)) else {
+            let parse_end = |text: &str| {
+                if matches!(text.trim(), "24:00" | "24:00:00") {
+                    NaiveTime::from_hms_opt(23, 59, 59)
+                } else {
+                    parse_time(text)
+                }
+            };
+            let (Some(from), Some(to)) = (parse_time(from), parse_end(to)) else {
                 continue;
             };
             segment_has_valid_time = true;

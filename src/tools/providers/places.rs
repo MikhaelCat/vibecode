@@ -32,7 +32,7 @@ impl Tool for PlacesTool {
                     "items": {"type": "string"},
                     "description": "nature, museum, viewpoint, park, historic, beach, lake, river, restaurant, cafe, bar, club, hotel, attraction"
                 },
-                "limit": {"type": "integer", "minimum": 1, "maximum": 40},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 60},
                 "date": {"type": "string"}
             },
             "required": ["area"]
@@ -40,7 +40,7 @@ impl Tool for PlacesTool {
     }
 
     async fn call(&self, args: Value, ctx: &ToolCtx) -> Result<ToolOutput, ToolError> {
-        let limit = limit_from(&args, 10, 40);
+        let limit = limit_from(&args, 10, 60);
         let area_text = args
             .get("area")
             .and_then(Value::as_str)

@@ -103,6 +103,8 @@ pub struct PlanEvent {
     pub end_date: Option<NaiveDate>,
     pub place: String,
     pub url: Option<String>,
+    #[serde(default)]
+    pub score: f64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,16 +231,28 @@ pub fn parse_time(text: &str) -> Option<NaiveTime> {
 /// nature are daytime stops. Keeping this in one place stops fallback and mock
 /// plans from scheduling a bar at 10:00 and failing the opening-hours check.
 pub fn slot_times(kind: ItemKind, slot: usize) -> (Option<NaiveTime>, Option<NaiveTime>) {
-    let slot = slot.min(11) as u32;
+    let slot = slot.min(19) as u32;
     let (start_hour, end_hour) = match kind {
         ItemKind::Bar | ItemKind::Club => {
-            let offset = slot % 6;
-            (18 + offset, (19 + offset) % 24)
+            let offset = slot % 4;
+            (20 + offset, (21 + offset) % 24)
         }
-        ItemKind::Food => (8 + slot, 9 + slot),
-        ItemKind::Cinema | ItemKind::Theater => (10 + slot, 11 + slot),
-        ItemKind::Market | ItemKind::Shop => (10 + slot, 11 + slot),
-        _ => (8 + slot, 9 + slot),
+        ItemKind::Food => {
+            let offset = slot % 16;
+            (8 + offset, 9 + offset)
+        }
+        ItemKind::Cinema | ItemKind::Theater => {
+            let offset = slot % 14;
+            (10 + offset, (11 + offset) % 24)
+        }
+        ItemKind::Market | ItemKind::Shop => {
+            let offset = slot % 12;
+            (10 + offset, 11 + offset)
+        }
+        _ => {
+            let offset = slot % 16;
+            (8 + offset, 9 + offset)
+        }
     };
     (
         NaiveTime::from_hms_opt(start_hour, 0, 0),
@@ -310,12 +324,19 @@ pub fn plan_events_for_day(date: NaiveDate, items: &[PlanItem], facts: &Facts) -
             end_date: event.end_date,
             place: event.place.clone(),
             url: event.url.clone(),
+            score: event.score,
         })
         .collect();
-    events.sort_by(|left, right| left.title.cmp(&right.title));
+    events.sort_by(|left, right| {
+        right
+            .score
+            .partial_cmp(&left.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| left.title.cmp(&right.title))
+    });
     let mut seen = HashSet::new();
     events.retain(|event| seen.insert(event.id.clone()));
-    events.truncate(12);
+    events.truncate(20);
     events
 }
 
