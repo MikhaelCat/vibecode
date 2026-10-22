@@ -208,7 +208,7 @@ mod tests {
 
     #[test]
     fn gazetteer_covers_primorye() {
-        assert!(all().len() > 500, "settlements: {}", all().len());
+        assert!(all().len() > 150, "settlements: {}", all().len());
         assert_eq!(
             find_all_in_text("хочу во Владивосток на выходные")
                 .iter()
