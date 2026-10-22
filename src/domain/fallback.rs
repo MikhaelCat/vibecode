@@ -74,6 +74,7 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
         places.retain(|place| matches_request(place, intent));
     }
 
+    let target_per_day = intent.per_day().map(|count| count.min(20) as usize);
     let mut used = std::collections::HashSet::new();
     let mut days = Vec::new();
     let mut date = intent.start_date;
@@ -85,7 +86,10 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
             .iter()
             .filter(|place| !used.contains(&place.id))
             .count();
-        let slots = ((available + remaining_days - 1) / remaining_days.max(1)).clamp(1, 20);
+        let slots = match target_per_day {
+            Some(target) => target.min(available),
+            None => ((available + remaining_days - 1) / remaining_days.max(1)).clamp(1, 20),
+        };
         for slot in 0..slots {
             let Some(place) = places.iter().find(|place| !used.contains(&place.id)) else {
                 break;
@@ -214,6 +218,7 @@ fn matches_request(place: &crate::domain::facts::PlaceFact, intent: &Intent) -> 
             ),
             "sea" | "beach" => matches!(kind.as_str(), "beach" | "nature" | "lake" | "river"),
             "museum" | "history" => matches!(kind.as_str(), "museum" | "historic"),
+            "attractions" => !matches!(kind.as_str(), "food" | "bar" | "club" | "rest"),
             "cinema" => kind == "cinema",
             "theater" => kind == "theater",
             "concert" => matches!(kind.as_str(), "theater" | "sight"),

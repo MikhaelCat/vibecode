@@ -306,7 +306,12 @@ fn event_matches_day(event: &EventFact, items: &[PlanItem]) -> bool {
         .any(|item| haversine_km(center, (item.lat, item.lon)) <= 30.0)
 }
 
-pub fn plan_events_for_day(date: NaiveDate, items: &[PlanItem], facts: &Facts) -> Vec<PlanEvent> {
+pub fn plan_events_for_day(
+    date: NaiveDate,
+    items: &[PlanItem],
+    facts: &Facts,
+    limit: usize,
+) -> Vec<PlanEvent> {
     let mut events: Vec<PlanEvent> = facts
         .events
         .iter()
@@ -336,7 +341,7 @@ pub fn plan_events_for_day(date: NaiveDate, items: &[PlanItem], facts: &Facts) -
     });
     let mut seen = HashSet::new();
     events.retain(|event| seen.insert(event.id.clone()));
-    events.truncate(20);
+    events.truncate(limit.clamp(1, 20));
     events
 }
 
@@ -428,6 +433,7 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
 
     let mut seen_ids: HashSet<String> = HashSet::new();
     let mut seen_places: Vec<(String, f64, f64)> = Vec::new();
+    let mut seen_coords: Vec<(f64, f64)> = Vec::new();
     let mut duplicate_items = 0usize;
     let mut waterbody_items = 0usize;
     let mut outside_items = 0usize;
@@ -470,7 +476,17 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
                     duplicate_items += 1;
                     continue;
                 }
+                // Same venue under different ids/names often differs by a few
+                // metres. Treat anything within 50 m as the same stop.
+                if seen_coords
+                    .iter()
+                    .any(|(lat, lon)| haversine_km((place.lat, place.lon), (*lat, *lon)) < 0.05)
+                {
+                    duplicate_items += 1;
+                    continue;
+                }
                 seen_places.push((key, place.lat, place.lon));
+                seen_coords.push((place.lat, place.lon));
             }
 
             if fact.is_none() {
@@ -512,7 +528,12 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
 
         let index = days.len();
         let lodging_id = draft.lodging_ids.get(index).cloned();
-        let events = plan_events_for_day(date, &items, facts);
+        let event_limit = intent
+            .per_day()
+            .map(|count| count as usize)
+            .unwrap_or(20)
+            .min(20);
+        let events = plan_events_for_day(date, &items, facts, event_limit);
         days.push(DayPlan {
             date,
             title: match items.first() {

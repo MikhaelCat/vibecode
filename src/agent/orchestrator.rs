@@ -602,8 +602,14 @@ impl Orchestrator {
                 facts.ingest("find_events", &output);
             }
         }
+        let event_limit = intent
+            .per_day()
+            .map(|count| count as usize)
+            .unwrap_or(20)
+            .min(20);
         for day in &mut plan.days {
-            day.events = crate::domain::plan::plan_events_for_day(day.date, &day.items, facts);
+            day.events =
+                crate::domain::plan::plan_events_for_day(day.date, &day.items, facts, event_limit);
         }
     }
 
@@ -944,6 +950,7 @@ fn search_categories(intent: &Intent) -> Vec<String> {
             "nature" => &["nature", "park", "beach"],
             "sea" | "beach" => &["beach", "nature"],
             "museum" | "history" => &["museum", "historic"],
+            "attractions" => &["attraction", "museum", "historic", "viewpoint", "park"],
             "cinema" => &["cinema"],
             "theater" => &["theater"],
             "concert" => &["theatre", "arts_centre"],

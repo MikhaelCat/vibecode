@@ -404,7 +404,8 @@ function reset() {
   $('day-name').textContent = '';
   $('day-facts').innerHTML = '';
   $('day-kicker').textContent = 'День 1';
-  $('map-caption').textContent = 'Приморский край · карта';
+  $('map-caption').textContent = '';
+  $('map-caption').hidden = true;
   stageMap.clear();
   if (layer) layer.clearLayers();
   markers = [];
@@ -560,9 +561,6 @@ function renderDay() {
   if (points.length) {
     map.fitBounds(L.latLngBounds(points).pad(0.25), { maxZoom: 12 });
   }
-  $('map-caption').textContent = items.length
-    ? `День ${day + 1} · ${items.length} ${items.length === 1 ? 'точка' : 'точки'}`
-    : 'Приморский край · карта';
 }
 
 function stopDescription(stop) {

@@ -432,12 +432,17 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
     // V15 — пустые дни. Only force a model to fill a day when matching facts
     // actually exist. With no matching data an empty day is honest, not an
     // invitation to pad the plan with unrelated sights.
-    let has_matching_facts = facts.places.values().any(|place| {
-        on_land(place.lat, place.lon)
-            && !waterbody_title(&place.name)
-            && ((intent.interests.is_empty() && intent.must_see.is_empty())
-                || fact_matches_intent(place, intent))
-    });
+    let matching_count = facts
+        .places
+        .values()
+        .filter(|place| {
+            on_land(place.lat, place.lon)
+                && !waterbody_title(&place.name)
+                && ((intent.interests.is_empty() && intent.must_see.is_empty())
+                    || fact_matches_intent(place, intent))
+        })
+        .count();
+    let has_matching_facts = matching_count > 0;
     for day in &plan.days {
         if day.items.is_empty() {
             let violation = if plan.generation != Generation::Fallback && has_matching_facts {
@@ -451,6 +456,27 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
                 "V15",
                 format!("{}: всего {} точки", day.date, day.items.len()),
             ));
+        }
+    }
+    if let Some(per_day) = intent.per_day() {
+        let per_day = per_day as usize;
+        let capacity_days = matching_count / per_day.max(1);
+        for (index, day) in plan.days.iter().enumerate() {
+            if day.items.len() < per_day {
+                let message = format!(
+                    "{}: {} из {} точек по запросу",
+                    day.date,
+                    day.items.len(),
+                    per_day
+                );
+                let violation = if plan.generation != Generation::Fallback && index < capacity_days
+                {
+                    Violation::hard("V15", message)
+                } else {
+                    Violation::soft("V15", message)
+                };
+                violations.push(violation);
+            }
         }
     }
 
@@ -577,6 +603,7 @@ fn fact_matches_intent(place: &PlaceFact, intent: &Intent) -> bool {
             ),
             "sea" | "beach" => matches!(kind, "beach" | "nature" | "lake" | "river"),
             "museum" | "history" => matches!(kind, "museum" | "historic"),
+            "attractions" => !matches!(kind, "food" | "bar" | "club" | "rest"),
             "cinema" => kind == "cinema",
             "theater" => kind == "theater",
             "concert" => matches!(kind, "theater" | "sight"),

@@ -75,6 +75,15 @@ impl Intent {
     pub fn nights(&self) -> u8 {
         self.days().saturating_sub(1)
     }
+
+    /// Explicit "по 12 точек в день" request, stored in assumptions so the
+    /// rest of the pipeline sees it without another serialized field.
+    pub fn per_day(&self) -> Option<u8> {
+        self.assumptions.iter().find_map(|item| {
+            item.strip_prefix("точек в день: ")
+                .and_then(|value| value.trim().parse().ok())
+        })
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -202,6 +211,9 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
         || lower.contains("ребён")
         || lower.contains("ребен")
         || lower.contains("дети");
+    if let Some(per_day) = parse_per_day(&lower) {
+        assumptions.push(format!("точек в день: {per_day}"));
+    }
 
     let words: Vec<&str> = lower
         .split(|c: char| !c.is_alphabetic())
@@ -236,6 +248,7 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
             "food",
         ),
         (prefix("истори"), "history"),
+        (prefix("достопримечательн"), "attractions"),
         (prefix("кино"), "cinema"),
         (prefix("театр"), "theater"),
         (prefix("концерт"), "concert"),
@@ -528,6 +541,39 @@ fn word_to_number(word: &str) -> Option<u8> {
         "семь" | "семи" => Some(7),
         _ => None,
     }
+}
+
+fn parse_per_day(lower: &str) -> Option<u8> {
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    for (index, token) in tokens.iter().enumerate() {
+        let digits: String = token.chars().filter(|c| c.is_ascii_digit()).collect();
+        let Ok(count) = digits.parse::<u8>() else {
+            continue;
+        };
+        if !(1..=20).contains(&count) {
+            continue;
+        }
+        let previous = tokens.get(index.wrapping_sub(1)).copied().unwrap_or("");
+        let next = tokens.get(index + 1).copied().unwrap_or("");
+        let next2 = tokens.get(index + 2).copied().unwrap_or("");
+        let is_object = next.starts_with("достопримечательн")
+            || next.starts_with("мест")
+            || next.starts_with("точ")
+            || next.starts_with("объект");
+        let is_in_day = (next == "в" || next == "на") && next2.starts_with("день");
+        if previous == "по" && (is_object || is_in_day) {
+            return Some(count);
+        }
+        if is_object
+            && (next2 == "в" || next2 == "на")
+            && tokens
+                .get(index + 3)
+                .is_some_and(|word| word.starts_with("день"))
+        {
+            return Some(count);
+        }
+    }
+    None
 }
 
 fn parse_budget(lower: &str) -> Option<u32> {

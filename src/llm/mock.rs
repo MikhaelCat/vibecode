@@ -353,6 +353,7 @@ fn matches_interest(place: &MockPlace, intent: &Intent) -> bool {
             ),
             "sea" | "beach" => matches!(kind, "beach" | "nature" | "lake" | "river"),
             "museum" | "history" => matches!(kind, "museum" | "historic"),
+            "attractions" => !matches!(kind, "food" | "bar" | "club" | "rest"),
             "cinema" => kind == "cinema",
             "theater" => kind == "theater",
             "concert" => matches!(kind, "theater" | "sight"),
@@ -396,6 +397,7 @@ fn collect_lodging(messages: &[crate::llm::LlmMessage], need_lodging: bool) -> V
 fn build_draft(intent: &Intent, places: &[MockPlace], lodging_ids: &[String]) -> PlanDraft {
     let mut days = Vec::new();
     let mut date: NaiveDate = intent.start_date;
+    let target_per_day = intent.per_day().map(|count| count.min(20) as usize);
     let mut used = std::collections::HashSet::new();
     let mut remaining_days = (intent.end_date - intent.start_date).num_days() as usize + 1;
 
@@ -405,7 +407,10 @@ fn build_draft(intent: &Intent, places: &[MockPlace], lodging_ids: &[String]) ->
             .iter()
             .filter(|place| !used.contains(&place.id))
             .count();
-        let slots = ((available + remaining_days - 1) / remaining_days.max(1)).clamp(1, 20);
+        let slots = match target_per_day {
+            Some(target) => target.min(available),
+            None => ((available + remaining_days - 1) / remaining_days.max(1)).clamp(1, 20),
+        };
         for slot in 0..slots {
             let Some(place) = places.iter().find(|place| !used.contains(&place.id)) else {
                 break;
@@ -466,6 +471,7 @@ fn categories_from_interests(intent: &Intent) -> Vec<String> {
             "nature" => &["nature", "park", "beach"],
             "sea" | "beach" => &["beach", "nature"],
             "museum" | "history" => &["museum", "historic"],
+            "attractions" => &["attraction", "museum", "historic", "viewpoint", "park"],
             "cinema" => &["cinema"],
             "theater" => &["theater"],
             "concert" => &["theatre", "arts_centre"],

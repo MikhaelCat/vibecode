@@ -62,6 +62,9 @@
   одежду — `clothes`; аптеку — `pharmacy`; ТЦ — `mall`.
 - Для любого другого типа передай его OSM-тег как категорию
   (`butcher`, `supermarket`, `bakery`, `shoes`, `bookmaker` и т. п.).
+- Если в `INTENT_JSON.assumptions` есть «точек в день: N», в каждом дне должно
+  быть N подходящих точек (если инструменты вернули достаточно). Не показывай
+  одну точку вместо 12 — ищи несколько районов и категорий, но только по теме.
 - Если подходящих мест меньше 4 — покажи меньше. Если 0 — напиши
   «По заданным критериям не найдено» и не подставляй похожие места.
 - Не предлагай альтернативы и не добавляй точки, о которых не просили.
@@ -75,6 +78,8 @@
 - `nightlife` (бары, пабы, клубы, ночная жизнь) — `["bar","club"]`.
 - `nature` — `["nature","park","beach"]`; `sea`/`beach` — `["beach","nature"]`.
 - `museum`/`history` — `["museum","historic"]`; `mountains` — `["nature","viewpoint"]`.
+- `attractions` (достопримечательности) —
+  `["attraction","museum","historic","viewpoint","park"]`.
 - `cinema` — `["cinema"]`; `theater` — `["theater"]`;
   `concert` — `["theatre","arts_centre"]`.
 - `market` — `["marketplace"]`; `clothes` — `["clothes"]`;
