@@ -206,6 +206,19 @@ pub fn on_land(lat: f64, lon: f64) -> bool {
             .any(|poly| near_shore(poly, lat, lon, SHORE_TOLERANCE_DEG))
 }
 
+/// Strict land check for business POIs: no shoreline tolerance, so a bar or
+/// cafe mapped on a boat/pier in the water is not pinned in the sea.
+pub fn on_land_strict(lat: f64, lon: f64) -> bool {
+    if !in_krai(lat, lon) {
+        return false;
+    }
+    let polygons = land();
+    if polygons.is_empty() {
+        return true;
+    }
+    polygons.iter().any(|poly| contains(poly, lat, lon))
+}
+
 /// True when a title names a water area rather than a point on land.
 /// Such objects are useful as search areas, but a centroid marker in the sea
 /// or in a lake looks wrong, so providers never return them as itinerary

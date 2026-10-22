@@ -96,6 +96,7 @@ bash scripts/docker_smoke.sh  # сборка образа и проверка к
 | Данные | Источник | Fallback |
 |---|---|---|
 | Места, еда, отели, АЗС | OpenStreetMap Overpass | `data/mock/*.json` |
+| Кафе, бары, заведения | Яндекс Карты Search API (если задан ключ) / OSM Overpass | `data/mock/*.json` |
 | Достопримечательности | Wikipedia geosearch | `data/mock/*.json` |
 | Города, озёра, реки | Nominatim / Photon | список известных районов |
 | Погода | Open-Meteo | VL.ru |

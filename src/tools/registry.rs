@@ -45,6 +45,7 @@ pub struct ToolCtx {
     pub http: Client,
     pub data_dir: PathBuf,
     pub nominatim_user_agent: String,
+    pub yandex_maps_api_key: Option<String>,
 }
 
 /// One external data source exposed to the LLM.
@@ -70,6 +71,7 @@ pub struct Registry {
     cache: Arc<Cache>,
     data_dir: PathBuf,
     nominatim_user_agent: String,
+    yandex_maps_api_key: Option<String>,
     timeout: Duration,
 }
 
@@ -103,6 +105,7 @@ impl Registry {
             cache: Arc::new(Cache::new(config.redis_url.clone())),
             data_dir: config.data_dir.clone(),
             nominatim_user_agent: config.nominatim_user_agent.clone(),
+            yandex_maps_api_key: config.yandex_maps_api_key.clone(),
             timeout: config.tool_timeout,
         })
     }
@@ -178,6 +181,7 @@ impl Registry {
             http: self.http.clone(),
             data_dir: self.data_dir.clone(),
             nominatim_user_agent: self.nominatim_user_agent.clone(),
+            yandex_maps_api_key: self.yandex_maps_api_key.clone(),
         };
 
         let output = tokio::time::timeout(self.timeout, tool.call(args, &ctx))

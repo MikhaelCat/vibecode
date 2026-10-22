@@ -2,11 +2,22 @@ use crate::domain::dates::add_days;
 use crate::domain::facts::Facts;
 use crate::domain::geo::haversine_km;
 use crate::domain::intent::{Intent, TransportMode};
-use crate::domain::plan::{enrich, DayDraft, Generation, ItemDraft, ItemKind, Plan, PlanDraft};
+use crate::domain::plan::{
+    enrich, slot_times, DayDraft, Generation, ItemDraft, ItemKind, Plan, PlanDraft,
+};
 
 /// Deterministic plan from already collected facts. Never calls the LLM.
 pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
     facts.ensure_minimal(intent.start_date, intent.end_date);
+    if !intent.interests.is_empty() {
+        // Live category search may return fewer than 3 places per day. Add
+        // matching local fixtures (bars, cafes, museums) as a safe supplement.
+        for place in crate::domain::facts::mock_places() {
+            if matches_request(&place, intent) && !facts.places.contains_key(&place.id) {
+                facts.places.insert(place.id.clone(), place);
+            }
+        }
+    }
 
     let mut places: Vec<_> = facts.places.values().cloned().collect();
     let bad_weather = facts.weather.values().any(|weather| {
@@ -24,7 +35,13 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
         // of planning an unsafe outdoor visit.
         places = indoor;
     }
-    let base = (43.1155, 131.8855);
+    let base = if places.is_empty() {
+        (43.1155, 131.8855)
+    } else {
+        let lat = places.iter().map(|place| place.lat).sum::<f64>() / places.len() as f64;
+        let lon = places.iter().map(|place| place.lon).sum::<f64>() / places.len() as f64;
+        (lat, lon)
+    };
     let radius_km = match intent.transport {
         TransportMode::Foot => 20.0,
         TransportMode::Bike => 50.0,
@@ -39,11 +56,23 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
     if !nearby.is_empty() {
         places = nearby;
     }
-    places.sort_by(|a, b| {
-        haversine_km(base, (a.lat, a.lon))
-            .partial_cmp(&haversine_km(base, (b.lat, b.lon)))
-            .unwrap_or(std::cmp::Ordering::Equal)
+    // Keep all places, but put the requested venues and kinds first. This
+    // lets a bars/food request dominate while still filling 3+ slots per day.
+    places.sort_by(|left, right| {
+        let left_match = matches_request(left, intent);
+        let right_match = matches_request(right, intent);
+        right_match.cmp(&left_match).then_with(|| {
+            haversine_km(base, (left.lat, left.lon))
+                .partial_cmp(&haversine_km(base, (right.lat, right.lon)))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
+    let interest_available = places.iter().any(|place| matches_request(place, intent));
+    if !intent.interests.is_empty() && interest_available {
+        // Do not pad a bars/food request with unrelated sights or a fish
+        // market. If there are too few matches, show fewer points and events.
+        places.retain(|place| matches_request(place, intent));
+    }
 
     let mut used = std::collections::HashSet::new();
     let mut days = Vec::new();
@@ -62,16 +91,8 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
                 break;
             };
             used.insert(place.id.clone());
-            let start = if slot == 0 {
-                chrono::NaiveTime::from_hms_opt(10, 0, 0)
-            } else {
-                chrono::NaiveTime::from_hms_opt(14, 0, 0)
-            };
-            let end = if slot == 0 {
-                chrono::NaiveTime::from_hms_opt(12, 0, 0)
-            } else {
-                chrono::NaiveTime::from_hms_opt(16, 0, 0)
-            };
+            let kind = kind_from_label(&place.kind);
+            let (start, end) = slot_times(kind, slot);
             items.push(ItemDraft {
                 place_id: place.id.clone(),
                 name: place.name.clone(),
@@ -109,7 +130,11 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
     };
 
     let draft = PlanDraft {
-        title: "План по Приморью".to_string(),
+        title: if intent.must_see.is_empty() {
+            "План по Приморью".to_string()
+        } else {
+            format!("План: {}", intent.must_see.join(", "))
+        },
         summary: format!(
             "{} дн. на {} — собрано детерминированно, без LLM",
             days.len(),
@@ -122,6 +147,15 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
 
     let mut plan = enrich(draft, intent, facts);
     plan.generation = Generation::Fallback;
+    if !intent.interests.is_empty() && !interest_available {
+        plan.warnings.push(crate::domain::plan::Warning {
+            code: "interests_not_found".to_string(),
+            message: format!(
+                "В доступных данных не нашлось мест под интересы: {}",
+                intent.interests.join(", ")
+            ),
+        });
+    }
     if bad_weather {
         plan.warnings.push(crate::domain::plan::Warning {
             code: "weather_unsafe".to_string(),
@@ -147,11 +181,48 @@ fn kind_from_label(label: &str) -> ItemKind {
         "beach" => ItemKind::Beach,
         "lake" => ItemKind::Lake,
         "river" => ItemKind::River,
+        "cinema" => ItemKind::Cinema,
+        "theater" => ItemKind::Theater,
+        "market" => ItemKind::Market,
+        "shop" => ItemKind::Shop,
         "food" => ItemKind::Food,
         "bar" => ItemKind::Bar,
         "club" => ItemKind::Club,
         _ => ItemKind::Sight,
     }
+}
+
+fn matches_request(place: &crate::domain::facts::PlaceFact, intent: &Intent) -> bool {
+    let name = place.name.to_lowercase();
+    if intent
+        .must_see
+        .iter()
+        .any(|venue| !venue.is_empty() && name.contains(&venue.to_lowercase()))
+    {
+        return true;
+    }
+    let kind = place.kind.to_lowercase();
+    intent
+        .interests
+        .iter()
+        .any(|interest| match interest.as_str() {
+            "food" => kind == "food",
+            "nightlife" => matches!(kind.as_str(), "bar" | "club"),
+            "nature" => matches!(
+                kind.as_str(),
+                "nature" | "park" | "beach" | "lake" | "river" | "viewpoint"
+            ),
+            "sea" | "beach" => matches!(kind.as_str(), "beach" | "nature" | "lake" | "river"),
+            "museum" | "history" => matches!(kind.as_str(), "museum" | "historic"),
+            "cinema" => kind == "cinema",
+            "theater" => kind == "theater",
+            "concert" => matches!(kind.as_str(), "theater" | "sight"),
+            "market" => kind == "market",
+            "clothes" | "shopping" => matches!(kind.as_str(), "shop" | "market"),
+            "mountains" => matches!(kind.as_str(), "nature" | "viewpoint"),
+            "fishing" => matches!(kind.as_str(), "beach" | "nature" | "viewpoint"),
+            _ => false,
+        })
 }
 
 #[cfg(test)]

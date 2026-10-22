@@ -206,6 +206,19 @@ textarea:focus{outline:none;border-bottom-color:var(--sea)}
 .lodge-price{margin-top:auto;padding-top:16px;font:600 20px/1.2 var(--f-body);color:var(--ink)}
 .lodge-price small{display:block;font-size:10.5px;font-weight:500;letter-spacing:.06em;text-transform:uppercase;color:var(--muted);margin-top:3px}
 
+/* events */
+.events-box{margin-top:clamp(32px,4vw,48px)}
+.events-box .section-head{margin-bottom:18px}
+.events-box .section-head h2{font-size:clamp(24px,3vw,32px)}
+.events-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,210px),1fr));gap:12px;min-width:0}
+.event-card{display:flex;flex-direction:column;align-items:flex-start;gap:6px;min-width:0;background:var(--paper);border:1px solid var(--line);border-radius:18px;padding:18px 20px;transition:border-color .2s,box-shadow .2s}
+.event-card:hover{border-color:rgba(15,118,110,.45);box-shadow:0 12px 28px rgba(7,26,36,.07)}
+.event-card h3{font:600 18px/1.25 var(--f-body);letter-spacing:-.01em;overflow-wrap:anywhere}
+.event-date{display:inline-flex;align-items:center;border:1px solid rgba(15,118,110,.28);border-radius:999px;background:rgba(94,234,212,.16);color:var(--sea);font:600 10.5px/1 var(--f-body);letter-spacing:.08em;text-transform:uppercase;padding:5px 9px;margin-bottom:2px}
+.event-meta{font-size:13px;line-height:1.45;color:var(--muted);overflow-wrap:anywhere}
+.event-link{display:inline-flex;align-items:center;gap:5px;margin-top:auto;padding-top:12px;font:600 12.5px/1.2 var(--f-body);color:var(--sea);text-decoration:none;transition:color .2s}
+.event-link:hover{color:var(--sea-bright);text-decoration:underline;text-underline-offset:3px}
+
 /* footer */
 .foot{display:grid;grid-template-columns:1.5fr 1fr 1fr;gap:44px;background:var(--ink);color:var(--white);padding:var(--gap) var(--pad)}
 .foot .brand{color:var(--white);margin-bottom:16px}
@@ -244,6 +257,9 @@ textarea:focus{outline:none;border-bottom-color:var(--sea)}
   .stop-num{width:34px;height:34px;font-size:10.5px}
   .stop-rail::before{top:48px}
   .stop-body{padding:16px 16px 18px;border-radius:16px}
+  .events-box{margin-top:30px}
+  .events-box .section-head h2{font-size:clamp(21px,4vw,26px)}
+  .events-grid{gap:10px}
   .foot{grid-template-columns:1fr;gap:30px}
   .preview-list{grid-template-columns:1fr}
   .preview-list li:nth-child(2){border-top:1px solid rgba(255,255,255,.12);padding-top:15px}
@@ -260,6 +276,8 @@ textarea:focus{outline:none;border-bottom-color:var(--sea)}
   .tab{padding:8px 12px}
   .day-facts{font-size:11px}
   .lodge{padding:16px}
+  .event-card{padding:16px}
+  .event-link{padding-top:10px}
 }
 @media (prefers-reduced-motion:reduce){
   *,*::before,*::after{animation:none!important;transition:none!important}

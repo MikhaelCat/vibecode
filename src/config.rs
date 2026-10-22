@@ -42,6 +42,7 @@ pub struct Config {
     pub concurrent_runs: usize,
     pub nominatim_user_agent: String,
     pub ors_api_key: Option<String>,
+    pub yandex_maps_api_key: Option<String>,
     pub demo_mode: bool,
     pub mock_llm: bool,
 }
@@ -77,8 +78,8 @@ impl Config {
             llm_proxy_token: non_empty(env::var("LLM_PROXY_TOKEN").ok()),
             llm_proxy_url,
             llm_proxy_model: non_empty(env::var("LLM_PROXY_MODEL").ok()),
-            daily_budget_usd: parse_f64("DAILY_BUDGET_USD", 25.0),
-            daily_token_budget: parse_u64("DAILY_TOKEN_BUDGET", 1_000_000),
+            daily_budget_usd: parse_f64("DAILY_BUDGET_USD", 1_000_000.0),
+            daily_token_budget: parse_u64("DAILY_TOKEN_BUDGET", 2_000_000_000_000_000_000),
             app_token: non_empty(env::var("APP_TOKEN").ok()),
             price_in_per_m: parse_f64("PRICE_IN_PER_M", 0.0),
             price_out_per_m: parse_f64("PRICE_OUT_PER_M", 0.0),
@@ -103,6 +104,7 @@ impl Config {
                 "vibecode-travel-planner/1.0 (+https://github.com/MikhaelCat/vibecode)".to_string()
             }),
             ors_api_key: non_empty(env::var("ORS_API_KEY").ok()),
+            yandex_maps_api_key: non_empty(env::var("YANDEX_MAPS_API_KEY").ok()),
             demo_mode: parse_bool("DEMO_MODE", false),
             mock_llm: parse_bool("MOCK_LLM", false),
         };

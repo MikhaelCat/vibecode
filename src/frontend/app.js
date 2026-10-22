@@ -35,6 +35,10 @@ const kindRu = {
   beach: 'пляж',
   lake: 'озеро',
   river: 'река',
+  cinema: 'кино',
+  theater: 'театр',
+  market: 'рынок',
+  shop: 'магазин',
   food: 'еда',
   bar: 'бар',
   club: 'клуб',
@@ -71,30 +75,6 @@ let map = null;
 let layer = null;
 let markers = [];
 let mapTilesLoaded = false;
-let routeToken = 0;
-
-// Draw the day route along real roads. The geometry stays in the browser: it
-// is not part of the tool output and does not spend LLM tokens.
-async function drawRoute(points) {
-  const token = ++routeToken;
-  if (!layer || points.length < 2) return;
-  const path = points.map(([lat, lon]) => `${lon},${lat}`).join(';');
-  try {
-    const response = await fetch(
-      `https://router.project-osrm.org/route/v1/driving/${path}?overview=full&geometries=geojson`,
-    );
-    if (!response.ok || token !== routeToken) return;
-    const data = await response.json();
-    const geometry = data.routes?.[0]?.geometry;
-    if (geometry && layer && token === routeToken) {
-      L.geoJSON(geometry, {
-        style: { color: '#2f6f8f', weight: 4, opacity: 0.8 },
-      }).addTo(layer);
-    }
-  } catch (_) {
-    // A straight line would cross bays; no line is better than a wrong one.
-  }
-}
 
 function fitMap() {
   if (map) map.invalidateSize();
@@ -417,6 +397,8 @@ function reset() {
   $('result').hidden = true;
   $('lodging-box').hidden = true;
   $('lodging').innerHTML = '';
+  $('events-box').hidden = true;
+  $('events').innerHTML = '';
   $('stops').innerHTML = '';
   $('tabs').innerHTML = '';
   $('day-name').textContent = '';
@@ -552,6 +534,7 @@ function renderDay() {
     html = `<li class="empty-day"><b>Свободный день.</b> Ассистент не нашёл проверенных точек на эту дату — можно оставить день для отдыха или поменять запрос.</li>`;
   }
   $('stops').innerHTML = html;
+  renderEvents(current.events || []);
 
   if (layer) layer.clearLayers();
   markers = [];
@@ -577,7 +560,6 @@ function renderDay() {
   if (points.length) {
     map.fitBounds(L.latLngBounds(points).pad(0.25), { maxZoom: 12 });
   }
-  drawRoute(points);
   $('map-caption').textContent = items.length
     ? `День ${day + 1} · ${items.length} ${items.length === 1 ? 'точка' : 'точки'}`
     : 'Приморский край · карта';
@@ -630,6 +612,44 @@ $('stops').addEventListener('click', (event) => {
     marker.openPopup();
   }
 });
+
+function eventDates(event) {
+  const start = event.date || '';
+  const end = event.end_date || '';
+  if (!start) return end ? fmtDate(end) : '';
+  if (!end || String(start) === String(end)) return fmtDate(start);
+  return `${fmtDate(start)} — ${fmtDate(end)}`;
+}
+
+// Events are a per-day stack of cards: they have no coordinates and never
+// become map pins or stops. Missing fields fall back to neutral text.
+function renderEvents(events) {
+  const box = $('events-box');
+  const grid = $('events');
+  const list = Array.isArray(events) ? events : [];
+  if (!list.length) {
+    box.hidden = true;
+    grid.innerHTML = '';
+    return;
+  }
+  box.hidden = false;
+  grid.innerHTML = list.map((value) => {
+    const event = value && typeof value === 'object' ? value : {};
+    const title = String(event.title || '').trim() || 'Событие без названия';
+    const place = String(event.place || '').trim() || 'Место уточняется';
+    const dates = eventDates(event);
+    const url = String(event.url || '');
+    const link = /^https?:\/\//i.test(url)
+      ? `<a class="event-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Подробнее <span aria-hidden="true">→</span></a>`
+      : '';
+    return `<article class="event-card">
+      ${dates ? `<span class="event-date">${esc(dates)}</span>` : ''}
+      <h3>${esc(title)}</h3>
+      <p class="event-meta">${esc(place)}</p>
+      ${link}
+    </article>`;
+  }).join('');
+}
 
 function renderLodging() {
   const list = Array.isArray(plan?.lodging_options) && plan.lodging_options.length

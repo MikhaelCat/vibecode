@@ -5,7 +5,7 @@ use serde::{de, Deserialize, Deserializer, Serialize};
 use uuid::Uuid;
 
 use crate::domain::dates::{add_days, days_inclusive};
-use crate::domain::facts::{Facts, Lodging, PlaceFact, SourceKind, SourceRef};
+use crate::domain::facts::{EventFact, Facts, Lodging, PlaceFact, SourceKind, SourceRef};
 use crate::domain::geo::{haversine_km, on_land, travel_minutes, waterbody_title};
 use crate::domain::intent::{Intent, TransportMode};
 
@@ -22,6 +22,10 @@ pub enum ItemKind {
     Beach,
     Lake,
     River,
+    Cinema,
+    Theater,
+    Market,
+    Shop,
     Food,
     Bar,
     Club,
@@ -92,11 +96,25 @@ pub struct Leg {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PlanEvent {
+    pub id: String,
+    pub title: String,
+    pub date: Option<NaiveDate>,
+    pub end_date: Option<NaiveDate>,
+    pub place: String,
+    pub url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DayPlan {
     pub date: NaiveDate,
     pub title: String,
     pub items: Vec<PlanItem>,
     pub legs: Vec<Leg>,
+    /// Events from `find_events` overlapping this date. They are shown as a
+    /// separate stack and never become map pins or plan items.
+    #[serde(default)]
+    pub events: Vec<PlanEvent>,
     pub lodging_id: Option<String>,
 }
 
@@ -207,6 +225,89 @@ pub fn parse_time(text: &str) -> Option<NaiveTime> {
     None
 }
 
+/// A sensible slot for a kind: bars and clubs are evening stops, museums and
+/// nature are daytime stops. Keeping this in one place stops fallback and mock
+/// plans from scheduling a bar at 10:00 and failing the opening-hours check.
+pub fn slot_times(kind: ItemKind, slot: usize) -> (Option<NaiveTime>, Option<NaiveTime>) {
+    let (start_hour, start_minute, end_hour, end_minute) = match kind {
+        ItemKind::Bar | ItemKind::Club => match slot {
+            0 => (20, 0, 21, 30),
+            1 => (21, 30, 23, 0),
+            _ => (23, 0, 23, 59),
+        },
+        ItemKind::Food => match slot {
+            0 => (10, 0, 12, 0),
+            1 => (13, 0, 15, 0),
+            _ => (19, 0, 21, 0),
+        },
+        ItemKind::Cinema | ItemKind::Theater => match slot {
+            0 => (12, 0, 14, 0),
+            1 => (16, 0, 18, 0),
+            _ => (19, 0, 21, 0),
+        },
+        ItemKind::Market | ItemKind::Shop => match slot {
+            0 => (10, 0, 12, 0),
+            1 => (13, 0, 15, 0),
+            _ => (16, 0, 18, 0),
+        },
+        _ => match slot {
+            0 => (10, 0, 12, 0),
+            1 => (13, 0, 15, 0),
+            _ => (17, 0, 19, 0),
+        },
+    };
+    (
+        NaiveTime::from_hms_opt(start_hour, start_minute, 0),
+        NaiveTime::from_hms_opt(end_hour, end_minute, 0),
+    )
+}
+
+fn event_area_center(area: &str) -> Option<(f64, f64)> {
+    let area = area.to_lowercase();
+    if area.contains("находк") {
+        Some((42.8169, 132.8892))
+    } else if area.contains("уссурийск") {
+        Some((43.7992, 131.9495))
+    } else if area.contains("больш") && area.contains("камен") {
+        Some((43.1175, 132.354))
+    } else if area.contains("артем") || area.contains("артём") {
+        Some((43.355, 132.19))
+    } else if area.contains("спасск") {
+        Some((44.6, 132.82))
+    } else if area.contains("партизанск") {
+        Some((43.12, 133.12))
+    } else if area.contains("арсеньев") {
+        Some((44.1662, 133.2702))
+    } else if area.contains("дальнегорск") {
+        Some((44.566, 135.618))
+    } else if area.contains("лесозаводск") {
+        Some((45.466, 133.4))
+    } else if area.contains("фокино") {
+        Some((42.97, 132.4))
+    } else if area.contains("кавалерово") {
+        Some((44.27, 135.05))
+    } else if area.contains("черниговка") {
+        Some((44.35, 132.57))
+    } else if area.is_empty()
+        || area.contains("владивост")
+        || area.contains("русск")
+        || area.contains("примор")
+    {
+        Some((43.1155, 131.8855))
+    } else {
+        None
+    }
+}
+
+fn event_matches_day(event: &EventFact, items: &[PlanItem]) -> bool {
+    let Some(center) = event_area_center(&event.area) else {
+        return false;
+    };
+    items
+        .iter()
+        .any(|item| haversine_km(center, (item.lat, item.lon)) <= 60.0)
+}
+
 fn item_kind(fact: Option<&PlaceFact>, fallback: ItemKind) -> ItemKind {
     let Some(fact) = fact else {
         return fallback;
@@ -220,6 +321,10 @@ fn item_kind(fact: Option<&PlaceFact>, fallback: ItemKind) -> ItemKind {
         "beach" => ItemKind::Beach,
         "lake" => ItemKind::Lake,
         "river" => ItemKind::River,
+        "cinema" => ItemKind::Cinema,
+        "theater" => ItemKind::Theater,
+        "market" => ItemKind::Market,
+        "shop" => ItemKind::Shop,
         "food" => ItemKind::Food,
         "bar" => ItemKind::Bar,
         "club" => ItemKind::Club,
@@ -345,6 +450,31 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
 
         let index = days.len();
         let lodging_id = draft.lodging_ids.get(index).cloned();
+        // VL.ru events are Vladivostok-only; do not show them on a Nakhodka or
+        // Ussuriysk day just because the trip also visits the capital.
+        let mut events: Vec<PlanEvent> = facts
+            .events
+            .iter()
+            .filter(|event| {
+                event_matches_day(event, &items)
+                    && event.date.is_some_and(|start| {
+                        let end = event.end_date.unwrap_or(start);
+                        date >= start && date <= end
+                    })
+            })
+            .map(|event| PlanEvent {
+                id: event.id.clone(),
+                title: event.title.clone(),
+                date: event.date,
+                end_date: event.end_date,
+                place: event.place.clone(),
+                url: event.url.clone(),
+            })
+            .collect();
+        events.sort_by(|left, right| left.title.cmp(&right.title));
+        let mut seen_events = HashSet::new();
+        events.retain(|event| seen_events.insert(event.id.clone()));
+        events.truncate(12);
         days.push(DayPlan {
             date,
             title: match items.first() {
@@ -353,6 +483,7 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
             },
             items,
             legs,
+            events,
             lodging_id,
         });
         date = add_days(date, 1);

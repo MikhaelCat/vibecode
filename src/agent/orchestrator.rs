@@ -243,6 +243,23 @@ impl Orchestrator {
         ];
 
         let mut facts = Facts::default();
+        // The poster is worth loading even if the model forgets to call the
+        // tool: events are attached to the plan separately from places.
+        for area in event_areas_for_query(&query) {
+            let events_args = json!({
+                "area": area,
+                "start_date": intent.start_date.to_string(),
+                "end_date": intent.end_date.to_string()
+            });
+            if let Ok(Ok(output)) = tokio::time::timeout(
+                std::time::Duration::from_secs(6),
+                self.registry.call("find_events", events_args, &intent),
+            )
+            .await
+            {
+                facts.ingest("find_events", &output);
+            }
+        }
         let mut usage = TokenUsage::default();
         let mut tools_used: Vec<String> = Vec::new();
         let mut repairs = 0usize;
@@ -384,9 +401,10 @@ impl Orchestrator {
             if !regular_calls.is_empty() {
                 let registry = self.registry.clone();
                 let intent = intent.clone();
-                let futures = regular_calls.into_iter().map(|(call_id, name, args)| {
+                let futures = regular_calls.into_iter().map(|(call_id, name, mut args)| {
                     let registry = registry.clone();
                     let intent = intent.clone();
+                    enforce_search_intent(&name, &mut args, &intent);
                     let args_summary = truncate(&args.to_string(), 200);
                     async move {
                         let started = Instant::now();
@@ -785,6 +803,122 @@ fn plan_window(intent: &Intent) -> String {
 
 fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
+}
+
+fn event_areas_for_query(query: &str) -> Vec<&'static str> {
+    let query = query.to_lowercase();
+    let mut areas = Vec::new();
+    if query.contains("владивост") || query.contains("русск") {
+        areas.push("Владивосток");
+    }
+    if query.contains("находк") {
+        areas.push("Находка");
+    }
+    if query.contains("арсеньев") {
+        areas.push("Арсеньев");
+    }
+    if query.contains("уссурийск") || query.contains("ussuriisk") {
+        areas.push("Уссурийск");
+    }
+    if query.contains("больш") && query.contains("камен") {
+        areas.push("Большой Камень");
+    }
+    if query.contains("артем") || query.contains("артём") || query.contains("artem") {
+        areas.push("Артём");
+    }
+    if query.contains("спасск") {
+        areas.push("Спасск");
+    }
+    if query.contains("партизанск") {
+        areas.push("Партизанск");
+    }
+    if areas.is_empty() {
+        if query.contains("примор") {
+            areas.extend(["Владивосток", "Находка", "Уссурийск"]);
+        } else {
+            // A query without a city still starts in Vladivostok in the
+            // default plan; load its poster so the day has a full event stack.
+            areas.push("Владивосток");
+        }
+    }
+    areas
+}
+
+/// Makes `search_places` follow the parsed request even when the model picks
+/// generic categories or forgets a named venue. This is what turns "бары",
+/// "пицца" or "докерпаб" into a targeted Yandex/OSM category search.
+fn enforce_search_intent(name: &str, args: &mut Value, intent: &Intent) {
+    if name != "search_places" {
+        return;
+    }
+    let Some(object) = args.as_object_mut() else {
+        return;
+    };
+    let wanted = search_categories(intent);
+    if !wanted.is_empty() {
+        let current: Vec<String> = object
+            .get("categories")
+            .and_then(Value::as_array)
+            .map(|items| {
+                items
+                    .iter()
+                    .filter_map(Value::as_str)
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default();
+        let already_requested = current.iter().any(|category| {
+            wanted
+                .iter()
+                .any(|needle| category == needle || category.contains(needle))
+        });
+        if current.is_empty() || !already_requested {
+            object.insert("categories".to_string(), json!(wanted));
+        }
+    }
+    let query_is_empty = object
+        .get("query")
+        .and_then(Value::as_str)
+        .map(|query| query.trim().is_empty())
+        .unwrap_or(true);
+    if query_is_empty && !intent.must_see.is_empty() {
+        object.insert("query".to_string(), json!(intent.must_see.join(" ")));
+    }
+    if wanted.is_empty() && intent.must_see.is_empty() {
+        return;
+    }
+    let limit = object
+        .get("limit")
+        .and_then(Value::as_u64)
+        .unwrap_or(10)
+        .clamp(30, 40);
+    object.insert("limit".to_string(), json!(limit));
+}
+
+fn search_categories(intent: &Intent) -> Vec<String> {
+    let mut categories: Vec<String> = Vec::new();
+    for interest in &intent.interests {
+        let wanted: &[&str] = match interest.as_str() {
+            "food" => &["restaurant", "cafe"],
+            "nightlife" => &["bar", "club"],
+            "nature" => &["nature", "park", "beach"],
+            "sea" | "beach" => &["beach", "nature"],
+            "museum" | "history" => &["museum", "historic"],
+            "cinema" => &["cinema"],
+            "theater" => &["theater"],
+            "concert" => &["theatre", "arts_centre"],
+            "market" => &["marketplace"],
+            "clothes" => &["clothes"],
+            "shopping" => &["clothes", "mall", "department_store", "shoes"],
+            "mountains" => &["nature", "viewpoint"],
+            "fishing" => &["beach", "nature", "viewpoint"],
+            _ => &[],
+        };
+        categories.extend(wanted.iter().map(|category| (*category).to_string()));
+    }
+    categories.sort();
+    categories.dedup();
+    categories
 }
 
 /// Serialize a tool result for the model, shrinking arrays and strings until

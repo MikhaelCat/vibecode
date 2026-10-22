@@ -14,9 +14,45 @@ use serde_json::{json, Value};
 use crate::domain::facts::{SourceKind, ToolOutput};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
-const EVENTS_URL: &str = "https://www.vl.ru/afisha/vladivostok";
 const EVENTS_USER_AGENT: &str =
     "Mozilla/5.0 (compatible; vibecode-travel-ai/0.1; +https://github.com/MikhaelCat/vibecode)";
+
+fn events_url(area: &str) -> Option<&'static str> {
+    let area = area.to_lowercase();
+    if area.is_empty()
+        || area.contains("владивост")
+        || area.contains("русск")
+        || area.contains("примор")
+    {
+        Some("https://www.vl.ru/afisha/vladivostok")
+    } else if area.contains("находк") {
+        Some("https://www.vl.ru/afisha/nakhodka")
+    } else if area.contains("уссурийск") || area.contains("ussuriisk") {
+        Some("https://www.vl.ru/afisha/ussuriisk")
+    } else if area.contains("больш") && area.contains("камен") {
+        Some("https://www.vl.ru/afisha/bolshoy-kamen")
+    } else if area.contains("артем") || area.contains("артём") || area.contains("artem") {
+        Some("https://www.vl.ru/afisha/artem")
+    } else if area.contains("спасск") {
+        Some("https://www.vl.ru/afisha/spassk")
+    } else if area.contains("партизанск") {
+        Some("https://www.vl.ru/afisha/partizansk")
+    } else if area.contains("арсеньев") {
+        Some("https://www.vl.ru/afisha/arsenyev")
+    } else if area.contains("дальнегорск") {
+        Some("https://www.vl.ru/afisha/dalnegorsk")
+    } else if area.contains("лесозаводск") {
+        Some("https://www.vl.ru/afisha/lesozavodsk")
+    } else if area.contains("фокино") {
+        Some("https://www.vl.ru/afisha/fokino")
+    } else if area.contains("кавалерово") {
+        Some("https://www.vl.ru/afisha/kavalerovo")
+    } else if area.contains("черниговка") {
+        Some("https://www.vl.ru/afisha/chernigovka")
+    } else {
+        None
+    }
+}
 
 /// Live events from the VL.ru city poster. The page exposes schema.org Event
 /// objects as JSON-LD, so we parse structured data instead of scraping markup.
@@ -29,7 +65,7 @@ impl Tool for EventsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Живые события и мероприятия Владивостока из афиши VL.ru на даты поездки. Для других городов возвращает пустой список."
+        "Живые события и мероприятия из афиши VL.ru на даты поездки: Владивосток, Находка, Уссурийск, Большой Камень, Артём, Спасск, Партизанск, Арсеньев, Дальнегорск, Лесозаводск, Фокино, Кавалерово, Черниговка."
     }
 
     fn parameters(&self) -> Value {
@@ -51,15 +87,18 @@ impl Tool for EventsTool {
             .get("area")
             .and_then(Value::as_str)
             .unwrap_or("Владивосток");
-        // The poster is Vladivostok-only. Returning its events for a trip to
-        // Nakhodka or Ussuriysk would put the wrong city in the plan.
-        if !events_area_supported(area) {
+        // The poster exists for Vladivostok, Nakhodka and Arsenyev. Returning
+        // Vladivostok events for a trip to Ussuriysk would put the wrong city
+        // in the plan.
+        let Some(url) = events_url(area) else {
             return Ok(ToolOutput::ok(
                 json!({"events": [], "area": area}),
                 SourceKind::Stale,
-                format!("VL.ru: афиша доступна только для Владивостока — для «{area}» событий нет"),
+                format!(
+                    "VL.ru: афиша доступна для Владивостока, Находки и Арсеньева — для «{area}» событий нет"
+                ),
             ));
-        }
+        };
         let start = parse_date_arg(&args, "start_date").unwrap_or(ctx.intent.start_date);
         let end = parse_date_arg(&args, "end_date").unwrap_or(ctx.intent.end_date);
         if end < start {
@@ -70,7 +109,7 @@ impl Tool for EventsTool {
 
         let response = ctx
             .http
-            .get(EVENTS_URL)
+            .get(url)
             .header("User-Agent", EVENTS_USER_AGENT)
             .header("Accept", "text/html,application/xhtml+xml")
             .send()
@@ -88,11 +127,16 @@ impl Tool for EventsTool {
             .map_err(|error| ToolError::Upstream(format!("VL.ru: {error}")))?;
 
         let mut events = parse_events(&html, start, end);
-        events.truncate(12);
+        events.truncate(120);
+        for event in &mut events {
+            if let Some(object) = event.as_object_mut() {
+                object.insert("area".to_string(), json!(area));
+            }
+        }
         let summary = if events.is_empty() {
             format!("VL.ru: событий на {} — {} не найдено", start, end)
         } else {
-            format!("VL.ru: {} событий на даты поездки", events.len())
+            format!("VL.ru: {} событий на даты поездки ({area})", events.len())
         };
         Ok(ToolOutput::ok(
             json!({"events": events, "area": area}),
@@ -106,14 +150,6 @@ fn parse_date_arg(args: &Value, key: &str) -> Option<NaiveDate> {
     args.get(key)
         .and_then(Value::as_str)
         .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
-}
-
-fn events_area_supported(area: &str) -> bool {
-    let area = area.to_lowercase();
-    area.is_empty()
-        || area.contains("владивост")
-        || area.contains("русск")
-        || area.contains("примор")
 }
 
 /// Extracts events from every JSON-LD block, keeps those overlapping
@@ -204,7 +240,16 @@ fn event_from_json(value: &Value) -> Option<ParsedEvent> {
         .unwrap_or("Владивосток")
         .trim()
         .to_string();
-    let url = value.get("url").and_then(Value::as_str).map(str::to_string);
+    let url = value
+        .get("url")
+        .and_then(Value::as_str)
+        .or_else(|| {
+            value
+                .get("location")
+                .and_then(|location| location.get("url"))
+                .and_then(Value::as_str)
+        })
+        .map(str::to_string);
     let id = url.clone().unwrap_or_else(|| {
         format!(
             "vl:event:{}:{}",
@@ -285,10 +330,13 @@ mod tests {
     }
 
     #[test]
-    fn events_are_vladivostok_only() {
-        assert!(events_area_supported("Владивосток"));
-        assert!(events_area_supported("Русский остров"));
-        assert!(!events_area_supported("Находка"));
-        assert!(!events_area_supported("Уссурийск"));
+    fn events_are_available_for_poster_cities() {
+        assert!(events_url("Владивосток").is_some());
+        assert!(events_url("Русский остров").is_some());
+        assert!(events_url("Находка").is_some());
+        assert!(events_url("Уссурийск").is_some());
+        assert!(events_url("Большой Камень").is_some());
+        assert!(events_url("Артём").is_some());
+        assert!(events_url("Арсеньев").is_some());
     }
 }

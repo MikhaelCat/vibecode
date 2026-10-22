@@ -154,15 +154,6 @@
       "source": "mock"
     },
     {
-      "id": "mock:place:20",
-      "name": "Рыбный рынок «Спортивная гавань»",
-      "lat": 43.1189,
-      "lon": 131.8818,
-      "kind": "food",
-      "opening_hours": "Mo-Su 08:00-19:00",
-      "source": "mock"
-    },
-    {
       "id": "mock:place:bar-nautilus",
       "name": "Наутилус",
       "lat": 43.1121594,
@@ -177,6 +168,51 @@
       "lat": 43.1154133,
       "lon": 131.9027473,
       "kind": "club",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:bar-soda",
+      "name": "Soda Bar",
+      "lat": 43.1155322,
+      "lon": 131.8876773,
+      "kind": "bar",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:bar-mechta",
+      "name": "Мечта и водки",
+      "lat": 43.1183914,
+      "lon": 131.885001,
+      "kind": "bar",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:club-808",
+      "name": "808",
+      "lat": 43.1176222,
+      "lon": 131.8929778,
+      "kind": "club",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:food-haekymgan",
+      "name": "Хэкымган",
+      "lat": 43.1182366,
+      "lon": 131.8887365,
+      "kind": "food",
+      "opening_hours": null,
+      "source": "mock"
+    },
+    {
+      "id": "mock:place:food-stanislavsky",
+      "name": "Арт-кафе «Станиславский»",
+      "lat": 43.115223,
+      "lon": 131.8914446,
+      "kind": "food",
       "opening_hours": null,
       "source": "mock"
     }

@@ -12,10 +12,10 @@ use std::collections::HashSet;
 use chrono::{Datelike, NaiveDate, NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 
-use crate::domain::facts::Facts;
-use crate::domain::geo::on_land;
+use crate::domain::facts::{Facts, PlaceFact};
+use crate::domain::geo::{on_land, waterbody_title};
 use crate::domain::intent::{Intent, TransportMode};
-use crate::domain::plan::{parse_time, Plan};
+use crate::domain::plan::{parse_time, Generation, ItemKind, Plan};
 
 /// Whether a violation blocks the plan (hard) or only lowers the score (soft).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -111,13 +111,13 @@ impl ValidationReport {
     }
 }
 
-/// Runs all V01–V15 checks against the plan, tool facts and intent.
+/// Runs all V01–V17 checks against the plan, tool facts and intent.
 ///
 /// Deterministic and side-effect free: `Facts` is the only source of truth
 /// for places, weather, routes and schedules.
 pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport {
     let mut violations = Vec::new();
-    const CHECKS: u32 = 15;
+    const CHECKS: u32 = 17;
 
     // V01 — регион
     for item in plan.all_items() {
@@ -421,13 +421,115 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
         }
     }
 
-    // V15 — пустые дни
+    // V15 — пустые дни. Only force a model to fill a day when matching facts
+    // actually exist. With no matching data an empty day is honest, not an
+    // invitation to pad the plan with unrelated sights.
+    let has_matching_facts = facts.places.values().any(|place| {
+        on_land(place.lat, place.lon)
+            && !waterbody_title(&place.name)
+            && ((intent.interests.is_empty() && intent.must_see.is_empty())
+                || fact_matches_intent(place, intent))
+    });
     for day in &plan.days {
         if day.items.is_empty() {
+            let violation = if plan.generation != Generation::Fallback && has_matching_facts {
+                Violation::hard("V15", format!("{}: в дне нет ни одной точки", day.date))
+            } else {
+                Violation::soft("V15", format!("{}: в дне нет ни одной точки", day.date))
+            };
+            violations.push(violation);
+        } else if day.items.len() < 3 {
             violations.push(Violation::soft(
                 "V15",
-                format!("{}: в дне нет ни одной точки", day.date),
+                format!("{}: всего {} точки", day.date, day.items.len()),
             ));
+        }
+    }
+
+    // V16 — запрошенные интересы. If the tools found a matching kind, the
+    // plan must use it; if they did not, report a soft warning instead of
+    // forcing the model to invent a place.
+    let has_kind = |kind: ItemKind| plan.all_items().any(|item| item.kind == kind);
+    let facts_have = |kinds: &[&str]| {
+        facts.places.values().any(|place| {
+            kinds
+                .iter()
+                .any(|kind| place.kind.eq_ignore_ascii_case(kind))
+        })
+    };
+    for interest in &intent.interests {
+        let (wanted, found, kinds) = match interest.as_str() {
+            "nightlife" => (
+                "бары/клубы",
+                has_kind(ItemKind::Bar) || has_kind(ItemKind::Club),
+                ["bar", "pub", "club"].as_slice(),
+            ),
+            "food" => ("еду/кафе", has_kind(ItemKind::Food), ["food"].as_slice()),
+            "cinema" => ("кино", has_kind(ItemKind::Cinema), ["cinema"].as_slice()),
+            "theater" => (
+                "театр",
+                has_kind(ItemKind::Theater),
+                ["theater", "theatre"].as_slice(),
+            ),
+            "concert" => (
+                "концерты",
+                has_kind(ItemKind::Theater),
+                ["theatre", "arts_centre"].as_slice(),
+            ),
+            "market" => (
+                "рынок",
+                has_kind(ItemKind::Market),
+                ["marketplace"].as_slice(),
+            ),
+            "clothes" | "shopping" => (
+                "магазины",
+                has_kind(ItemKind::Shop) || has_kind(ItemKind::Market),
+                ["shop", "marketplace"].as_slice(),
+            ),
+            _ => continue,
+        };
+        if found {
+            continue;
+        }
+        let message = format!("В запросе есть {wanted}, но в плане нет ни одной такой точки");
+        if facts_have(kinds) {
+            violations.push(
+                Violation::hard("V16", message).with_hint(
+                    "Используйте place_id подходящего типа из результатов search_places",
+                ),
+            );
+        } else {
+            violations.push(Violation::soft("V16", message));
+        }
+    }
+
+    // V17 — конкретное место из запроса. If a matching fact exists but the
+    // plan ignores it, that is a hard violation; if the tools never found it,
+    // only warn and let the model explain.
+    for venue in &intent.must_see {
+        let wanted = normalize_text(venue);
+        if wanted.is_empty() {
+            continue;
+        }
+        let found = plan.all_items().any(|item| {
+            let name = normalize_text(&item.name);
+            name.contains(&wanted) || wanted.contains(&name)
+        });
+        if found {
+            continue;
+        }
+        let known = facts.places.values().any(|place| {
+            let name = normalize_text(&place.name);
+            name.contains(&wanted) || wanted.contains(&name)
+        });
+        let message = format!("В запросе указано «{venue}», но этого места нет в плане");
+        if known {
+            violations.push(
+                Violation::hard("V17", message)
+                    .with_hint("Добавьте найденное заведение из результатов инструментов"),
+            );
+        } else {
+            violations.push(Violation::soft("V17", message));
         }
     }
 
@@ -444,6 +546,51 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
         checks_passed,
         score,
     }
+}
+
+fn fact_matches_intent(place: &PlaceFact, intent: &Intent) -> bool {
+    if intent
+        .must_see
+        .iter()
+        .any(|venue| !venue.is_empty() && place.name.to_lowercase().contains(&venue.to_lowercase()))
+    {
+        return true;
+    }
+    let kind = place.kind.as_str();
+    intent
+        .interests
+        .iter()
+        .any(|interest| match interest.as_str() {
+            "food" => kind == "food",
+            "nightlife" => matches!(kind, "bar" | "club"),
+            "nature" => matches!(
+                kind,
+                "nature" | "park" | "beach" | "lake" | "river" | "viewpoint"
+            ),
+            "sea" | "beach" => matches!(kind, "beach" | "nature" | "lake" | "river"),
+            "museum" | "history" => matches!(kind, "museum" | "historic"),
+            "cinema" => kind == "cinema",
+            "theater" => kind == "theater",
+            "concert" => matches!(kind, "theater" | "sight"),
+            "market" => kind == "market",
+            "clothes" | "shopping" => matches!(kind, "shop" | "market"),
+            "mountains" => matches!(kind, "nature" | "viewpoint"),
+            "fishing" => matches!(kind, "beach" | "nature" | "viewpoint"),
+            _ => false,
+        })
+}
+
+/// Lowercase, ё→е, punctuation→space; used for venue comparison.
+fn normalize_text(value: &str) -> String {
+    value
+        .to_lowercase()
+        .replace('ё', "е")
+        .chars()
+        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+        .collect::<String>()
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 /// Returns `None` when no segment is parseable, otherwise whether the place
@@ -481,7 +628,15 @@ fn check_open(hours: &str, date: NaiveDate, time: NaiveTime) -> Option<bool> {
                 continue;
             };
             segment_has_valid_time = true;
-            if days.contains(&date.weekday()) && time >= from && time <= to {
+            let open_now = if to == from {
+                true
+            } else if to < from {
+                // Overnight opening, e.g. 18:00-02:00.
+                time >= from || time <= to
+            } else {
+                time >= from && time <= to
+            };
+            if days.contains(&date.weekday()) && open_now {
                 open = true;
             }
         }

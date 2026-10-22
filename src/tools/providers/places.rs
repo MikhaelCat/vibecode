@@ -1,12 +1,12 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::Duration;
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
-use crate::domain::geo::{haversine_km, on_land, waterbody_title};
-use crate::tools::providers::{fallback_places, geo, limit_from, load_mock};
+use crate::domain::geo::{haversine_km, on_land, on_land_strict, waterbody_title};
+use crate::tools::providers::{fallback_places, geo, limit_from, load_mock, yandex};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
 pub struct PlacesTool;
@@ -26,12 +26,13 @@ impl Tool for PlacesTool {
             "type": "object",
             "properties": {
                 "area": {"type": "string", "description": "Город, село, озеро, река или район Приморья"},
+                "query": {"type": "string", "description": "Название заведения или кухня, например Dockers Pub или пицца"},
                 "categories": {
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "nature, museum, viewpoint, park, historic, beach, lake, river, restaurant, cafe, bar, club, hotel, attraction"
                 },
-                "limit": {"type": "integer", "minimum": 1, "maximum": 20},
+                "limit": {"type": "integer", "minimum": 1, "maximum": 40},
                 "date": {"type": "string"}
             },
             "required": ["area"]
@@ -39,11 +40,17 @@ impl Tool for PlacesTool {
     }
 
     async fn call(&self, args: Value, ctx: &ToolCtx) -> Result<ToolOutput, ToolError> {
-        let limit = limit_from(&args, 10, 20);
+        let limit = limit_from(&args, 10, 40);
         let area_text = args
             .get("area")
             .and_then(Value::as_str)
             .unwrap_or("Приморский край");
+        let query = args
+            .get("query")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .trim()
+            .to_string();
         let categories: Vec<String> = args
             .get("categories")
             .and_then(Value::as_array)
@@ -68,6 +75,21 @@ impl Tool for PlacesTool {
         // such an area any precise land object (shore village, beach, cape,
         // museum) is more useful than the water centroid.
         let area_is_water = waterbody_title(area_text) || waterbody_title(&area.label);
+
+        // The official Yandex Maps Search API understands venue names and
+        // cuisines better than OSM tags. Use it first only for food/nightlife
+        // requests (or an explicit venue query) when a key is configured.
+        if ctx.yandex_maps_api_key.is_some() && wants_yandex(&query, &categories) {
+            if let Some(places) = yandex::search(ctx, &area, &query, &categories, limit).await {
+                if !places.is_empty() {
+                    return Ok(ToolOutput::ok(
+                        json!({"places": places}),
+                        SourceKind::Live,
+                        format!("Яндекс Карты: {} мест", places.len()),
+                    ));
+                }
+            }
+        }
 
         // Wikipedia geosearch answers in one request and does not compete for
         // the two Overpass slots, so try it first for attraction-like
@@ -95,6 +117,25 @@ impl Tool for PlacesTool {
                         area.label
                     ),
                 ));
+            }
+        }
+
+        // The OSM map API is small and fast, and Overpass is often blocked.
+        // For food/nightlife search it before Overpass so a blocked endpoint
+        // cannot eat the whole tool timeout.
+        if wants_osm_business(&categories) {
+            if let Some(places) = osm_map_places(ctx, &area, &categories, limit).await {
+                if !places.is_empty() {
+                    return Ok(ToolOutput::ok(
+                        json!({"places": places}),
+                        SourceKind::Live,
+                        format!(
+                            "OpenStreetMap API: {} заведений рядом с {}",
+                            places.len(),
+                            area.label
+                        ),
+                    ));
+                }
             }
         }
 
@@ -178,7 +219,7 @@ async fn overpass_places(
         "https://overpass.kumi.systems/api/interpreter",
     ] {
         let response = tokio::time::timeout(
-            Duration::from_secs(8),
+            Duration::from_secs(4),
             ctx.http.post(endpoint).body(query.clone()).send(),
         )
         .await
@@ -199,14 +240,278 @@ async fn overpass_places(
     None
 }
 
-fn overpass_filters(categories: &[String]) -> Vec<&'static str> {
+fn wants_osm_business(categories: &[String]) -> bool {
+    if categories.is_empty() {
+        return false;
+    }
+    categories.iter().any(|category| {
+        let category = category.to_lowercase();
+        ![
+            "nature",
+            "park",
+            "beach",
+            "viewpoint",
+            "lake",
+            "river",
+            "mountain",
+        ]
+        .iter()
+        .any(|plain| category.contains(plain))
+    })
+}
+
+/// Maps free-form model categories to OSM tag values. The model can send
+/// `clothes`, `shop=clothes`, `marketplace`, `театр` or any other tag value.
+fn osm_values(categories: &[String]) -> Vec<String> {
+    let mut values = Vec::new();
+    for category in categories {
+        let category = category.to_lowercase();
+        let raw = category
+            .split_once('=')
+            .map(|(_, value)| value.trim())
+            .unwrap_or(category.as_str());
+        let mapped: &[&str] = match raw {
+            "market" | "marketplace" | "рынок" | "рынки" => &["marketplace"],
+            "theater" | "theatre" | "театр" | "театры" => &["theatre"],
+            "cinema" | "кино" | "кинотеатр" => &["cinema"],
+            "clothes" | "clothing" | "одежда" | "одежды" | "магазин одежды" => {
+                &["clothes"]
+            }
+            "shoes" | "обувь" => &["shoes"],
+            "shopping" | "mall" | "молл" | "тц" | "торговый центр" => {
+                &["mall", "department_store", "clothes", "shoes"]
+            }
+            "pharmacy" | "аптека" => &["pharmacy"],
+            "bank" | "банк" => &["bank"],
+            "supermarket" | "супермаркет" => &["supermarket"],
+            "bakery" | "пекарня" => &["bakery"],
+            "restaurant" | "ресторан" => &["restaurant"],
+            "cafe" | "кафе" => &["cafe"],
+            "bar" | "бар" => &["bar"],
+            "pub" | "паб" => &["pub"],
+            "club" | "nightclub" | "клуб" => &["nightclub"],
+            "museum" | "музей" => &["museum"],
+            "hotel" | "отель" => &["hotel"],
+            "park" | "парк" => &["park"],
+            "beach" | "пляж" => &["beach"],
+            "viewpoint" | "смотровая" => &["viewpoint"],
+            "attraction" | "достопримечательность" => &["attraction"],
+            "fuel" | "азс" => &["fuel"],
+            "hospital" | "больница" => &["hospital"],
+            "historic" | "история" => &["historic"],
+            "food" => &["restaurant", "cafe", "fast_food", "bakery"],
+            _ => &[],
+        };
+        if mapped.is_empty() {
+            values.push(raw.to_string());
+        } else {
+            values.extend(mapped.iter().map(|value| (*value).to_string()));
+        }
+    }
+    values.sort();
+    values.dedup();
+    values
+}
+
+async fn osm_map_places(
+    ctx: &ToolCtx,
+    area: &geo::Area,
+    categories: &[String],
+    limit: usize,
+) -> Option<Vec<Value>> {
+    let wanted = osm_values(categories);
+    if wanted.is_empty() {
+        return None;
+    }
+    for span in [0.004_f64, 0.002] {
+        let bbox = format!(
+            "{:.5},{:.5},{:.5},{:.5}",
+            area.lon - span * 1.2,
+            area.lat - span,
+            area.lon + span * 1.2,
+            area.lat + span
+        );
+        let url = format!("https://api.openstreetmap.org/api/0.6/map?bbox={bbox}");
+        let response = tokio::time::timeout(
+            Duration::from_secs(6),
+            ctx.http
+                .get(&url)
+                .header("User-Agent", &ctx.nominatim_user_agent)
+                .send(),
+        )
+        .await
+        .ok()?
+        .ok()?;
+        if response.status().as_u16() == 400 {
+            continue;
+        }
+        if !response.status().is_success() {
+            return None;
+        }
+        let xml = response.text().await.ok()?;
+        return Some(parse_osm_map(&xml, area, &wanted, limit));
+    }
+    None
+}
+
+fn parse_osm_map(xml: &str, area: &geo::Area, wanted: &[String], limit: usize) -> Vec<Value> {
+    let mut places = Vec::new();
+    let mut seen_ids = HashSet::new();
+    let mut seen_names: Vec<(String, f64, f64)> = Vec::new();
+    for chunk in xml.split("<node ").skip(1) {
+        let Some(header_end) = chunk.find('>') else {
+            continue;
+        };
+        let header = &chunk[..header_end];
+        let Some(id) = xml_attr(header, "id") else {
+            continue;
+        };
+        let (Some(lat), Some(lon)) = (
+            xml_attr(header, "lat").and_then(|value| value.parse::<f64>().ok()),
+            xml_attr(header, "lon").and_then(|value| value.parse::<f64>().ok()),
+        ) else {
+            continue;
+        };
+        if !on_land_strict(lat, lon) {
+            continue;
+        }
+        let body = if header.ends_with('/') {
+            ""
+        } else {
+            chunk[header_end + 1..]
+                .split("</node>")
+                .next()
+                .unwrap_or("")
+        };
+        let mut tags: HashMap<String, String> = HashMap::new();
+        for tag in body.split("<tag ").skip(1) {
+            let end = tag
+                .find("/>")
+                .or_else(|| tag.find('>'))
+                .unwrap_or(tag.len());
+            let segment = &tag[..end];
+            if let (Some(key), Some(value)) = (xml_attr(segment, "k"), xml_attr(segment, "v")) {
+                tags.insert(key.to_string(), xml_unescape(value));
+            }
+        }
+        let matched = ["amenity", "shop", "tourism", "leisure"].iter().any(|key| {
+            tags.get(*key)
+                .is_some_and(|value| wanted.iter().any(|wanted| wanted == value))
+        }) || (wanted.iter().any(|wanted| wanted == "historic")
+            && tags.contains_key("historic"));
+        if !matched {
+            continue;
+        }
+        let Some(name) = tags.get("name:ru").or_else(|| tags.get("name")) else {
+            continue;
+        };
+        let name = name.trim();
+        if name.is_empty() {
+            continue;
+        }
+        let id = format!("osm:node/{id}");
+        if !seen_ids.insert(id.clone()) {
+            continue;
+        }
+        let key = name.to_lowercase();
+        if seen_names.iter().any(|(known, known_lat, known_lon)| {
+            *known == key && haversine_km((lat, lon), (*known_lat, *known_lon)) < 0.1
+        }) {
+            continue;
+        }
+        seen_names.push((key, lat, lon));
+        places.push(json!({
+            "id": id,
+            "name": name,
+            "lat": lat,
+            "lon": lon,
+            "kind": osm_kind(&tags),
+            "opening_hours": tags.get("opening_hours"),
+            "source": "live",
+            "distance_meters": (haversine_km((area.lat, area.lon), (lat, lon)) * 1000.0).round()
+        }));
+    }
+    places.sort_by(|left, right| {
+        let left = left
+            .get("distance_meters")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::MAX);
+        let right = right
+            .get("distance_meters")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::MAX);
+        left.partial_cmp(&right)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    places.truncate(limit);
+    places
+}
+
+fn osm_kind(tags: &HashMap<String, String>) -> &'static str {
+    if let Some(amenity) = tags.get("amenity").map(String::as_str) {
+        match amenity {
+            "nightclub" => return "club",
+            "bar" | "pub" => return "bar",
+            "restaurant" | "cafe" | "fast_food" | "bakery" => return "food",
+            "marketplace" => return "market",
+            "theatre" => return "theater",
+            "cinema" => return "cinema",
+            "hotel" | "hostel" | "guest_house" => return "rest",
+            "museum" => return "museum",
+            _ => {}
+        }
+    }
+    if tags.contains_key("shop") {
+        return "shop";
+    }
+    match tags.get("tourism").map(String::as_str) {
+        Some("museum") => return "museum",
+        Some("viewpoint") => return "viewpoint",
+        Some("hotel" | "guest_house" | "hostel" | "apartment" | "camp_site" | "chalet") => {
+            return "rest"
+        }
+        _ => {}
+    }
+    if tags.contains_key("historic") {
+        return "historic";
+    }
+    if matches!(
+        tags.get("leisure").map(String::as_str),
+        Some("park" | "nature_reserve")
+    ) {
+        return "park";
+    }
+    "sight"
+}
+
+fn xml_attr<'a>(header: &'a str, key: &str) -> Option<&'a str> {
+    let pattern = format!("{key}=\"");
+    let start = header
+        .find(&format!(" {pattern}"))
+        .map(|index| index + 1)
+        .or_else(|| header.find(&pattern))?;
+    let value_start = start + pattern.len();
+    let end = header[value_start..].find('"')? + value_start;
+    Some(&header[value_start..end])
+}
+
+fn xml_unescape(value: &str) -> String {
+    value
+        .replace("&quot;", "\"")
+        .replace("&#39;", "'")
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+}
+
+fn overpass_filters(categories: &[String]) -> Vec<String> {
     let has = |needle: &str| categories.iter().any(|category| category.contains(needle));
     let default = categories.is_empty()
         || has("all")
         || has("attraction")
         || has("sight")
         || has("достоприм");
-    let mut filters = Vec::new();
+    let mut filters: Vec<String> = Vec::new();
 
     if default || has("nature") || has("природ") {
         add_filter(
@@ -274,6 +579,14 @@ fn overpass_filters(categories: &[String]) -> Vec<&'static str> {
             "nwr[\"tourism\"~\"hotel|guest_house|hostel|apartment|camp_site|chalet\"]",
         );
     }
+    // Any explicit tag value works: theatre, cinema, marketplace, clothes,
+    // butcher, pharmacy, etc. This is what lets the model search what the user
+    // asked for instead of a fixed list of categories.
+    for value in osm_values(categories) {
+        for key in ["shop", "amenity", "tourism", "leisure"] {
+            add_filter(&mut filters, format!("nwr[\"{key}\"=\"{value}\"]"));
+        }
+    }
     if filters.is_empty() {
         add_filter(
             &mut filters,
@@ -284,7 +597,8 @@ fn overpass_filters(categories: &[String]) -> Vec<&'static str> {
     filters
 }
 
-fn add_filter(filters: &mut Vec<&'static str>, filter: &'static str) {
+fn add_filter(filters: &mut Vec<String>, filter: impl Into<String>) {
+    let filter = filter.into();
     if !filters.contains(&filter) {
         filters.push(filter);
     }
@@ -397,6 +711,18 @@ fn kind_from_tags(tags: &Value) -> &'static str {
     if matches!(amenity, "restaurant" | "cafe" | "fast_food") {
         return "food";
     }
+    if amenity == "marketplace" {
+        return "market";
+    }
+    if amenity == "theatre" {
+        return "theater";
+    }
+    if amenity == "cinema" {
+        return "cinema";
+    }
+    if !value("shop").is_empty() {
+        return "shop";
+    }
     let natural = value("natural");
     if natural == "beach" || value("leisure") == "beach_resort" {
         return "beach";
@@ -427,6 +753,54 @@ fn kind_from_tags(tags: &Value) -> &'static str {
         return "park";
     }
     "sight"
+}
+
+/// Yandex is preferred for named venues, food and nightlife. Attraction-like
+/// categories stay on Wikipedia/OSM, where they are precise.
+fn wants_yandex(query: &str, categories: &[String]) -> bool {
+    if !query.trim().is_empty() {
+        return true;
+    }
+    categories.iter().any(|category| {
+        let category = category.to_lowercase();
+        [
+            "food",
+            "bar",
+            "club",
+            "pub",
+            "nightlife",
+            "hotel",
+            "restaurant",
+            "cafe",
+            "cinema",
+            "theater",
+            "theatre",
+            "market",
+            "shop",
+            "clothes",
+            "mall",
+            "pharmacy",
+            "еда",
+            "кафе",
+            "ресторан",
+            "бар",
+            "паб",
+            "клуб",
+            "ночн",
+            "отель",
+            "гостин",
+            "кино",
+            "театр",
+            "рын",
+            "магазин",
+            "одежд",
+            "торгов",
+            "молл",
+            "аптек",
+        ]
+        .iter()
+        .any(|needle| category.contains(needle))
+    })
 }
 
 fn wants_wikipedia(categories: &[String]) -> bool {
@@ -657,6 +1031,26 @@ fn matches_categories(kind: Option<&str>, categories: &[String]) -> bool {
         {
             !matches!(kind, "food" | "bar" | "club" | "rest")
         }
+        value if value.contains("cinema") || value.contains("кино") => kind == "cinema",
+        value
+            if value.contains("theater")
+                || value.contains("theatre")
+                || value.contains("театр") =>
+        {
+            kind == "theater"
+        }
+        value if value.contains("market") || value.contains("рын") => kind == "market",
+        value
+            if value.contains("shop")
+                || value.contains("clothes")
+                || value.contains("mall")
+                || value.contains("магазин")
+                || value.contains("одежд")
+                || value.contains("торгов")
+                || value.contains("молл") =>
+        {
+            matches!(kind, "shop" | "market")
+        }
         value if value.contains("hotel") || value.contains("отель") => false,
         _ => false,
     })
@@ -842,5 +1236,24 @@ mod tests {
         assert!(filters.iter().any(|filter| filter.contains("nightclub")));
         assert_eq!(kind_from_tags(&json!({"amenity": "bar"})), "bar");
         assert_eq!(kind_from_tags(&json!({"amenity": "nightclub"})), "club");
+    }
+
+    #[test]
+    fn parses_osm_map_businesses() {
+        let area = geo::Area {
+            lat: 43.1155,
+            lon: 131.8855,
+            bbox: (43.10, 131.87, 43.13, 131.90),
+            label: "Владивосток".to_string(),
+        };
+        let xml = r#"<osm>
+        <node id="1" lat="43.1155" lon="131.8855"><tag k="amenity" v="bar"/><tag k="name" v="Soda Bar"/></node>
+        <node id="2" lat="43.116" lon="131.886"><tag k="amenity" v="cafe"/><tag k="name" v="Cafe"/></node>
+        <node id="3" lat="43.117" lon="131.887"><tag k="amenity" v="parking"/><tag k="name" v="Parking"/></node>
+        </osm>"#;
+        let places = parse_osm_map(xml, &area, &["bar".to_string(), "cafe".to_string()], 10);
+        assert_eq!(places.len(), 2);
+        assert_eq!(places[0]["kind"], "bar");
+        assert_eq!(places[1]["kind"], "food");
     }
 }

@@ -16,6 +16,7 @@ pub mod route;
 pub mod transport;
 pub mod weather;
 pub mod wikipedia;
+pub mod yandex;
 
 pub use events::EventsTool;
 pub use fuel::FuelTool;

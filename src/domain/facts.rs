@@ -201,9 +201,19 @@ pub struct EventFact {
     #[serde(default)]
     pub date: Option<NaiveDate>,
     #[serde(default)]
+    pub end_date: Option<NaiveDate>,
+    #[serde(default)]
     pub place: String,
+    #[serde(default = "default_event_area")]
+    pub area: String,
+    #[serde(default)]
+    pub url: Option<String>,
     #[serde(default)]
     pub source: SourceKind,
+}
+
+fn default_event_area() -> String {
+    "Владивосток".to_string()
 }
 
 /// Accumulated, verified tool output for one run.

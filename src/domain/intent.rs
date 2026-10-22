@@ -218,11 +218,36 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
             exact(&["гор", "горы", "горах", "горам"]) || prefix("горн") || prefix("сопк"),
             "mountains",
         ),
-        (prefix("гастро") || exact(&["еда", "еду", "еды"]), "food"),
+        (
+            prefix("гастро")
+                || prefix("пицц")
+                || prefix("ресторан")
+                || prefix("кафе")
+                || prefix("столов")
+                || prefix("бургер")
+                || prefix("суш")
+                || prefix("кофе")
+                || prefix("завтрак")
+                || prefix("обед")
+                || prefix("ужин")
+                || prefix("поесть")
+                || prefix("кушать")
+                || exact(&["еда", "еду", "еды"]),
+            "food",
+        ),
         (prefix("истори"), "history"),
+        (prefix("кино"), "cinema"),
+        (prefix("театр"), "theater"),
+        (prefix("концерт"), "concert"),
+        (prefix("рын"), "market"),
+        (prefix("одежд"), "clothes"),
+        (
+            prefix("магазин") || prefix("шоп") || prefix("торгов") || prefix("молл"),
+            "shopping",
+        ),
         (prefix("рыбалк"), "fishing"),
         (
-            exact(&["бар", "бары", "баров", "барах"]) || prefix("паб"),
+            exact(&["бар", "бары", "баров", "барах"]) || prefix("паб") || prefix("докерпаб"),
             "nightlife",
         ),
         (prefix("клуб") || prefix("ночн"), "nightlife"),
@@ -233,6 +258,8 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
             interests.push(interest.to_string());
         }
     }
+
+    let must_see = extract_must_see(&lower);
 
     let mut avoid = Vec::new();
     if max_days == 1 {
@@ -260,7 +287,7 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
         party_size,
         with_children,
         interests,
-        must_see: Vec::new(),
+        must_see,
         avoid,
         pace,
         assumptions,
@@ -562,6 +589,75 @@ fn word_matches(word: &str, needle: &str) -> bool {
     word.starts_with(needle) || (needle.chars().count() >= 4 && word.contains(needle))
 }
 
+/// Extracts a specific venue from phrases like "хочу в докерпаб находки".
+/// Generic category requests ("поехали в бары и клубы") are not venues.
+fn extract_must_see(lower: &str) -> Vec<String> {
+    for marker in ["хочу в ", "поехали в ", "сходить в ", "заехать в "]
+    {
+        let Some(index) = lower.find(marker) else {
+            continue;
+        };
+        let rest = &lower[index + marker.len()..];
+        let phrase = rest
+            .split([',', '.', '!', '?', ';'])
+            .next()
+            .unwrap_or("")
+            .split(" и ")
+            .next()
+            .unwrap_or("")
+            .trim();
+        let first = phrase.split_whitespace().next().unwrap_or("");
+        if phrase.chars().count() >= 3 && phrase.chars().count() <= 60 && !generic_venue_word(first)
+        {
+            return vec![phrase.to_string()];
+        }
+    }
+    // A distinctive name without a preposition is still worth geocoding.
+    for word in lower.split(|c: char| !c.is_alphabetic()) {
+        if word.starts_with("докерпаб") {
+            return vec![word.to_string()];
+        }
+    }
+    Vec::new()
+}
+
+fn generic_venue_word(word: &str) -> bool {
+    matches!(
+        word,
+        "бар"
+            | "бары"
+            | "баров"
+            | "клуб"
+            | "клубы"
+            | "клубов"
+            | "ресторан"
+            | "рестораны"
+            | "кафе"
+            | "кофейня"
+            | "пиццерия"
+            | "музей"
+            | "музеи"
+            | "пляж"
+            | "пляжи"
+            | "парк"
+            | "парки"
+            | "озеро"
+            | "река"
+            | "природа"
+            | "город"
+            | "центр"
+            | "достопримечательности"
+            | "еда"
+            | "еду"
+    ) || word.starts_with("пицц")
+        || word.starts_with("владивост")
+        || word.starts_with("находк")
+        || word.starts_with("уссурийск")
+        || word.starts_with("арсеньев")
+        || word.starts_with("дальнегорск")
+        || word.starts_with("славянк")
+}
+
 fn is_travel_action(lower: &str) -> bool {
     const ACTIONS: &[&str] = &[
         "поехать",
@@ -596,6 +692,20 @@ fn is_travel(lower: &str) -> bool {
         "поезд",
         "поехать",
         "поездк",
+        "прогул",
+        "поесть",
+        "пицц",
+        "ресторан",
+        "кафе",
+        "кино",
+        "театр",
+        "концерт",
+        "рын",
+        "одежд",
+        "магазин",
+        "торгов",
+        "молл",
+        "еда",
         "путешеств",
         "выходн",
         "маршрут",
@@ -832,6 +942,20 @@ mod tests {
         let bars = parse("Хочу увидеть барса в Приморье", today()).unwrap();
         assert!(!bars.interests.iter().any(|item| item == "nightlife"));
         assert!(!is_travel_action("расскажи про культуру"));
+    }
+
+    #[test]
+    fn food_and_venue_requests_are_understood() {
+        let food = parse("Хочу прогуляться и поесть пиццы", today()).unwrap();
+        assert!(food.interests.iter().any(|item| item == "food"));
+        assert!(food.must_see.is_empty());
+
+        let venue = parse("я хочу в докерпаб находки", today()).unwrap();
+        assert_eq!(venue.must_see, vec!["докерпаб находки".to_string()]);
+
+        let bars = parse("поехали в бары и клубы владивостока", today()).unwrap();
+        assert!(bars.must_see.is_empty());
+        assert!(bars.interests.iter().any(|item| item == "nightlife"));
     }
 
     #[test]

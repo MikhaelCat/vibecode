@@ -7,7 +7,7 @@ use serde_json::{json, Value};
 use crate::domain::dates::{add_days, next_saturday, today_vladivostok};
 use crate::domain::geo::haversine_km;
 use crate::domain::intent::{Intent, Pace, TransportMode};
-use crate::domain::plan::{DayDraft, ItemDraft, ItemKind, PlanDraft};
+use crate::domain::plan::{slot_times, DayDraft, ItemDraft, ItemKind, PlanDraft};
 use crate::domain::trace::TokenUsage;
 use crate::llm::{ChatRequest, ChatResponse, LlmClient, LlmError, LlmToolCall};
 
@@ -66,13 +66,23 @@ impl LlmClient for MockLlm {
                     "search_places",
                     json!({
                         "area": area.clone(),
-                        "categories": ["nature", "museum", "viewpoint", "park", "beach", "lake", "river"],
-                        "limit": 20
+                        "categories": categories_from_interests(&intent),
+                        "limit": 30
                     })
                     .to_string(),
                 ),
                 LlmToolCall::new(self.call_id(), "get_weather", weather_args.to_string()),
                 LlmToolCall::new(self.call_id(), "find_lodging", lodging_args.to_string()),
+                LlmToolCall::new(
+                    self.call_id(),
+                    "find_events",
+                    json!({
+                        "area": area.clone(),
+                        "start_date": intent.start_date.to_string(),
+                        "end_date": intent.end_date.to_string()
+                    })
+                    .to_string(),
+                ),
             ];
             if intent.transport == TransportMode::Transit {
                 calls.push(LlmToolCall::new(
@@ -287,7 +297,13 @@ fn select_places(mut places: Vec<MockPlace>, intent: &Intent, rainy: bool) -> Ve
         // No verified indoor option means an empty day, not an unsafe outdoor plan.
         places = indoor;
     }
-    let base = (43.1155, 131.8855);
+    let base = if places.is_empty() {
+        (43.1155, 131.8855)
+    } else {
+        let lat = places.iter().map(|place| place.lat).sum::<f64>() / places.len() as f64;
+        let lon = places.iter().map(|place| place.lon).sum::<f64>() / places.len() as f64;
+        (lat, lon)
+    };
     let radius_km = match intent.transport {
         TransportMode::Foot => 20.0,
         TransportMode::Bike => 50.0,
@@ -302,13 +318,50 @@ fn select_places(mut places: Vec<MockPlace>, intent: &Intent, rainy: bool) -> Ve
     if !nearby.is_empty() {
         places = nearby;
     }
-    places.sort_by(|a, b| {
-        haversine_km(base, (a.lat, a.lon))
-            .partial_cmp(&haversine_km(base, (b.lat, b.lon)))
-            .unwrap_or(std::cmp::Ordering::Equal)
+    places.sort_by(|left, right| {
+        let left_match = matches_interest(left, intent);
+        let right_match = matches_interest(right, intent);
+        right_match.cmp(&left_match).then_with(|| {
+            haversine_km(base, (left.lat, left.lon))
+                .partial_cmp(&haversine_km(base, (right.lat, right.lon)))
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
     });
-    places.truncate(21);
+    places.truncate(30);
     places
+}
+
+fn matches_interest(place: &MockPlace, intent: &Intent) -> bool {
+    let name = place.name.to_lowercase();
+    if intent
+        .must_see
+        .iter()
+        .any(|venue| !venue.is_empty() && name.contains(&venue.to_lowercase()))
+    {
+        return true;
+    }
+    let kind = place.kind.as_str();
+    intent
+        .interests
+        .iter()
+        .any(|interest| match interest.as_str() {
+            "food" => kind == "food",
+            "nightlife" => matches!(kind, "bar" | "club"),
+            "nature" => matches!(
+                kind,
+                "nature" | "park" | "beach" | "lake" | "river" | "viewpoint"
+            ),
+            "sea" | "beach" => matches!(kind, "beach" | "nature" | "lake" | "river"),
+            "museum" | "history" => matches!(kind, "museum" | "historic"),
+            "cinema" => kind == "cinema",
+            "theater" => kind == "theater",
+            "concert" => matches!(kind, "theater" | "sight"),
+            "market" => kind == "market",
+            "clothes" | "shopping" => matches!(kind, "shop" | "market"),
+            "mountains" => matches!(kind, "nature" | "viewpoint"),
+            "fishing" => matches!(kind, "beach" | "nature" | "viewpoint"),
+            _ => false,
+        })
 }
 
 fn collect_lodging(messages: &[crate::llm::LlmMessage], need_lodging: bool) -> Vec<String> {
@@ -358,17 +411,14 @@ fn build_draft(intent: &Intent, places: &[MockPlace], lodging_ids: &[String]) ->
                 break;
             };
             used.insert(place.id.clone());
-            let (start, end) = if slot == 0 {
-                ("10:00:00", "12:00:00")
-            } else {
-                ("14:00:00", "16:00:00")
-            };
+            let kind = kind_from_label(&place.kind);
+            let (start, end) = slot_times(kind, slot);
             items.push(ItemDraft {
                 place_id: place.id.clone(),
                 name: place.name.clone(),
-                kind: kind_from_label(&place.kind),
-                start: crate::domain::plan::parse_time(start),
-                end: crate::domain::plan::parse_time(end),
+                kind,
+                start,
+                end,
                 note: None,
             });
         }
@@ -396,11 +446,56 @@ fn kind_from_label(label: &str) -> ItemKind {
         "beach" => ItemKind::Beach,
         "lake" => ItemKind::Lake,
         "river" => ItemKind::River,
+        "cinema" => ItemKind::Cinema,
+        "theater" => ItemKind::Theater,
+        "market" => ItemKind::Market,
+        "shop" => ItemKind::Shop,
         "food" => ItemKind::Food,
         "bar" => ItemKind::Bar,
         "club" => ItemKind::Club,
         _ => ItemKind::Sight,
     }
+}
+
+fn categories_from_interests(intent: &Intent) -> Vec<String> {
+    let mut categories: Vec<String> = Vec::new();
+    for interest in &intent.interests {
+        let wanted: &[&str] = match interest.as_str() {
+            "food" => &["restaurant", "cafe"],
+            "nightlife" => &["bar", "club"],
+            "nature" => &["nature", "park", "beach"],
+            "sea" | "beach" => &["beach", "nature"],
+            "museum" | "history" => &["museum", "historic"],
+            "cinema" => &["cinema"],
+            "theater" => &["theater"],
+            "concert" => &["theatre", "arts_centre"],
+            "market" => &["marketplace"],
+            "clothes" => &["clothes"],
+            "shopping" => &["clothes", "mall", "department_store", "shoes"],
+            "mountains" => &["nature", "viewpoint"],
+            "fishing" => &["beach", "nature", "viewpoint"],
+            _ => &[],
+        };
+        categories.extend(wanted.iter().map(|category| (*category).to_string()));
+    }
+    if categories.is_empty() {
+        categories.extend(
+            [
+                "nature",
+                "museum",
+                "viewpoint",
+                "park",
+                "beach",
+                "lake",
+                "river",
+            ]
+            .iter()
+            .map(|category| (*category).to_string()),
+        );
+    }
+    categories.sort();
+    categories.dedup();
+    categories
 }
 
 fn estimate_usage(messages: &[crate::llm::LlmMessage], completion: u32) -> TokenUsage {
