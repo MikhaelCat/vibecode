@@ -323,7 +323,8 @@ async fn osm_map_places(
     if wanted.is_empty() {
         return None;
     }
-    for span in [0.004_f64, 0.002] {
+    let mut last = Vec::new();
+    for span in [0.008_f64, 0.004, 0.016] {
         let bbox = format!(
             "{:.5},{:.5},{:.5},{:.5}",
             area.lon - span * 1.2,
@@ -332,7 +333,7 @@ async fn osm_map_places(
             area.lat + span
         );
         let url = format!("https://api.openstreetmap.org/api/0.6/map?bbox={bbox}");
-        let response = tokio::time::timeout(
+        let Some(response) = tokio::time::timeout(
             Duration::from_secs(6),
             ctx.http
                 .get(&url)
@@ -340,18 +341,23 @@ async fn osm_map_places(
                 .send(),
         )
         .await
-        .ok()?
-        .ok()?;
-        if response.status().as_u16() == 400 {
+        .ok()
+        .and_then(Result::ok) else {
+            continue;
+        };
+        if !response.status().is_success() {
             continue;
         }
-        if !response.status().is_success() {
-            return None;
+        let Ok(xml) = response.text().await else {
+            continue;
+        };
+        let places = parse_osm_map(&xml, area, &wanted, limit);
+        if !places.is_empty() {
+            return Some(places);
         }
-        let xml = response.text().await.ok()?;
-        return Some(parse_osm_map(&xml, area, &wanted, limit));
+        last = places;
     }
-    None
+    Some(last)
 }
 
 fn parse_osm_map(xml: &str, area: &geo::Area, wanted: &[String], limit: usize) -> Vec<Value> {
