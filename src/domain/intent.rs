@@ -84,6 +84,13 @@ impl Intent {
                 .and_then(|value| value.trim().parse().ok())
         })
     }
+
+    pub fn city(&self) -> Option<&str> {
+        self.assumptions
+            .iter()
+            .find_map(|item| item.strip_prefix("город: ").map(str::trim))
+            .filter(|value| !value.is_empty())
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -213,6 +220,9 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
         || lower.contains("дети");
     if let Some(per_day) = parse_per_day(&lower) {
         assumptions.push(format!("точек в день: {per_day}"));
+    }
+    if let Some(city) = parse_city(&lower) {
+        assumptions.push(format!("город: {city}"));
     }
 
     let words: Vec<&str> = lower
@@ -541,6 +551,10 @@ fn word_to_number(word: &str) -> Option<u8> {
         "семь" | "семи" => Some(7),
         _ => None,
     }
+}
+
+fn parse_city(lower: &str) -> Option<&'static str> {
+    crate::domain::settlements::find_in_text(lower).map(|settlement| settlement.name.as_str())
 }
 
 fn parse_per_day(lower: &str) -> Option<u8> {

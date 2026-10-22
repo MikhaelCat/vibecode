@@ -345,34 +345,14 @@ pub fn plan_events_for_day(
     events
 }
 
-/// Nearest poster city for a plan point. Used after the plan is built to load
+pub fn city_center(name: &str) -> Option<(f64, f64)> {
+    crate::domain::settlements::center(name)
+}
+
+/// Nearest settlement for a plan point. Used after the plan is built to load
 /// events for every city the plan actually visits.
 pub fn city_for_point(lat: f64, lon: f64) -> Option<&'static str> {
-    const CITIES: &[(&str, f64, f64)] = &[
-        ("Владивосток", 43.1155, 131.8855),
-        ("Находка", 42.8169, 132.8892),
-        ("Уссурийск", 43.7992, 131.9495),
-        ("Большой Камень", 43.1175, 132.354),
-        ("Артём", 43.355, 132.19),
-        ("Спасск", 44.6, 132.82),
-        ("Партизанск", 43.12, 133.12),
-        ("Арсеньев", 44.1662, 133.2702),
-        ("Дальнегорск", 44.566, 135.618),
-        ("Лесозаводск", 45.466, 133.4),
-        ("Фокино", 42.97, 132.4),
-        ("Кавалерово", 44.27, 135.05),
-        ("Черниговка", 44.35, 132.57),
-    ];
-    CITIES
-        .iter()
-        .map(|(name, city_lat, city_lon)| (*name, haversine_km((lat, lon), (*city_lat, *city_lon))))
-        .filter(|(_, distance)| *distance <= 30.0)
-        .min_by(|left, right| {
-            left.1
-                .partial_cmp(&right.1)
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-        .map(|(name, _)| name)
+    crate::domain::settlements::nearest(lat, lon).map(|settlement| settlement.name.as_str())
 }
 
 fn item_kind(fact: Option<&PlaceFact>, fallback: ItemKind) -> ItemKind {
@@ -458,6 +438,18 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
             if fact.is_some_and(|place| !on_land(place.lat, place.lon)) {
                 outside_items += 1;
                 continue;
+            }
+
+            // When the query names a single city, drop everything else so
+            // the plan does not pull Nakhodka stops into a Vladivostok tour.
+            if let Some(city) = intent.city() {
+                if let Some(center) = city_center(city) {
+                    if fact.is_some_and(|place| haversine_km((place.lat, place.lon), center) > 30.0)
+                    {
+                        outside_items += 1;
+                        continue;
+                    }
+                }
             }
 
             if !item_draft.place_id.is_empty() && !seen_ids.insert(item_draft.place_id.clone()) {

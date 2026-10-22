@@ -73,6 +73,11 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
         // market. If there are too few matches, show fewer points and events.
         places.retain(|place| matches_request(place, intent));
     }
+    if let Some(city) = intent.city() {
+        if let Some(center) = crate::domain::plan::city_center(city) {
+            places.retain(|place| haversine_km(center, (place.lat, place.lon)) <= 30.0);
+        }
+    }
 
     let target_per_day = intent.per_day().map(|count| count.min(20) as usize);
     let mut used = std::collections::HashSet::new();

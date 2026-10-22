@@ -318,6 +318,11 @@ fn select_places(mut places: Vec<MockPlace>, intent: &Intent, rainy: bool) -> Ve
     if !nearby.is_empty() {
         places = nearby;
     }
+    if let Some(city) = intent.city() {
+        if let Some(center) = crate::domain::plan::city_center(city) {
+            places.retain(|place| haversine_km(center, (place.lat, place.lon)) <= 30.0);
+        }
+    }
     places.sort_by(|left, right| {
         let left_match = matches_interest(left, intent);
         let right_match = matches_interest(right, intent);

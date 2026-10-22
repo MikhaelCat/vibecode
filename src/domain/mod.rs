@@ -11,6 +11,7 @@ pub mod fallback;
 pub mod geo;
 pub mod intent;
 pub mod plan;
+pub mod settlements;
 pub mod trace;
 pub mod validate;
 

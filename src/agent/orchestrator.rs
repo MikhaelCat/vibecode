@@ -857,34 +857,12 @@ fn truncate(value: &str, max: usize) -> String {
 }
 
 fn event_areas_for_query(query: &str) -> Vec<&'static str> {
-    let query = query.to_lowercase();
-    let mut areas = Vec::new();
-    if query.contains("владивост") || query.contains("русск") {
-        areas.push("Владивосток");
-    }
-    if query.contains("находк") {
-        areas.push("Находка");
-    }
-    if query.contains("арсеньев") {
-        areas.push("Арсеньев");
-    }
-    if query.contains("уссурийск") || query.contains("ussuriisk") {
-        areas.push("Уссурийск");
-    }
-    if query.contains("больш") && query.contains("камен") {
-        areas.push("Большой Камень");
-    }
-    if query.contains("артем") || query.contains("артём") || query.contains("artem") {
-        areas.push("Артём");
-    }
-    if query.contains("спасск") {
-        areas.push("Спасск");
-    }
-    if query.contains("партизанск") {
-        areas.push("Партизанск");
-    }
+    let mut areas: Vec<&'static str> = crate::domain::settlements::find_all_in_text(query)
+        .into_iter()
+        .map(|settlement| settlement.name.as_str())
+        .collect();
     if areas.is_empty() {
-        if query.contains("примор") {
+        if query.to_lowercase().contains("примор") {
             areas.extend(["Владивосток", "Находка", "Уссурийск"]);
         } else {
             // A query without a city still starts in Vladivostok in the
@@ -905,6 +883,10 @@ fn enforce_search_intent(name: &str, args: &mut Value, intent: &Intent) {
     let Some(object) = args.as_object_mut() else {
         return;
     };
+    // A single named city must win over any area the model picked.
+    if let Some(city) = intent.city() {
+        object.insert("area".to_string(), json!(city));
+    }
     let wanted = search_categories(intent);
     if !wanted.is_empty() {
         let current: Vec<String> = object
