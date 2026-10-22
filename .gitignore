@@ -24,3 +24,6 @@ __pycache__/
 # Local agent/runtime state
 .mimosa/
 .v2c/
+
+# Local build toolchain (MinGW/WinLibs downloaded to build on Windows)
+.tools/

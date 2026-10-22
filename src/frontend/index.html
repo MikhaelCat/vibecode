@@ -57,15 +57,23 @@
           <div class="controls">
             <label class="field"><span>Дата начала</span><input id="start_date" type="date" required></label>
             <label class="field"><span>Дата конца</span><input id="end_date" type="date" required></label>
-            <label class="field"><span>Транспорт</span>
-              <select id="transport">
-                <option value="">Автомобиль (по умолчанию)</option>
+            <div class="field field-transport">
+              <span id="transport-label">Транспорт</span>
+              <select id="transport" class="sr-only" tabindex="-1" aria-labelledby="transport-label">
+                <option value="">Из запроса</option>
                 <option value="car">Автомобиль</option>
                 <option value="foot">Пешком</option>
                 <option value="bike">Велосипед</option>
                 <option value="transit">Автобус / поезд</option>
               </select>
-            </label>
+              <div class="transport-group" role="radiogroup" aria-labelledby="transport-label">
+                <button type="button" class="transport-opt" data-value="" aria-pressed="true">Как в тексте</button>
+                <button type="button" class="transport-opt" data-value="car" aria-pressed="false">Авто</button>
+                <button type="button" class="transport-opt" data-value="foot" aria-pressed="false">Пешком</button>
+                <button type="button" class="transport-opt" data-value="bike" aria-pressed="false">Велосипед</button>
+                <button type="button" class="transport-opt" data-value="transit" aria-pressed="false">Автобус</button>
+              </div>
+            </div>
           </div>
           <p class="hint">Если транспорт не выбран, по умолчанию — автомобиль. Если в тексте явно указано «пешком» или «велосипед», используем его. Даты из формы главнее текста.</p>
 
@@ -165,19 +173,48 @@
 <footer class="foot">
   <div class="foot-brand">
     <div class="brand"><span class="brand-mark" aria-hidden="true"></span>vibecode</div>
-    <p>AI-планировщик поездок по Приморскому краю. Координаты, погода и маршруты — из открытых источников; жильё и расписания проверяйте перед выездом.</p>
+    <p>Умный помощник для путешествий по Приморью. Помогает открывать бухты, маяки и заповедные места без долгого планирования.</p>
   </div>
   <div class="foot-col">
-    <h3>Данные</h3>
-    <p>OpenStreetMap (ODbL)<br>Open-Meteo (CC BY 4.0)<br>OSRM</p>
+    <h3>Что внутри</h3>
+    <p>Проверенные карты и координаты<br>Точный прогноз погоды<br>Честное время в дороге</p>
   </div>
   <div class="foot-col">
-    <h3>Границы</h3>
-    <p>Только Приморский край.<br>Поездки на 1–7 дней.<br>Без бронирования и оплаты.</p>
+    <h3>О поездках</h3>
+    <p>Маршруты на 1–7 дней<br>На машине, велосипеде или пешком<br>Без навязчивой рекламы и оплат</p>
   </div>
 </footer>
 
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <script src="app.js"></script>
+<script>
+/* Сегментированный выбор транспорта: синхронизирует скрытый #transport,
+   который читает app.js, и шлёт change, чтобы обновилась подсказка. */
+(function () {
+  var select = document.getElementById('transport');
+  var group = document.querySelector('.transport-group');
+  if (!select || !group) return;
+  var opts = group.querySelectorAll('.transport-opt');
+
+  function sync() {
+    for (var i = 0; i < opts.length; i++) {
+      var on = opts[i].dataset.value === select.value;
+      opts[i].classList.toggle('active', on);
+      opts[i].setAttribute('aria-pressed', String(on));
+    }
+  }
+
+  group.addEventListener('click', function (e) {
+    var btn = e.target.closest('.transport-opt');
+    if (!btn) return;
+    select.value = btn.dataset.value;
+    sync();
+    select.dispatchEvent(new Event('change', { bubbles: true }));
+  });
+
+  select.addEventListener('change', sync);
+  sync();
+})();
+</script>
 </body>
 </html>
