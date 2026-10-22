@@ -45,9 +45,12 @@ src/
 ### Карта
 
 Маркер создаётся только для конечных координат внутри Приморья
-(`42.2…48.5`, `130.0…139.1`). Точки `(0,0)`, неизвестные места и центроиды
-водоёмов не попадают на карту: озёра и реки используются как районы поиска, а
-точки выбираются на берегу. Бары и клубы ищутся только по явному запросу.
+(`42.2…48.5`, `130.0…139.1`). Бэкенд дополнительно проверяет сушу: точки в
+бухтах, озёрах и море отбрасываются (`domain::geo::on_land`), а берег имеет
+допуск ~200 м, чтобы пляжи, мысы и пирсы оставались в плане. Озёра и реки
+используются как районы поиска, точки выбираются на берегу. Бары и клубы
+ищутся только по явному запросу. Линия маршрута дня рисуется фронтендом по
+геометрии OSRM и не попадает в контекст LLM.
 
 ## Быстрый старт
 
@@ -69,6 +72,7 @@ npm --prefix src/frontend run build
 cargo test --all-targets
 cargo clippy --all-targets -- -D warnings
 bash scripts/qa.sh            # mock-сервер, smoke, браузерный тест
+bash scripts/docker_smoke.sh  # сборка образа и проверка контейнера
 ```
 
 ## LLM
@@ -98,10 +102,12 @@ bash scripts/qa.sh            # mock-сервер, smoke, браузерный �
 | Маршруты | OSRM | расчёт по прямой |
 | События | VL.ru (JSON-LD) | пустой список |
 | Жильё | OSM + локальный справочник | `data/mock/lodging.json` |
+| Суша и границы | OSM Nominatim (граница края) + GSHHS (суша) | bbox края |
 
 `data/mock` — единственный источник локальных заглушек. Живые данные
 помечаются `source: live`, fallback — `mock`/`stale`; валидатор не выдаёт
-непроверенную погоду за прогноз.
+непроверенную погоду за прогноз. Геоданные лежат в `data/geo/`: граница края
+из OSM и суша из GSHHS, источники и лицензии — в `data/geo/README.md`.
 
 ## API
 
@@ -128,11 +134,27 @@ SSE-события: `stage`, `intent`, `tool_call`, `tool_result`, `plan`,
 ## Docker и деплой
 
 ```bash
+cp .env.example .env          # без ключей включится MockLlm
 docker compose up --build -d
 curl -fsS http://127.0.0.1:8080/api/health
 ```
 
-- `deploy/Dockerfile` — multi-stage сборка, non-root пользователь.
+Если compose-плагина нет:
+
+```bash
+docker build -f deploy/Dockerfile -t travel-ai:local .
+docker run -d --name travel-ai --env-file .env -p 8080:8080 \
+  -v travel-ai-data:/var/lib/travel-ai travel-ai:local
+# без ключей: docker run ... -e MOCK_LLM=1 ...
+```
+
+Проверка образа целиком (build, запуск, health, sync, SSE, SPA):
+
+```bash
+bash scripts/docker_smoke.sh
+```
+
+- `deploy/Dockerfile` — multi-stage сборка, зависимости кэшируются отдельным слоем, non-root пользователь.
 - `docker-compose.yml` — приложение, Redis, volume для SQLite.
 - `deploy/install.sh` + `deploy/travel-ai.service` — установка на VM.
 - CI (`.github/workflows/ci.yml`) гоняет fmt, clippy, тесты и собирает образ.

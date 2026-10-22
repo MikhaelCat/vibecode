@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
-use crate::domain::geo::{haversine_km, in_primorye, waterbody_title};
+use crate::domain::geo::{haversine_km, on_land, waterbody_title};
 use crate::tools::providers::{fallback_places, geo, limit_from, load_mock};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
@@ -326,7 +326,7 @@ fn parse_elements(value: &Value, area: &geo::Area, limit: usize) -> Vec<Value> {
         let (Some(lat), Some(lon)) = (lat, lon) else {
             continue;
         };
-        if !in_primorye(lat, lon) {
+        if !on_land(lat, lon) {
             continue;
         }
         let element_type = element
@@ -594,6 +594,7 @@ fn local_places(
                 return false;
             };
             !waterbody_title(name)
+                && on_land(lat, lon)
                 && haversine_km((area.lat, area.lon), (lat, lon)) <= 60.0
                 && matches_categories(place.get("kind").and_then(Value::as_str), categories)
         })
@@ -703,7 +704,7 @@ async fn wikipedia_places(ctx: &ToolCtx, lat: f64, lon: f64, limit: usize) -> Op
         ) else {
             continue;
         };
-        if !in_primorye(lat, lon) {
+        if !on_land(lat, lon) {
             continue;
         }
         places.push(json!({

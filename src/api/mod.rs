@@ -42,6 +42,12 @@ pub struct AppState {
 pub fn router(state: AppState) -> Router {
     let web_dir = state.cfg.web_dir.clone();
     let index = web_dir.join("index.html");
+    if !index.exists() {
+        tracing::error!(
+            path = %index.display(),
+            "frontend index.html is missing; run `just web` or set WEB_DIR"
+        );
+    }
 
     Router::new()
         .route("/api/plan", post(plan_sse))
@@ -79,11 +85,15 @@ async fn plan_sse(
     let orchestrator = state.orchestrator.clone();
     tokio::spawn(async move {
         let _permit = permit;
-        let run = tokio::time::timeout(
-            Duration::from_secs(120),
-            orchestrator.execute_with(query, Some(tx.clone()), overrides),
-        )
-        .await;
+        let run = tokio::select! {
+            run = tokio::time::timeout(
+                Duration::from_secs(120),
+                orchestrator.execute_with(query, Some(tx.clone()), overrides),
+            ) => run,
+            // The browser tab closed: drop the run instead of spending
+            // tokens on a stream nobody reads.
+            _ = tx.closed() => return,
+        };
         if run.is_err() {
             // The orchestrator was dropped mid-run. Tell the client why the
             // stream ends and close it; do not fabricate a plan.
@@ -170,14 +180,17 @@ async fn health(State(state): State<AppState>) -> Json<Value> {
     }))
 }
 
-async fn stats(State(state): State<AppState>) -> Json<Value> {
-    Json(state.store.stats_today().await)
+async fn stats(State(state): State<AppState>, headers: HeaderMap) -> Result<Json<Value>, ApiError> {
+    check_auth(&state, &headers)?;
+    Ok(Json(state.store.stats_today().await))
 }
 
 async fn run_by_id(
     State(state): State<AppState>,
+    headers: HeaderMap,
     Path(id): Path<String>,
 ) -> Result<Json<Value>, ApiError> {
+    check_auth(&state, &headers)?;
     match state.store.get_run(&id).await {
         Some(run) => Ok(Json(run)),
         None => Err(ApiError {

@@ -5,7 +5,7 @@ use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
 use crate::domain::geo::haversine_km;
-use crate::tools::providers::{fallback_fuel, load_mock, PRIMORYE_BBOX};
+use crate::tools::providers::{fallback_fuel, load_mock};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
 pub struct FuelTool;
@@ -39,8 +39,16 @@ impl Tool for FuelTool {
             .unwrap_or(30.0)
             .clamp(1.0, 100.0);
 
+        // Query only the route corridor. Asking for the whole krai and taking
+        // the first 30 nodes spends the Overpass quota on stations that are
+        // then discarded by `near_route`.
+        let pad = radius_km / 111.0;
+        let south = route.iter().map(|point| point.0).fold(f64::MAX, f64::min) - pad;
+        let north = route.iter().map(|point| point.0).fold(f64::MIN, f64::max) + pad;
+        let west = route.iter().map(|point| point.1).fold(f64::MAX, f64::min) - pad * 1.4;
+        let east = route.iter().map(|point| point.1).fold(f64::MIN, f64::max) + pad * 1.4;
         let query = format!(
-            "[out:json][timeout:10];node[\"amenity\"=\"fuel\"]({PRIMORYE_BBOX});out center 30;"
+            "[out:json][timeout:10];node[\"amenity\"=\"fuel\"]({south:.4},{west:.4},{north:.4},{east:.4});out 100;"
         );
         let _permit = crate::tools::providers::OVERPASS_SLOTS.acquire().await.ok();
         if let Ok(response) = ctx

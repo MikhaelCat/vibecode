@@ -253,7 +253,7 @@ impl Orchestrator {
 
         'agent: for step in 0..self.cfg.max_steps.max(1) {
             let llm_started = Instant::now();
-            let response = match self
+            let mut response = match self
                 .llm
                 .chat(ChatRequest {
                     messages: messages.clone(),
@@ -269,6 +269,13 @@ impl Orchestrator {
                     break 'agent;
                 }
             };
+            // Some OpenAI-compatible providers omit tool-call ids; the next
+            // request cannot reference such a call.
+            for call in &mut response.tool_calls {
+                if call.id.trim().is_empty() {
+                    call.id = uuid::Uuid::new_v4().to_string();
+                }
+            }
             usage.add(response.usage);
 
             let tool_names: Vec<String> = response
@@ -300,7 +307,7 @@ impl Orchestrator {
                 if let Some(content) = response.content {
                     messages.push(LlmMessage::assistant(content));
                 }
-                messages.push(LlmMessage::system(
+                messages.push(LlmMessage::user(
                     "Ты не вызвал инструмент. Вызови нужный тул или submit_plan, если данных достаточно.",
                 ));
                 continue;
@@ -400,10 +407,7 @@ impl Orchestrator {
                             facts.ingest(&name, &output);
                             tools_used.push(name.clone());
                             let compact = compact_tool_data(&name, &output.data);
-                            let content = truncate(
-                                &serde_json::to_string(&compact).unwrap_or_default(),
-                                12_000,
-                            );
+                            let content = json_for_model(&compact, 12_000);
                             trace.tool_calls.push(ToolCallTrace {
                                 id: call_id.clone(),
                                 name: name.clone(),
@@ -501,7 +505,7 @@ impl Orchestrator {
             if let Some(problem) = submit_problem.take() {
                 if repairs < self.cfg.max_repairs {
                     repairs += 1;
-                    messages.push(LlmMessage::system(problem));
+                    messages.push(LlmMessage::user(problem));
                     continue;
                 }
                 last_error = Some("plan validation failed after repairs".to_string());
@@ -509,7 +513,7 @@ impl Orchestrator {
             }
 
             if facts.enough_for_plan() {
-                messages.push(LlmMessage::system(
+                messages.push(LlmMessage::user(
                     "Данных достаточно. Вызови submit_plan с планом, используя только place_id из результатов инструментов.",
                 ));
             }
@@ -783,6 +787,59 @@ fn truncate(value: &str, max: usize) -> String {
     value.chars().take(max).collect()
 }
 
+/// Serialize a tool result for the model, shrinking arrays and strings until
+/// it fits. Unlike a raw character cut this never leaves broken JSON in the
+/// tool message.
+fn json_for_model(value: &Value, max_chars: usize) -> String {
+    let mut value = value.clone();
+    loop {
+        let text = serde_json::to_string(&value).unwrap_or_else(|_| "{}".to_string());
+        if text.chars().count() <= max_chars {
+            return text;
+        }
+        if !shrink_json(&mut value) {
+            return json!({
+                "truncated": true,
+                "note": "tool result too large; rely on the summary and existing facts"
+            })
+            .to_string();
+        }
+    }
+}
+
+fn shrink_json(value: &mut Value) -> bool {
+    match value {
+        Value::Array(items) => {
+            if items.len() > 1 {
+                items.truncate(items.len().div_ceil(2));
+                return true;
+            }
+            let mut changed = false;
+            for item in items.iter_mut() {
+                changed |= shrink_json(item);
+            }
+            changed
+        }
+        Value::Object(map) => {
+            let mut changed = false;
+            for item in map.values_mut() {
+                changed |= shrink_json(item);
+            }
+            changed
+        }
+        Value::String(text) => {
+            const MAX_TEXT: usize = 600;
+            if text.chars().count() > MAX_TEXT {
+                *text = text.chars().take(MAX_TEXT).collect::<String>() + "…";
+                true
+            } else {
+                false
+            }
+        }
+        _ => false,
+    }
+}
+
 /// Keep tool results small for the LLM context: only the fields the model needs
 /// to build a plan. Facts are ingested from the full output before this runs.
 fn compact_tool_data(name: &str, data: &Value) -> Value {
@@ -844,4 +901,25 @@ fn project_fields(item: &Value, fields: &[&str]) -> Value {
         );
     }
     Value::Object(object)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn oversized_tool_result_remains_valid_json() {
+        let value = json!({
+            "places": (0..500)
+                .map(|index| json!({"id": index, "name": "x".repeat(120)}))
+                .collect::<Vec<_>>()
+        });
+        let text = json_for_model(&value, 2_000);
+        assert!(
+            text.chars().count() <= 2_000,
+            "{} chars",
+            text.chars().count()
+        );
+        assert!(serde_json::from_str::<Value>(&text).is_ok());
+    }
 }

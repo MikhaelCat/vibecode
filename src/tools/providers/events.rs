@@ -29,7 +29,7 @@ impl Tool for EventsTool {
     }
 
     fn description(&self) -> &'static str {
-        "Живые события и мероприятия Владивостока из афиши VL.ru на даты поездки. Возвращает id, название, дату, место и ссылку."
+        "Живые события и мероприятия Владивостока из афиши VL.ru на даты поездки. Для других городов возвращает пустой список."
     }
 
     fn parameters(&self) -> Value {
@@ -51,6 +51,15 @@ impl Tool for EventsTool {
             .get("area")
             .and_then(Value::as_str)
             .unwrap_or("Владивосток");
+        // The poster is Vladivostok-only. Returning its events for a trip to
+        // Nakhodka or Ussuriysk would put the wrong city in the plan.
+        if !events_area_supported(area) {
+            return Ok(ToolOutput::ok(
+                json!({"events": [], "area": area}),
+                SourceKind::Stale,
+                format!("VL.ru: афиша доступна только для Владивостока — для «{area}» событий нет"),
+            ));
+        }
         let start = parse_date_arg(&args, "start_date").unwrap_or(ctx.intent.start_date);
         let end = parse_date_arg(&args, "end_date").unwrap_or(ctx.intent.end_date);
         if end < start {
@@ -97,6 +106,14 @@ fn parse_date_arg(args: &Value, key: &str) -> Option<NaiveDate> {
     args.get(key)
         .and_then(Value::as_str)
         .and_then(|value| NaiveDate::parse_from_str(value, "%Y-%m-%d").ok())
+}
+
+fn events_area_supported(area: &str) -> bool {
+    let area = area.to_lowercase();
+    area.is_empty()
+        || area.contains("владивост")
+        || area.contains("русск")
+        || area.contains("примор")
 }
 
 /// Extracts events from every JSON-LD block, keeps those overlapping
@@ -265,5 +282,13 @@ mod tests {
         let html = format!("{block}{block}");
         let date = NaiveDate::from_ymd_opt(2026, 10, 24).unwrap();
         assert_eq!(parse_events(&html, date, date).len(), 1);
+    }
+
+    #[test]
+    fn events_are_vladivostok_only() {
+        assert!(events_area_supported("Владивосток"));
+        assert!(events_area_supported("Русский остров"));
+        assert!(!events_area_supported("Находка"));
+        assert!(!events_area_supported("Уссурийск"));
     }
 }

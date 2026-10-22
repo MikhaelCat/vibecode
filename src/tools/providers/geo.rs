@@ -105,6 +105,10 @@ pub async fn nominatim(ctx: &ToolCtx, query: &str, limit: usize) -> Vec<Value> {
     }
 
     let limit_text = limit.to_string();
+    let viewbox = format!(
+        "{:.4},{:.4},{:.4},{:.4}",
+        PRIMORYE_BBOX.1, PRIMORYE_BBOX.2, PRIMORYE_BBOX.3, PRIMORYE_BBOX.0
+    );
     let response = match ctx
         .http
         .get("https://nominatim.openstreetmap.org/search")
@@ -113,7 +117,7 @@ pub async fn nominatim(ctx: &ToolCtx, query: &str, limit: usize) -> Vec<Value> {
             ("q", query),
             ("limit", limit_text.as_str()),
             ("countrycodes", "ru"),
-            ("viewbox", "130.0,48.5,139.1,42.2"),
+            ("viewbox", viewbox.as_str()),
             ("bounded", "1"),
             ("accept-language", "ru"),
         ])

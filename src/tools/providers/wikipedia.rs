@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
-use crate::domain::geo::{haversine_km, in_primorye, waterbody_title};
+use crate::domain::geo::{haversine_km, on_land, waterbody_title};
 use crate::tools::providers::places::{generic_title, kind_from_title};
 use crate::tools::providers::{fallback_places, load_mock};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
@@ -90,6 +90,7 @@ impl Tool for WikipediaTool {
                 };
                 let name = place.get("name").and_then(Value::as_str).unwrap_or("");
                 !waterbody_title(name)
+                    && on_land(place_lat, place_lon)
                     && haversine_km((lat, lon), (place_lat, place_lon)) <= radius_km
             })
             .take(8)
@@ -132,7 +133,7 @@ fn parse_geosearch(value: &Value) -> Vec<Value> {
         let Some(lon) = item.get("lon").and_then(Value::as_f64) else {
             continue;
         };
-        if !in_primorye(lat, lon) {
+        if !on_land(lat, lon) {
             continue;
         }
         let distance = item.get("dist").and_then(Value::as_f64).unwrap_or(0.0);

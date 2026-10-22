@@ -143,6 +143,32 @@ fn minimal_plan_from_facts_passes() {
 #[test]
 fn sochi_point_triggers_v01() {
     let intent = make_intent(date(2026, 10, 24), date(2026, 10, 24), 1);
+    let facts = facts_for(&intent);
+
+    // Build a valid plan, then move the point outside the region. This tests
+    // V01 directly; enrich would normally drop such a fact earlier.
+    let mut plan = one_day_plan(
+        &intent,
+        &facts,
+        "mock:place:oceanarium",
+        ItemKind::Sight,
+        None,
+    );
+    plan.days[0].items[0].lat = 43.5855;
+    plan.days[0].items[0].lon = 39.7231;
+    let report = validate(&plan, &facts, &intent);
+
+    let v01 = report
+        .hard_violations()
+        .find(|violation| violation.code == "V01")
+        .expect("V01 hard violation expected");
+    assert_eq!(v01.place_id.as_deref(), Some("mock:place:oceanarium"));
+    assert!(!report.hard_ok());
+}
+
+#[test]
+fn sochi_fact_is_dropped_before_validation() {
+    let intent = make_intent(date(2026, 10, 24), date(2026, 10, 24), 1);
     let mut facts = facts_for(&intent);
     facts.places.insert(
         "test:sochi".to_string(),
@@ -150,14 +176,11 @@ fn sochi_point_triggers_v01() {
     );
 
     let plan = one_day_plan(&intent, &facts, "test:sochi", ItemKind::Sight, None);
-    let report = validate(&plan, &facts, &intent);
-
-    let v01 = report
-        .hard_violations()
-        .find(|violation| violation.code == "V01")
-        .expect("V01 hard violation expected");
-    assert_eq!(v01.place_id.as_deref(), Some("test:sochi"));
-    assert!(!report.hard_ok());
+    assert_eq!(plan.all_items().count(), 0);
+    assert!(plan
+        .warnings
+        .iter()
+        .any(|warning| warning.code == "outside_region_skipped"));
 }
 
 #[test]

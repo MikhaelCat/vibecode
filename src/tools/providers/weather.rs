@@ -130,13 +130,23 @@ fn parse_days(value: &Value) -> Vec<Value> {
         let sunset = text_at(daily, "sunset", index)
             .and_then(|value| value.split('T').nth(1))
             .and_then(|time| time.get(..5).and_then(parse_time));
+        let (Some(temp_max), Some(temp_min), Some(precip_prob)) = (
+            number_at(daily, "temperature_2m_max", index),
+            number_at(daily, "temperature_2m_min", index),
+            number_at(daily, "precipitation_probability_max", index),
+        ) else {
+            // A missing temperature is not 0 °C and a missing probability is
+            // not a dry day. Drop the day so the caller can fall back.
+            continue;
+        };
+        let wind_max = number_at(daily, "wind_speed_10m_max", index).unwrap_or(0.0);
 
         days.push(json!({
             "date": date,
-            "precip_prob": number_at(daily, "precipitation_probability_max", index).unwrap_or(0.0),
-            "wind_max": number_at(daily, "wind_speed_10m_max", index).unwrap_or(0.0),
-            "temp_min": number_at(daily, "temperature_2m_min", index).unwrap_or(0.0),
-            "temp_max": number_at(daily, "temperature_2m_max", index).unwrap_or(0.0),
+            "precip_prob": precip_prob,
+            "wind_max": wind_max,
+            "temp_min": temp_min,
+            "temp_max": temp_max,
             "sunrise": sunrise.map(|time| time.format("%H:%M:%S").to_string()),
             "sunset": sunset.map(|time| time.format("%H:%M:%S").to_string())
         }));
@@ -226,6 +236,12 @@ fn parse_vlru_days(value: &Value, start: NaiveDate, end: NaiveDate) -> Vec<Value
             continue;
         }
         let description = day.get("description").and_then(Value::as_str).unwrap_or("");
+        let (Some(temp_min), Some(temp_max)) = (
+            day.get("temperature_low").and_then(Value::as_f64),
+            day.get("temperature_high").and_then(Value::as_f64),
+        ) else {
+            continue;
+        };
         let precipitation = day
             .get("precipitation")
             .and_then(Value::as_f64)
@@ -248,8 +264,8 @@ fn parse_vlru_days(value: &Value, start: NaiveDate, end: NaiveDate) -> Vec<Value
             "date": date,
             "precip_prob": precip_prob,
             "wind_max": day.get("wind_speed").and_then(Value::as_f64).unwrap_or(0.0),
-            "temp_min": day.get("temperature_low").and_then(Value::as_f64).unwrap_or(0.0),
-            "temp_max": day.get("temperature_high").and_then(Value::as_f64).unwrap_or(0.0),
+            "temp_min": temp_min,
+            "temp_max": temp_max,
             "sunrise": null,
             "sunset": null,
             "description": description

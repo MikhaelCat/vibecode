@@ -31,8 +31,6 @@ use std::path::Path;
 
 use serde_json::{json, Value};
 
-pub const PRIMORYE_BBOX: &str = "42.2,130.0,48.5,139.1";
-
 /// Overpass fair-use policy: at most two concurrent queries.
 pub static OVERPASS_SLOTS: tokio::sync::Semaphore = tokio::sync::Semaphore::const_new(2);
 

@@ -5,11 +5,21 @@ FROM rust:1-slim-bookworm AS builder
 WORKDIR /build
 
 COPY Cargo.toml Cargo.lock ./
+
+# Compile dependencies once in their own layer. This stub is replaced by the
+# real sources below, so application edits do not rebuild the dependency tree.
+RUN mkdir -p src \
+    && echo 'fn main() {}' > src/main.rs \
+    && echo '' > src/lib.rs \
+    && cargo build --release --lib \
+    && rm -rf src
+
+COPY src ./src
 COPY migrations ./migrations
 COPY data ./data
-COPY src ./src
 
-RUN cargo build --release \
+RUN touch src/lib.rs src/main.rs \
+    && cargo build --release \
     && mkdir -p src/frontend/dist \
     && cp src/frontend/index.html src/frontend/styles.css src/frontend/app.js src/frontend/dist/
 

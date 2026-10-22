@@ -99,8 +99,9 @@ impl Config {
             tool_timeout: Duration::from_secs(parse_u64("TOOL_TIMEOUT_SECS", 15)),
             max_query_chars: parse_usize("MAX_QUERY_CHARS", 1000),
             concurrent_runs: parse_usize("CONCURRENT_RUNS", 4).max(1),
-            nominatim_user_agent: env::var("NOMINATIM_USER_AGENT")
-                .unwrap_or_else(|_| "travel-ai-hackathon/0.1 (team@example.com)".to_string()),
+            nominatim_user_agent: env::var("NOMINATIM_USER_AGENT").unwrap_or_else(|_| {
+                "vibecode-travel-planner/1.0 (+https://github.com/MikhaelCat/vibecode)".to_string()
+            }),
             ors_api_key: non_empty(env::var("ORS_API_KEY").ok()),
             demo_mode: parse_bool("DEMO_MODE", false),
             mock_llm: parse_bool("MOCK_LLM", false),

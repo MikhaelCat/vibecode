@@ -6,7 +6,7 @@ use uuid::Uuid;
 
 use crate::domain::dates::{add_days, days_inclusive};
 use crate::domain::facts::{Facts, Lodging, PlaceFact, SourceKind, SourceRef};
-use crate::domain::geo::{haversine_km, travel_minutes, waterbody_title};
+use crate::domain::geo::{haversine_km, on_land, travel_minutes, waterbody_title};
 use crate::domain::intent::{Intent, TransportMode};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
@@ -263,6 +263,7 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
     let mut seen_places: Vec<(String, f64, f64)> = Vec::new();
     let mut duplicate_items = 0usize;
     let mut waterbody_items = 0usize;
+    let mut outside_items = 0usize;
     let mut date = intent.start_date;
 
     while date <= intent.end_date {
@@ -275,6 +276,14 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
             // geocoding and old cached tool results.
             if fact.is_some_and(|place| waterbody_title(&place.name)) {
                 waterbody_items += 1;
+                continue;
+            }
+
+            // A coordinate in a bay or in the sea cannot be a stop, even if
+            // the name looks like a place. This covers geocoding mistakes and
+            // stale cached tool results that bypassed the providers.
+            if fact.is_some_and(|place| !on_land(place.lat, place.lon)) {
+                outside_items += 1;
                 continue;
             }
 
@@ -366,6 +375,12 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
             code: "waterbody_skipped".to_string(),
             message: "Озёра и реки используются как районы поиска — их точки в воде не показаны"
                 .to_string(),
+        });
+    }
+    if outside_items > 0 {
+        warnings.push(Warning {
+            code: "outside_region_skipped".to_string(),
+            message: format!("Убрано точек вне Приморского края или в воде: {outside_items}"),
         });
     }
 

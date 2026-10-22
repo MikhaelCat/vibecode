@@ -13,7 +13,7 @@ use chrono::{Datelike, NaiveDate, NaiveTime, Weekday};
 use serde::{Deserialize, Serialize};
 
 use crate::domain::facts::Facts;
-use crate::domain::geo::in_primorye;
+use crate::domain::geo::on_land;
 use crate::domain::intent::{Intent, TransportMode};
 use crate::domain::plan::{parse_time, Plan};
 
@@ -121,11 +121,14 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
 
     // V01 — регион
     for item in plan.all_items() {
-        if !in_primorye(item.lat, item.lon) {
+        if !on_land(item.lat, item.lon) {
             violations.push(
-                Violation::hard("V01", format!("«{}» вне Приморского края", item.name))
-                    .with_place(&item.place_id)
-                    .with_hint("Уберите точку или замените на приморскую"),
+                Violation::hard(
+                    "V01",
+                    format!("«{}» вне Приморского края или в воде", item.name),
+                )
+                .with_place(&item.place_id)
+                .with_hint("Уберите точку или замените на приморскую"),
             );
         }
     }

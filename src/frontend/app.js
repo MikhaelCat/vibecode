@@ -5,9 +5,11 @@
    centroids and (0,0) are ignored so a pin can never land in the sea. */
 const API = '';
 const $ = (id) => document.getElementById(id);
-const esc = (s) => String(s ?? '').replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
 const MAX_DAYS = 7;
+// Must match PRIMORYE_BBOX in src/domain/geo.rs.
+const PRIMORYE_BBOX = { south: 42.2, west: 130.0, north: 48.5, east: 139.1 };
 const EXAMPLES = [
   'Хочу на выходные по Приморью на машине, не больше двух дней',
   'Один день у моря возле Владивостока, без долгих переездов',
@@ -48,7 +50,8 @@ function mapPoint(stop) {
   const lat = Number(stop.lat ?? stop.latitude);
   const lon = Number(stop.lon ?? stop.lng ?? stop.longitude);
   if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-  if (lat < 42.2 || lat > 48.5 || lon < 130.0 || lon > 139.1) return null;
+  if (lat < PRIMORYE_BBOX.south || lat > PRIMORYE_BBOX.north
+    || lon < PRIMORYE_BBOX.west || lon > PRIMORYE_BBOX.east) return null;
   if (Math.abs(lat) < 0.0001 && Math.abs(lon) < 0.0001) return null;
   if (waterName(stop.name)) return null;
   return [lat, lon];
@@ -68,6 +71,30 @@ let map = null;
 let layer = null;
 let markers = [];
 let mapTilesLoaded = false;
+let routeToken = 0;
+
+// Draw the day route along real roads. The geometry stays in the browser: it
+// is not part of the tool output and does not spend LLM tokens.
+async function drawRoute(points) {
+  const token = ++routeToken;
+  if (!layer || points.length < 2) return;
+  const path = points.map(([lat, lon]) => `${lon},${lat}`).join(';');
+  try {
+    const response = await fetch(
+      `https://router.project-osrm.org/route/v1/driving/${path}?overview=full&geometries=geojson`,
+    );
+    if (!response.ok || token !== routeToken) return;
+    const data = await response.json();
+    const geometry = data.routes?.[0]?.geometry;
+    if (geometry && layer && token === routeToken) {
+      L.geoJSON(geometry, {
+        style: { color: '#2f6f8f', weight: 4, opacity: 0.8 },
+      }).addTo(layer);
+    }
+  } catch (_) {
+    // A straight line would cross bays; no line is better than a wrong one.
+  }
+}
 
 function fitMap() {
   if (map) map.invalidateSize();
@@ -550,6 +577,7 @@ function renderDay() {
   if (points.length) {
     map.fitBounds(L.latLngBounds(points).pad(0.25), { maxZoom: 12 });
   }
+  drawRoute(points);
   $('map-caption').textContent = items.length
     ? `День ${day + 1} · ${items.length} ${items.length === 1 ? 'точка' : 'точки'}`
     : 'Приморский край · карта';
@@ -618,8 +646,8 @@ function renderLodging() {
   $('lodging').innerHTML = list.map((item, index) => {
     const kind = lodgingKindRu[item.kind] || item.kind || 'жильё';
     const price = item.price_per_night
-      ? `${Number(item.price_per_night).toLocaleString('ru-RU')} ₽`
-      : 'цена не указана';
+      ? `${Number(item.price_per_night).toLocaleString('ru-RU')} ₽<small>за ночь</small>`
+      : 'цена за ночь не указана';
     const tag = chosen.has(item.id) ? 'в плане' : (index === 0 ? 'рекомендация' : '');
     return `<article class="lodge${chosen.has(item.id) ? ' chosen' : ''}">
       <div class="lodge-top">
@@ -628,7 +656,7 @@ function renderLodging() {
       </div>
       <h3>${esc(item.name)}</h3>
       <p>${esc(item.settlement || 'Приморье')} · ${esc(kind)}</p>
-      <div class="lodge-price">${esc(price)}<small>за ночь</small></div>
+      <div class="lodge-price">${price}</div>
     </article>`;
   }).join('');
 }

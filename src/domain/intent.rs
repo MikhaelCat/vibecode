@@ -162,7 +162,7 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
 
     let explicit_day_count = parse_day_count(&lower);
     let mut max_days = explicit_period
-        .map(|(start, end)| (end - start).num_days() as u8 + 1)
+        .map(|(start, end)| ((end - start).num_days() + 1).min(i64::from(u8::MAX)) as u8)
         .or(explicit_day_count)
         .unwrap_or(2);
     if explicit_period.is_none() {
@@ -203,23 +203,33 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
         || lower.contains("ребен")
         || lower.contains("дети");
 
+    let words: Vec<&str> = lower
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|word| !word.is_empty())
+        .collect();
+    let prefix = |stem: &str| words.iter().any(|word| word.starts_with(stem));
+    let exact = |list: &[&str]| words.iter().any(|word| list.contains(word));
+    let checks = [
+        (prefix("природ"), "nature"),
+        (prefix("музе"), "museum"),
+        (prefix("мор"), "sea"),
+        (prefix("пляж"), "beach"),
+        (
+            exact(&["гор", "горы", "горах", "горам"]) || prefix("горн") || prefix("сопк"),
+            "mountains",
+        ),
+        (prefix("гастро") || exact(&["еда", "еду", "еды"]), "food"),
+        (prefix("истори"), "history"),
+        (prefix("рыбалк"), "fishing"),
+        (
+            exact(&["бар", "бары", "баров", "барах"]) || prefix("паб"),
+            "nightlife",
+        ),
+        (prefix("клуб") || prefix("ночн"), "nightlife"),
+    ];
     let mut interests = Vec::new();
-    for (needle, interest) in [
-        ("природ", "nature"),
-        ("музе", "museum"),
-        ("мор", "sea"),
-        ("пляж", "beach"),
-        ("гор", "mountains"),
-        ("гастро", "food"),
-        ("еда", "food"),
-        ("истори", "history"),
-        ("рыбалк", "fishing"),
-        ("бар", "nightlife"),
-        ("паб", "nightlife"),
-        ("клуб", "nightlife"),
-        ("ночн", "nightlife"),
-    ] {
-        if lower.contains(needle) && !interests.contains(&interest.to_string()) {
+    for (hit, interest) in checks {
+        if hit && !interests.contains(&interest.to_string()) {
             interests.push(interest.to_string());
         }
     }
@@ -503,7 +513,26 @@ fn parse_budget(lower: &str) -> Option<u32> {
         return None;
     }
     let thousands = lower.contains("тыс");
-    for token in lower.split_whitespace() {
+    let tokens: Vec<&str> = lower.split_whitespace().collect();
+    for (index, token) in tokens.iter().enumerate() {
+        // "5-8 ноября" is a date range, not 58 000 ₽.
+        if token.contains('-') || token.contains('–') {
+            continue;
+        }
+        let next = tokens.get(index + 1).copied().unwrap_or("");
+        // Skip durations and counts: in "на 3 дня, бюджет 30 тыс" the budget
+        // is 30 000, not 3 000.
+        if next.starts_with("дн")
+            || next.starts_with("ден")
+            || next.starts_with("сут")
+            || next.starts_with("ноч")
+            || next.starts_with("чел")
+            || next.starts_with("км")
+            || next.starts_with("час")
+            || month_number(next).is_some()
+        {
+            continue;
+        }
         let digits: String = token.chars().filter(|c| c.is_ascii_digit()).collect();
         if digits.is_empty() {
             continue;
@@ -522,6 +551,17 @@ fn parse_budget(lower: &str) -> Option<u32> {
 
 /// A concrete travel action, not just a place name. Used to reject off-topic
 /// requests that mention Primorye only as a prop ("анекдот про Владивосток").
+fn words(lower: &str) -> Vec<&str> {
+    lower
+        .split(|c: char| !c.is_alphabetic())
+        .filter(|word| !word.is_empty())
+        .collect()
+}
+
+fn word_matches(word: &str, needle: &str) -> bool {
+    word.starts_with(needle) || (needle.chars().count() >= 4 && word.contains(needle))
+}
+
 fn is_travel_action(lower: &str) -> bool {
     const ACTIONS: &[&str] = &[
         "поехать",
@@ -546,7 +586,9 @@ fn is_travel_action(lower: &str) -> bool {
         "ночёвк",
         "ночевк",
     ];
-    ACTIONS.iter().any(|word| lower.contains(word))
+    words(lower)
+        .iter()
+        .any(|word| ACTIONS.iter().any(|action| word_matches(word, action)))
 }
 
 fn is_travel(lower: &str) -> bool {
@@ -609,7 +651,10 @@ fn is_travel(lower: &str) -> bool {
         "клуб",
         "ночн",
     ];
-    WORDS.iter().any(|word| lower.contains(word))
+    let words = words(lower);
+    WORDS
+        .iter()
+        .any(|needle| words.iter().any(|word| word_matches(word, needle)))
 }
 
 fn is_injection(lower: &str) -> bool {
@@ -770,6 +815,23 @@ mod tests {
             NaiveDate::from_ymd_opt(2026, 10, 24).unwrap()
         );
         assert_eq!(intent.max_days, 2);
+    }
+
+    #[test]
+    fn budget_skips_dates_and_durations() {
+        assert_eq!(parse_budget("на 3 дня, бюджет 30 тыс"), Some(30_000));
+        assert_eq!(parse_budget("с 5-8 ноября, бюджет 40 тыс"), Some(40_000));
+        assert_eq!(parse_budget("бюджет 5000 рублей"), Some(5_000));
+    }
+
+    #[test]
+    fn interest_words_do_not_match_inside_other_words() {
+        let intent = parse("Хочу на выходные по Приморью", today()).unwrap();
+        assert!(!intent.interests.iter().any(|item| item == "sea"));
+        assert!(!intent.interests.iter().any(|item| item == "mountains"));
+        let bars = parse("Хочу увидеть барса в Приморье", today()).unwrap();
+        assert!(!bars.interests.iter().any(|item| item == "nightlife"));
+        assert!(!is_travel_action("расскажи про культуру"));
     }
 
     #[test]
