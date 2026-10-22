@@ -167,7 +167,6 @@ bash scripts/docker_smoke.sh
 - [API](docs/API.md) — контракт SSE и sync.
 - [UI](docs/UI.md) — экран и состояния.
 - [Замеры](docs/EVAL.md) — методология и результаты.
-- [Деплой](deploy/README.md) — VM, systemd, Docker.
 
 ## Лицензии
 
