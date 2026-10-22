@@ -162,12 +162,47 @@ fn settlement_label(lat: f64, lon: f64, requested: &str, distance_km: f64) -> St
         .filter(|name| !name.eq_ignore_ascii_case(requested));
     match nearest {
         Some(name) if distance_km > 10.0 => {
-            format!("{name} ({:.0} км от {requested})", distance_km)
+            format!("{name} ({:.0} км от {})", distance_km, genitive(requested))
         }
         Some(name) => name,
         None if distance_km > 10.0 => format!("{requested} ({:.0} км)", distance_km),
         None => requested.to_string(),
     }
+}
+
+/// "22 км от Южно-Морского", not "от Южно-Морской": a compact genitive for the
+/// place names users type. Only the endings settlements actually have.
+fn genitive(name: &str) -> String {
+    let lower = name.to_lowercase();
+    // Cyrillic letters are two bytes, so endings are trimmed by characters.
+    let trim = |count: usize| -> String {
+        let length = name.chars().count();
+        name.chars()
+            .take(length.saturating_sub(count))
+            .collect::<String>()
+    };
+    if lower.ends_with("ий") || lower.ends_with("ый") || lower.ends_with("ой") {
+        return format!("{}ого", trim(2));
+    }
+    if lower.ends_with("ия") || lower.ends_with("ея") {
+        return format!("{}и", trim(1));
+    }
+    if lower.ends_with("ие") || lower.ends_with("ье") {
+        return format!("{}я", trim(1));
+    }
+    if lower.ends_with("ка") || lower.ends_with("га") || lower.ends_with("ха") {
+        return format!("{}и", trim(1));
+    }
+    if lower.ends_with('а') || lower.ends_with('я') {
+        return format!("{}ы", trim(1));
+    }
+    if lower.ends_with('о') || lower.ends_with('е') {
+        return format!("{}а", trim(1));
+    }
+    if lower.ends_with('ь') || lower.ends_with('й') {
+        return format!("{}я", trim(1));
+    }
+    format!("{name}а")
 }
 
 /// "…в ближайшем городе: Находка" — what to do when the village has no hotels.
@@ -315,4 +350,34 @@ async fn overpass_lodging(ctx: &ToolCtx, area: &geo::Area) -> Vec<Value> {
         }));
     }
     options
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn genitive_reads_like_a_place_name() {
+        assert_eq!(genitive("Анисимовка"), "Анисимовки");
+        assert_eq!(genitive("Южно-Морской"), "Южно-Морского");
+        assert_eq!(genitive("Находка"), "Находки");
+        assert_eq!(genitive("Ливадия"), "Ливадии");
+        assert_eq!(genitive("Владивосток"), "Владивостока");
+        assert_eq!(genitive("Преображение"), "Преображения");
+        assert_eq!(genitive("Терней"), "Тернея");
+    }
+
+    #[test]
+    fn far_lodging_gets_the_distance_label() {
+        // Находка is ~20 km from Ливадия, so the label names both.
+        let label = settlement_label(42.8169, 132.8855, "Ливадия", 21.0);
+        assert!(label.contains("км от"), "{label}");
+        assert!(label.starts_with("Находка"), "{label}");
+    }
+
+    #[test]
+    fn nearby_lodging_keeps_the_place_name() {
+        let label = settlement_label(42.8607, 131.3924, "Славянка", 0.4);
+        assert_eq!(label, "Славянка");
+    }
 }
