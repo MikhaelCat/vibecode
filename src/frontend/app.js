@@ -71,34 +71,6 @@ function waterName(name) {
 }
 
 // ---------- маршрут и АЗС ----------
-const ROUTE_COLOR = '#0f766e';
-
-// A leg geometry arrives as a GeoJSON LineString serialized to a JSON string.
-// Both the GeoJSON object ({coordinates:[[lon,lat],...]}) and a bare array of
-// [lon,lat] pairs are accepted. Malformed values, short lines and any point
-// outside Primorye reject the whole line: a broken geometry draws nothing
-// instead of a line across (or out of) the map.
-function legLine(leg) {
-  let raw = leg && leg.geometry;
-  if (typeof raw === 'string') {
-    try { raw = JSON.parse(raw); } catch { return null; }
-  }
-  if (!raw || typeof raw !== 'object') return null;
-  const coords = Array.isArray(raw) ? raw : raw.coordinates;
-  if (!Array.isArray(coords) || coords.length < 2) return null;
-  const line = [];
-  for (const pair of coords) {
-    if (!Array.isArray(pair) || pair.length < 2) return null;
-    const lon = Number(pair[0]);
-    const lat = Number(pair[1]);
-    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
-    if (lat < PRIMORYE_BBOX.south || lat > PRIMORYE_BBOX.north
-      || lon < PRIMORYE_BBOX.west || lon > PRIMORYE_BBOX.east) return null;
-    line.push([lat, lon]);
-  }
-  return line;
-}
-
 // Fuel stations are an optional per-day extra (`day.fuel[]`); a missing or
 // malformed list simply means "no fuel markers". Prices only exist in the
 // demo fixture, so every price label is explicitly marked as demo.
@@ -125,7 +97,9 @@ function fuelPrices(station) {
 
 function fuelTooltipText(station) {
   const prices = fuelPrices(station);
-  const price = prices.length ? ` · ${prices[0][0]} ${prices[0][1]} ₽/л (демо)` : '';
+  const price = prices.length
+    ? ` · ${prices.map(([label, value]) => `${label} ${value}`).join(' · ')} ₽/л (демо)`
+    : '';
   return `${esc(fuelName(station))}${esc(price)}`;
 }
 
@@ -580,6 +554,9 @@ function renderPlan() {
   const transport = plan.transport || intent.transport;
   if (transport) meta.push(`<span class="pill">${esc(transportRu[transport] || transport)}</span>`);
   if (plan.total_km) meta.push(`<span class="pill">${(+plan.total_km).toFixed(0)} км</span>`);
+  if (plan.cost_estimate_rub) {
+    meta.push(`<span class="pill">≈ ${Number(plan.cost_estimate_rub).toLocaleString('ru-RU')} ₽ <small>демо</small></span>`);
+  }
   for (const weather of (plan.weather || []).slice(0, 3)) {
     meta.push(`<span class="pill pill-weather">${esc(fmtDate(weather.date))} · ${esc(weather.t_min ?? '')}…${esc(weather.t_max ?? '')}° · ${esc(weather.desc || '')}</span>`);
   }
@@ -675,21 +652,8 @@ function dayMapLayers(current, index) {
   const items = planItems(current);
   const legs = current.legs || [];
   const group = L.layerGroup();
-  // Route geometry of the day first: Leaflet keeps paths in the overlay pane,
-  // below the marker pane, so the line is drawn under both marker types.
-  // A leg without usable geometry draws nothing.
-  legs.forEach((leg) => {
-    const line = legLine(leg);
-    if (!line) return;
-    L.polyline(line, {
-      color: ROUTE_COLOR,
-      weight: 4,
-      opacity: 0.85,
-      lineCap: 'round',
-      lineJoin: 'round',
-      interactive: false,
-    }).addTo(group);
-  });
+  // Линии маршрута не рисуем: расстояния и время считает бэкенд, а чертить
+  // «примерно» нельзя — прямая линия выдавала бы выдумку за дорогу.
   // Fuel stations of the day: orange square markers with a tooltip and a
   // popup. They are independent of the stop list and belong to the day's group.
   const fuel = Array.isArray(current.fuel) ? current.fuel : [];
@@ -831,8 +795,10 @@ function renderLodging() {
   const chosen = new Set((plan.days || []).map((item) => item.lodging_id).filter(Boolean));
   $('lodging').innerHTML = list.map((item, index) => {
     const kind = lodgingKindRu[item.kind] || item.kind || 'жильё';
-    // Цену не показываем: у нас она демонстрационная.
-    const price = '';
+    // Цена за ночь — демонстрационная оценка, поэтому подписываем это.
+    const price = item.price_per_night
+      ? `${Number(item.price_per_night).toLocaleString('ru-RU')} ₽<small>за ночь, демо</small>`
+      : 'цена за ночь не указана';
     const tag = chosen.has(item.id) ? 'в плане' : (index === 0 ? 'рекомендация' : '');
     return `<article class="lodge${chosen.has(item.id) ? ' chosen' : ''}">
       <div class="lodge-top">

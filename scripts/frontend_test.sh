@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Headless frontend test: static shell + SSE plan rendering + refusal UI +
-# the map's fuel-station markers and per-day route polylines.
+# the map's fuel-station markers.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -194,7 +194,7 @@ async def main():
                 print(json.dumps({"refusal": data}, ensure_ascii=False))
                 break
 
-        # ---- fuel markers and route polylines -------------------------------
+        # ---- fuel markers ----------------------------------------------------
         # 1. The test installs its own fetch hook (test-side only; app.js is
         #    untouched) so it can read the exact SSE bytes this page received.
         #    Everything below is asserted against that captured payload.
@@ -356,7 +356,7 @@ async def main():
                 points.append((lat, lon))
             return points
 
-        status = {"fuel": "skipped", "route": "skipped"}
+        status = {"fuel": "skipped"}
         fuel_in_payload = any(item["fuel"] > 0 for item in layers["evidence"])
         geometry_in_payload = any(item["geometries"] > 0 for item in layers["evidence"])
 
@@ -380,42 +380,17 @@ async def main():
             else:
                 status["fuel"] = "asserted"
 
-        linestrings = 0
-        for item in layers["evidence"]:
-            for raw in item["geometry"]:
-                try:
-                    geo = json.loads(raw)
-                except (TypeError, ValueError):
-                    continue
-                if isinstance(geo, dict) and geo.get("type") == "LineString":
-                    linestrings += 1
-        if not geometry_in_payload:
-            print("WARN: the car query plan carries no plan.days[].legs[].geometry in this "
-                  "sandbox build — route-polyline assertion skipped")
-        else:
+        # Линии маршрута фронт не рисует (расстояния и время считает бэкенд),
+        # поэтому геометрия в payload — только информация: если она есть, она
+        # должна быть корректным LineString внутри Приморья, но полилиний на
+        # карте мы не требуем.
+        geometry_note = "no geometry in payload"
+        if geometry_in_payload:
             valid_lines = sum(1 for item in layers["evidence"] for raw in item["geometry"] if parse_line(raw))
-            if linestrings == 0:
-                raise SystemExit("leg geometry is present but no leg is a GeoJSON LineString")
             if valid_lines == 0:
                 raise SystemExit("leg geometry is present but none is a drawable Primorye line")
-            checked = 0
-            for item in layers["evidence"]:
-                day_lines = sum(1 for raw in item["geometry"] if parse_line(raw))
-                if day_lines == 0 or item["counts"] is None:
-                    continue
-                polylines = item["counts"]["polylines"]
-                if not isinstance(polylines, int):
-                    raise SystemExit(f"could not read the Leaflet layer tree: {polylines}")
-                if polylines < 1 or polylines < day_lines:
-                    raise SystemExit(
-                        f"route geometry is in the payload but no polyline is on the map "
-                        f"(day {item['day']}): expected >= {day_lines}, got {polylines}")
-                checked += 1
-            if checked == 0:
-                print("WARN: geometry present only on days without map evidence — "
-                      "route-polyline assertion skipped")
-            else:
-                status["route"] = "asserted"
+            geometry_note = f"{valid_lines} drawable leg geometries (не рисуются на карте)"
+        print(f"NOTE: {geometry_note}")
 
         with open(status_path, "w", encoding="utf-8") as handle:
             json.dump(status, handle, ensure_ascii=False, separators=(",", ":"))
@@ -445,10 +420,5 @@ if grep -q '"fuel":"asserted"' "$TMP_DIR/layers.json"; then
   ok "fuel-station markers rendered on the map"
 else
   note "fuel-station markers not asserted (no plan.days[].fuel in this sandbox run)"
-fi
-if grep -q '"route":"asserted"' "$TMP_DIR/layers.json"; then
-  ok "route polylines rendered on the map"
-else
-  note "route polylines not asserted (no legs[].geometry in this sandbox run)"
 fi
 echo "All frontend checks passed against $BASE_URL"

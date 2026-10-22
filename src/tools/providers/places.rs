@@ -163,54 +163,6 @@ impl Tool for PlacesTool {
         // cannot eat the whole tool timeout.
         let deadline = std::time::Instant::now() + SEARCH_BUDGET;
 
-        // A mixed request ("природа и поесть", a walk with a café) matches both
-        // sources, and running them one after another spent the whole budget on
-        // the first slow one. They are independent, so they travel together and
-        // the answers are merged; when the request belongs to a single source
-        // the usual sequential chain below stays in charge.
-        if !wikipedia_tried && wants_wikipedia(&categories) && wants_osm_business(&categories) {
-            let (osm, wikipedia) = tokio::join!(
-                osm_map_places(ctx, &area, &categories, limit, deadline),
-                wikipedia_matching_places(
-                    ctx,
-                    area.lat,
-                    area.lon,
-                    limit,
-                    &categories,
-                    area_is_water
-                ),
-            );
-            let mut merged: Vec<Value> =
-                scope_to_area(osm.unwrap_or_default(), &area, nearest_only, limit);
-            if let Some(places) = wikipedia {
-                let mut seen: HashSet<String> = merged
-                    .iter()
-                    .filter_map(|place| place.get("id").and_then(Value::as_str).map(str::to_string))
-                    .collect();
-                for place in scope_to_area(places, &area, nearest_only, limit) {
-                    if let Some(id) = place.get("id").and_then(Value::as_str) {
-                        if seen.insert(id.to_string()) {
-                            merged.push(place);
-                        }
-                    }
-                }
-            }
-            if !merged.is_empty() {
-                let merged = scope_to_area(merged, &area, nearest_only, limit);
-                let (places, supplemented) =
-                    with_local_supplement(ctx, &area, &categories, merged, nearest_only, limit);
-                return Ok(ToolOutput::ok(
-                    json!({"places": places}),
-                    SourceKind::Live,
-                    format!(
-                        "OSM и Википедия: {} объектов рядом с {}{}",
-                        places.len(),
-                        area.label,
-                        supplement_note(supplemented)
-                    ),
-                ));
-            }
-        }
         // The live providers get a hard time budget: the tool itself is killed
         // at TOOL_TIMEOUT_SECS (15 s), and a killed call returns nothing at all
         // — a bar search in Vladivostok once timed out that way and the plan
