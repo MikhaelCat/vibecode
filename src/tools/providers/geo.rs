@@ -33,37 +33,15 @@ const KNOWN_NATURE: &[NatureArea] = &[
     ("раздольная", 44.05, 131.8, (43.3, 131.2, 44.8, 132.4)),
 ];
 
-const KNOWN_AREAS: &[(&str, f64, f64)] = &[
-    ("владивосток", 43.1155, 131.8855),
-    ("уссурийск", 43.7973, 131.9518),
-    ("находка", 42.8167, 132.8731),
-    ("артем", 43.3550, 132.1880),
-    ("арсеньев", 44.1620, 133.2820),
-    ("дальнегорск", 44.5540, 135.5700),
-    ("спасск", 44.6000, 132.8200),
-    ("партизанск", 43.1280, 133.1260),
-    ("лесозаводск", 45.4667, 133.4000),
-    ("дальнереченск", 45.9333, 133.7333),
-    ("большой камень", 43.1136, 132.3481),
-    ("фокино", 42.9710, 132.4110),
-    ("славянка", 42.8640, 131.3910),
-    ("андреевка", 42.6159, 131.1177),
-    ("терней", 45.0500, 136.6000),
-    ("кавалерово", 44.2667, 135.0500),
-    ("черниговка", 44.3333, 132.5667),
-    ("пограничный", 44.4167, 131.3667),
-    ("хасан", 42.4333, 130.7833),
-    ("посьет", 42.6667, 130.8000),
-    ("зарубино", 42.6333, 130.9167),
-    ("ливадия", 42.8667, 132.6833),
-    ("врангель", 42.7333, 133.0833),
-    ("преображение", 42.9000, 133.9000),
-    ("ольга", 43.7500, 135.2833),
-    ("камень-рыболов", 44.7500, 132.0500),
-    ("хороль", 44.4333, 132.0833),
-    ("михайловка", 43.9333, 132.0167),
-    ("ярославский", 44.1833, 132.2000),
-    ("анучино", 43.9667, 133.0500),
+/// Areas people name that are not settlements in the gazetteer: districts of
+/// Vladivostok and Nakhodka, and the island city district. Keeping them here
+/// avoids sending the request to a geocoder that could answer with a namesake
+/// from another region.
+const KNOWN_AREAS: &[(&str, f64, f64, f64)] = &[
+    ("ливадия", 42.8667, 132.6833, 8.0),
+    ("врангель", 42.7333, 133.0833, 8.0),
+    ("русский", 43.0, 131.9, 12.0),
+    ("пидан", 43.4, 132.83, 12.0),
 ];
 
 /// An area resolved to a center point and an Overpass-friendly bbox.
@@ -76,6 +54,17 @@ pub struct Area {
     pub bbox: (f64, f64, f64, f64),
     /// Display label for the resolved area.
     pub label: String,
+    /// Radius of the place in kilometres. Every provider drops results farther
+    /// than this from the center, so a village search cannot return the next
+    /// town's venues and a city search keeps its whole agglomeration.
+    pub radius_km: f64,
+}
+
+impl Area {
+    /// True when the point belongs to this place, not to a neighbouring one.
+    pub fn contains_point(&self, lat: f64, lon: f64) -> bool {
+        haversine_km((self.lat, self.lon), (lat, lon)) <= self.radius_km
+    }
 }
 
 /// Nominatim is rate-limited to one request per second. Results are memoized
@@ -278,15 +267,22 @@ pub async fn resolve_area(ctx: &ToolCtx, area: &str) -> Option<Area> {
     resolved
 }
 
-/// Gazetteer first, then online geocoders; `None` when nothing inside
+/// Gazetter first, then online geocoders; `None` when nothing inside
 /// Primorye resolves.
+///
+/// The curated gazetteer is authoritative for settlements: it is the only
+/// source that knows the difference between the village Приморский and the
+/// region, and it carries the search radius that keeps results inside the
+/// place the user asked for. Geocoders handle lakes, rivers and landmarks.
 async fn resolve_area_uncached(ctx: &ToolCtx, area: &str, normalized: &str) -> Option<Area> {
-    if normalized.contains("приморск") || normalized.contains("приморье") {
+    let normalized = crate::domain::settlements::normalize(normalized);
+    if crate::domain::settlements::mentions_region(&normalized) {
         return Some(Area {
             lat: 44.0,
             lon: 133.0,
             bbox: PRIMORYE_BBOX,
             label: "Приморский край".to_string(),
+            radius_km: 400.0,
         });
     }
 
@@ -299,19 +295,26 @@ async fn resolve_area_uncached(ctx: &ToolCtx, area: &str, normalized: &str) -> O
             lon: *lon,
             bbox: *bbox,
             label: area.trim().to_string(),
+            radius_km: 30.0,
         });
     }
 
-    if let Some((_name, lat, lon)) = KNOWN_AREAS
+    // A named settlement wins over any geocoder answer: "Кировский" must be
+    // the settlement of that name, never the district or a namesake elsewhere.
+    if let Some(settlement) = crate::domain::settlements::resolve(area) {
+        return Some(area_around(settlement.lat, settlement.lon, settlement.scope_km(), area));
+    }
+    // A multi-city area ("Владивосток и Артём") still resolves to its first
+    // named settlement, so the search starts where the user asked.
+    if let Some(settlement) = crate::domain::settlements::find_all_in_text(area).first() {
+        return Some(area_around(settlement.lat, settlement.lon, settlement.scope_km(), area));
+    }
+
+    if let Some((_name, lat, lon, radius_km)) = KNOWN_AREAS
         .iter()
-        .find(|(name, _, _)| normalized.contains(*name))
+        .find(|(name, _, _, _)| normalized.split_whitespace().any(|word| word == *name))
     {
-        return Some(Area {
-            lat: *lat,
-            lon: *lon,
-            bbox: (*lat - 0.25, *lon - 0.35, *lat + 0.25, *lon + 0.35),
-            label: area.trim().to_string(),
-        });
+        return Some(area_around(*lat, *lon, *radius_km, area));
     }
 
     if let Some(item) = nominatim(ctx, area, 1).await.first() {
@@ -329,6 +332,19 @@ async fn resolve_area_uncached(ctx: &ToolCtx, area: &str, normalized: &str) -> O
     None
 }
 
+/// Square search window around a place with a known radius in kilometres.
+fn area_around(lat: f64, lon: f64, radius_km: f64, label: &str) -> Area {
+    let delta_lat = radius_km / 111.0;
+    let delta_lon = radius_km / (111.0 * lat.to_radians().cos().abs().max(0.2));
+    Area {
+        lat,
+        lon,
+        bbox: (lat - delta_lat, lon - delta_lon, lat + delta_lat, lon + delta_lon),
+        label: label.trim().to_string(),
+        radius_km,
+    }
+}
+
 /// Builds an `Area` from a geocoder item, expanding point-like or oversized
 /// bboxes into a usable search window.
 fn area_from_value(item: &Value) -> Option<Area> {
@@ -342,6 +358,7 @@ fn area_from_value(item: &Value) -> Option<Area> {
         .and_then(Value::as_str)
         .unwrap_or("Приморье")
         .to_string();
+    let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
     let bbox = item
         .get("bbox")
         .and_then(Value::as_array)
@@ -364,12 +381,27 @@ fn area_from_value(item: &Value) -> Option<Area> {
     } else {
         (south, west, north, east)
     };
+    let radius_km = radius_for_bbox((south, west, north, east), lat, item_type);
     Some(Area {
         lat,
         lon,
         bbox: (south, west, north, east),
         label,
+        radius_km,
     })
+}
+
+/// Search radius for a geocoded area: the bbox diagonal, clamped so a district
+/// polygon cannot turn into a region-wide search and a point result still has
+/// a usable neighbourhood.
+fn radius_for_bbox(bbox: (f64, f64, f64, f64), lat: f64, item_type: &str) -> f64 {
+    let (south, west, north, east) = bbox;
+    let height_km = (north - south) * 111.0;
+    let width_km = (east - west) * 111.0 * lat.to_radians().cos().abs().max(0.2);
+    let diagonal = (height_km * height_km + width_km * width_km).sqrt() / 2.0;
+    let settlement = matches!(item_type, "city" | "town" | "village" | "hamlet");
+    let max = if settlement { 25.0 } else { 35.0 };
+    diagonal.clamp(5.0, max)
 }
 
 fn short_name(value: &str) -> String {
@@ -472,10 +504,31 @@ mod tests {
     use super::*;
 
     #[test]
-    fn known_area_does_not_default_to_vladivostok() {
-        assert!(KNOWN_AREAS
-            .iter()
-            .any(|(name, _, _)| name.contains("уссурийск")));
+    fn gazetteer_resolves_settlements_before_geocoders() {
+        let settlement = crate::domain::settlements::resolve("Уссурийск").expect("gazetteer hit");
+        assert_eq!(settlement.name, "Уссурийск");
+        assert!(settlement.scope_km() >= 9.0);
+    }
+
+    #[test]
+    fn area_around_keeps_the_window_near_the_place() {
+        let area = area_around(45.0898, 133.5062, 15.0, "Кировский");
+        assert_eq!(area.radius_km, 15.0);
+        let (south, west, north, east) = area.bbox;
+        assert!(area.contains_point(45.0898, 133.5062));
+        assert!(!area.contains_point(45.6, 133.5));
+        assert!(south < area.lat && north > area.lat);
+        assert!(west < area.lon && east > area.lon);
+    }
+
+    #[test]
+    fn region_text_is_the_krai_not_a_village() {
+        assert!(crate::domain::settlements::mentions_region(
+            &crate::domain::settlements::normalize("по Приморью на выходные")
+        ));
+        assert!(!crate::domain::settlements::mentions_region(
+            &crate::domain::settlements::normalize("поехали в Приморский")
+        ));
     }
 
     #[test]

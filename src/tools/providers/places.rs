@@ -81,6 +81,7 @@ impl Tool for PlacesTool {
         // requests (or an explicit venue query) when a key is configured.
         if ctx.yandex_maps_api_key.is_some() && wants_yandex(&query, &categories) {
             if let Some(places) = yandex::search(ctx, &area, &query, &categories, limit).await {
+                let places = scope_to_area(places, &area);
                 if !places.is_empty() {
                     return Ok(ToolOutput::ok(
                         json!({"places": places}),
@@ -108,15 +109,18 @@ impl Tool for PlacesTool {
             )
             .await
             {
-                return Ok(ToolOutput::ok(
-                    json!({"places": places}),
-                    SourceKind::Live,
-                    format!(
-                        "Википедия: {} объектов рядом с {}",
-                        places.len(),
-                        area.label
-                    ),
-                ));
+                let places = scope_to_area(places, &area);
+                if !places.is_empty() {
+                    return Ok(ToolOutput::ok(
+                        json!({"places": places}),
+                        SourceKind::Live,
+                        format!(
+                            "Википедия: {} объектов рядом с {}",
+                            places.len(),
+                            area.label
+                        ),
+                    ));
+                }
             }
         }
 
@@ -125,6 +129,7 @@ impl Tool for PlacesTool {
         // cannot eat the whole tool timeout.
         if wants_osm_business(&categories) {
             if let Some(places) = osm_map_places(ctx, &area, &categories, limit).await {
+                let places = scope_to_area(places, &area);
                 if !places.is_empty() {
                     return Ok(ToolOutput::ok(
                         json!({"places": places}),
@@ -140,6 +145,7 @@ impl Tool for PlacesTool {
         }
 
         if let Some(places) = overpass_places(ctx, &area, &categories, limit).await {
+            let places = scope_to_area(places, &area);
             if !places.is_empty() {
                 return Ok(ToolOutput::ok(
                     json!({"places": places}),
@@ -160,19 +166,22 @@ impl Tool for PlacesTool {
             )
             .await
             {
-                return Ok(ToolOutput::ok(
-                    json!({"places": places}),
-                    SourceKind::Live,
-                    format!(
-                        "Википедия: {} объектов рядом с {}",
-                        places.len(),
-                        area.label
-                    ),
-                ));
+                let places = scope_to_area(places, &area);
+                if !places.is_empty() {
+                    return Ok(ToolOutput::ok(
+                        json!({"places": places}),
+                        SourceKind::Live,
+                        format!(
+                            "Википедия: {} объектов рядом с {}",
+                            places.len(),
+                            area.label
+                        ),
+                    ));
+                }
             }
         }
 
-        let local = local_places(ctx, &area, &categories, limit);
+        let local = scope_to_area(local_places(ctx, &area, &categories, limit), &area);
         let summary = if local.is_empty() {
             format!("В районе {} не найдено объектов по запросу", area.label)
         } else {
@@ -188,6 +197,38 @@ impl Tool for PlacesTool {
             summary,
         ))
     }
+}
+
+/// Keeps only the results that belong to the requested place. Providers search
+/// by bbox, and a bbox around a small village would otherwise pull in the
+/// neighbouring town's cafés and museums; the radius of the resolved area is
+/// the authority on what counts as "in this place".
+fn scope_to_area(places: Vec<Value>, area: &geo::Area) -> Vec<Value> {
+    let mut kept: Vec<Value> = places
+        .into_iter()
+        .filter(|place| {
+            let (Some(lat), Some(lon)) = (
+                place.get("lat").and_then(Value::as_f64),
+                place.get("lon").and_then(Value::as_f64),
+            ) else {
+                return true;
+            };
+            area.contains_point(lat, lon)
+        })
+        .collect();
+    kept.sort_by(|left, right| {
+        let left = left
+            .get("distance_meters")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::MAX);
+        let right = right
+            .get("distance_meters")
+            .and_then(Value::as_f64)
+            .unwrap_or(f64::MAX);
+        left.partial_cmp(&right)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    kept
 }
 
 async fn overpass_places(
@@ -300,6 +341,26 @@ fn osm_values(categories: &[String]) -> Vec<String> {
             "hospital" | "больница" => &["hospital"],
             "historic" | "история" => &["historic"],
             "food" => &["restaurant", "cafe", "fast_food", "bakery"],
+            "waterfall" | "водопад" => &["waterfall"],
+            "cave_entrance" | "cave" | "пещера" | "пещеры" => &["cave_entrance"],
+            "lighthouse" | "маяк" => &["lighthouse"],
+            "playground" | "детская площадка" => &["playground"],
+            "swimming_pool" | "бассейн" => &["swimming_pool"],
+            "water_park" | "аквапарк" => &["water_park"],
+            "zoo" | "зоопарк" => &["zoo"],
+            "aquarium" | "океанариум" | "дельфинарий" => &["aquarium"],
+            "bowling" | "bowling_alley" | "боулинг" => &["bowling_alley"],
+            "karting" | "картинг" => &["karting"],
+            "horse_riding" | "конный" | "лошади" => &["horse_riding"],
+            "fitness_centre" | "фитнес" => &["fitness_centre"],
+            "sauna" | "баня" | "сауна" => &["sauna"],
+            "scuba_diving" | "дайвинг" => &["scuba_diving"],
+            "surfing" | "серфинг" => &["surfing"],
+            "rental" | "прокат" => &["rental"],
+            "trail" | "хайкинг" | "треккинг" => &["park", "nature_reserve", "viewpoint"],
+            "place_of_worship" | "церковь" | "храм" => &["place_of_worship"],
+            "picnic_table" | "пикник" => &["picnic_table", "picnic_site"],
+            "camp_site" | "кемпинг" => &["camp_site"],
             _ => &[],
         };
         if mapped.is_empty() {
@@ -452,11 +513,7 @@ fn parse_osm_map(xml: &str, area: &geo::Area, wanted: &[String], limit: usize) -
                 tags.insert(key.to_string(), xml_unescape(value));
             }
         }
-        let matched = ["amenity", "shop", "tourism", "leisure"].iter().any(|key| {
-            tags.get(*key)
-                .is_some_and(|value| wanted.iter().any(|wanted| wanted == value))
-        }) || (wanted.iter().any(|wanted| wanted == "historic")
-            && tags.contains_key("historic"));
+        let matched = osm_map_matches(&tags, wanted);
         if !matched {
             continue;
         }
@@ -511,11 +568,7 @@ fn parse_osm_map(xml: &str, area: &geo::Area, wanted: &[String], limit: usize) -
                 tags.insert(key.to_string(), xml_unescape(value));
             }
         }
-        let matched = ["amenity", "shop", "tourism", "leisure"].iter().any(|key| {
-            tags.get(*key)
-                .is_some_and(|value| wanted.iter().any(|wanted| wanted == value))
-        }) || (wanted.iter().any(|wanted| wanted == "historic")
-            && tags.contains_key("historic"));
+        let matched = osm_map_matches(&tags, wanted);
         if !matched {
             continue;
         }
@@ -598,9 +651,26 @@ fn osm_kind(tags: &HashMap<String, String>) -> &'static str {
             "theatre" => return "theater",
             "cinema" => return "cinema",
             "hotel" | "hostel" | "guest_house" => return "rest",
+            "sauna" | "public_bath" => return "rest",
             "museum" => return "museum",
+            "place_of_worship" | "monastery" => return "historic",
+            "spa" | "dive_centre" => return "rest",
             _ => {}
         }
+    }
+    match tags.get("natural").map(String::as_str) {
+        Some("waterfall" | "cave_entrance" | "peak" | "spring") => return "nature",
+        Some("beach") => return "beach",
+        _ => {}
+    }
+    if tags.get("man_made").map(String::as_str) == Some("lighthouse") {
+        return "viewpoint";
+    }
+    if matches!(
+        tags.get("leisure").map(String::as_str),
+        Some("water_park" | "swimming_pool" | "bowling_alley" | "sports_centre" | "horse_riding")
+    ) {
+        return "park";
     }
     if tags.contains_key("shop") {
         return "shop";
@@ -608,6 +678,7 @@ fn osm_kind(tags: &HashMap<String, String>) -> &'static str {
     match tags.get("tourism").map(String::as_str) {
         Some("museum") => return "museum",
         Some("viewpoint") => return "viewpoint",
+        Some("zoo" | "aquarium" | "theme_park" | "attraction") => return "sight",
         Some("hotel" | "guest_house" | "hostel" | "apartment" | "camp_site" | "chalet") => {
             return "rest"
         }
@@ -623,6 +694,24 @@ fn osm_kind(tags: &HashMap<String, String>) -> &'static str {
         return "park";
     }
     "sight"
+}
+
+fn osm_map_matches(tags: &HashMap<String, String>, wanted: &[String]) -> bool {
+    let keys = [
+        "amenity",
+        "shop",
+        "tourism",
+        "leisure",
+        "natural",
+        "man_made",
+        "sport",
+        "historic",
+    ];
+    keys.iter().any(|key| {
+        tags.get(*key)
+            .is_some_and(|value| wanted.iter().any(|wanted| wanted == value))
+            || (tags.get(*key).is_some() && wanted.iter().any(|wanted| wanted == *key))
+    })
 }
 
 fn xml_attr<'a>(header: &'a str, key: &str) -> Option<&'a str> {
@@ -718,6 +807,38 @@ fn overpass_filters(categories: &[String]) -> Vec<String> {
         add_filter(
             &mut filters,
             "nwr[\"tourism\"~\"hotel|guest_house|hostel|apartment|camp_site|chalet\"]",
+        );
+    }
+    // Tags that live outside shop/amenity/tourism/leisure: waterfalls and caves
+    // are `natural`, lighthouses are `man_made`, karting and diving are `sport`.
+    if has("waterfall") || has("водопад") {
+        add_filter(&mut filters, "nwr[\"natural\"=\"waterfall\"]");
+    }
+    if has("cave") || has("cave_entrance") || has("пещер") {
+        add_filter(&mut filters, "nwr[\"natural\"=\"cave_entrance\"]");
+    }
+    if has("lighthouse") || has("маяк") {
+        add_filter(&mut filters, "nwr[\"man_made\"=\"lighthouse\"]");
+    }
+    for (category, sport) in [
+        ("karting", "karting"),
+        ("картинг", "karting"),
+        ("scuba_diving", "scuba_diving"),
+        ("дайвинг", "scuba_diving"),
+        ("surfing", "surfing"),
+        ("серфинг", "surfing"),
+    ] {
+        if has(category) {
+            add_filter(
+                &mut filters,
+                format!("nwr[\"sport\"=\"{sport}\"]"),
+            );
+        }
+    }
+    if has("пикник") || has("picnic") {
+        add_filter(
+            &mut filters,
+            "nwr[\"leisure\"~\"picnic_table|picnic_site\"]",
         );
     }
     // Any explicit tag value works: theatre, cinema, marketplace, clothes,
@@ -1284,6 +1405,13 @@ pub(crate) fn generic_title(title: &str) -> bool {
             "шоссе",
             "район",
             "микрорайон",
+            // Administrative units are not stops: the articles about them
+            // would otherwise fill a village plan with "сельское поселение".
+            "сельское поселение",
+            "городское поселение",
+            "сельсовет",
+            "муниципальн",
+            "округ",
         ]
         .iter()
         .any(|word| title.contains(word))
@@ -1386,6 +1514,7 @@ mod tests {
             lon: 131.8855,
             bbox: (43.10, 131.87, 43.13, 131.90),
             label: "Владивосток".to_string(),
+            radius_km: 25.0,
         };
         let xml = r#"<osm>
         <node id="1" lat="43.1155" lon="131.8855"><tag k="amenity" v="bar"/><tag k="name" v="Soda Bar"/></node>

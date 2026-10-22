@@ -388,13 +388,42 @@ textarea:focus{outline:none;background:#fff;border-color:var(--teal);box-shadow:
 .pin-wrap{background:none!important;border:0!important}
 .pin{
   width:34px;height:34px;
-  background:linear-gradient(135deg,var(--teal),#0d9488);
+  background:linear-gradient(135deg,var(--pin,var(--teal)),var(--pin-dark,#0d9488));
   border:2px solid #fff;
   border-radius:50% 50% 50% 4px;transform:rotate(-45deg);
   display:grid;place-items:center;
   box-shadow:0 6px 16px rgba(16,32,28,.28);
 }
 .pin span{display:block;transform:rotate(45deg);font:700 12px/1 var(--f-body);color:#fff}
+.leaflet-tooltip{
+  border:1px solid var(--line);border-radius:10px;padding:6px 10px;
+  background:#fff;color:var(--ink);font:500 12px/1.35 var(--f-body);
+  box-shadow:var(--shadow-sm);
+}
+.leaflet-tooltip-top:before,.leaflet-tooltip-bottom:before,
+.leaflet-tooltip-left:before,.leaflet-tooltip-right:before{display:none}
+
+/* Leaflet не загрузился — точки маршрута остаются видимыми списком */
+.map-fallback{
+  position:absolute;inset:0;z-index:400;overflow:auto;
+  background:linear-gradient(160deg,#f2f7f5,#e6ecea 60%,#dfe9e6);
+  padding:18px 20px 46px;color:var(--ink);
+}
+.map-fallback[hidden]{display:none}
+.map-fallback-note{
+  font:500 12.5px/1.45 var(--f-body);color:var(--muted);
+  border-bottom:1px solid var(--line);padding-bottom:10px;margin-bottom:12px;
+}
+.map-fallback section{margin-bottom:14px}
+.map-fallback h3{
+  font:600 11px/1 var(--f-body);letter-spacing:.14em;text-transform:uppercase;
+  color:var(--teal-deep);margin-bottom:8px;
+}
+.map-fallback ol{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:4px 18px}
+.map-fallback li{display:flex;align-items:baseline;gap:8px;font-size:12.5px;line-height:1.4}
+.map-fallback li span{flex:0 0 18px;color:var(--muted);font-size:11px;text-align:right}
+.map-fallback li b{font-weight:600;overflow-wrap:anywhere}
+.map-fallback li i{font-style:normal;color:var(--muted);font-size:11px;white-space:nowrap;margin-left:auto}
 
 /* ================= results ================= */
 .results{padding:0 var(--pad) calc(var(--gap) + 26px)}
@@ -473,6 +502,7 @@ textarea:focus{outline:none;background:#fff;border-color:var(--teal);box-shadow:
 .stop h3,.stop h4{font:600 clamp(19px,2.2vw,24px)/1.2 var(--f-body);letter-spacing:-.02em;overflow-wrap:anywhere;color:var(--ink)}
 .stop p{font-size:14px;line-height:1.6;color:var(--ink-soft);margin-top:5px;max-width:68ch;overflow-wrap:anywhere}
 .stop-desc{font-size:13.5px;line-height:1.55;color:var(--muted);margin-top:6px;max-width:68ch;overflow-wrap:anywhere}
+.stop-geo{font-size:12.5px;line-height:1.5;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:10px;padding:6px 10px;margin-top:8px;display:inline-block}
 
 .leg{display:grid;grid-template-columns:68px minmax(0,1fr);gap:0 18px}
 .leg-rail{position:relative;display:flex;justify-content:center}

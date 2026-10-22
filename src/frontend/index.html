@@ -11,7 +11,8 @@
 <link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Unbounded:wght@500;600&display=swap">
 <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Unbounded:wght@500;600&display=swap" rel="stylesheet" media="print" onload="this.media='all'">
 <noscript><link href="https://fonts.googleapis.com/css2?family=Manrope:wght@400;500;600;700&family=Unbounded:wght@500;600&display=swap" rel="stylesheet"></noscript>
-<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css"
+  onerror="this.onerror=null;this.href='https://unpkg.com/leaflet@1.9.4/dist/leaflet.css'">
 <link rel="stylesheet" href="styles.css">
 </head>
 <body>
@@ -117,10 +118,11 @@
   <section class="map-band" aria-label="Карта маршрута">
     <div class="map-card">
       <div id="map" role="region" aria-label="Карта Приморского края"></div>
+      <div class="map-fallback" id="map-fallback" hidden aria-live="polite"></div>
       <div class="map-loading" id="map-loading">Загружаю карту…</div>
       <div class="map-overlay">
         <span class="map-caption" id="map-caption">Приморский край · карта</span>
-        <span class="map-credit">© OpenStreetMap</span>
+        <span class="map-credit">© OpenStreetMap · © CARTO</span>
       </div>
     </div>
   </section>
@@ -185,7 +187,40 @@
   </div>
 </footer>
 
-<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script>
+/* Leaflet с резервными CDN: unpkg и jsDelivr могут быть недоступны по
+   отдельности. app.js подписан на события leaflet-ready/leaflet-unavailable,
+   поэтому карта строится в любой момент загрузки, а без библиотеки точки
+   маршрута показываются списком внутри карточки карты. */
+(function () {
+  var sources = [
+    'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js',
+    'https://unpkg.com/leaflet@1.9.4/dist/leaflet.js',
+    'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js'
+  ];
+  window.__leafletState = 'loading';
+  function next(index) {
+    if (index >= sources.length) {
+      window.__leafletState = 'failed';
+      window.dispatchEvent(new Event('leaflet-unavailable'));
+      return;
+    }
+    var script = document.createElement('script');
+    script.src = sources[index];
+    script.async = true;
+    script.onload = function () {
+      window.__leafletState = 'ready';
+      window.dispatchEvent(new Event('leaflet-ready'));
+    };
+    script.onerror = function () {
+      script.remove();
+      next(index + 1);
+    };
+    document.head.appendChild(script);
+  }
+  next(0);
+})();
+</script>
 <script src="app.js"></script>
 <script>
 /* Сегментированный выбор транспорта: синхронизирует скрытый #transport,

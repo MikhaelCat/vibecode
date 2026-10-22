@@ -15,6 +15,27 @@ pub struct Settlement {
     pub name: String,
     pub lat: f64,
     pub lon: f64,
+    /// OSM place type: `city`, `town`, `village` or `hamlet`.
+    #[serde(default = "default_kind")]
+    pub kind: String,
+}
+
+fn default_kind() -> String {
+    "village".to_string()
+}
+
+impl Settlement {
+    /// Search radius around the settlement centre. A city point of interest can
+    /// sit 20 km from the centre, while a village must not drag in the next
+    /// town: a stop is only "in this place" when it is inside this circle.
+    pub fn scope_km(&self) -> f64 {
+        match self.kind.as_str() {
+            "city" => 25.0,
+            "town" => 15.0,
+            "hamlet" => 6.0,
+            _ => 9.0,
+        }
+    }
 }
 
 static SETTLEMENTS: OnceLock<Vec<Settlement>> = OnceLock::new();
@@ -26,7 +47,7 @@ fn all() -> &'static Vec<Settlement> {
     })
 }
 
-fn normalize(value: &str) -> String {
+pub fn normalize(value: &str) -> String {
     value
         .to_lowercase()
         .replace('ё', "е")
@@ -110,19 +131,7 @@ fn word_matches(text_word: &str, name_word: &str, multi_word_name: bool) -> bool
 }
 
 fn settlement_matches(haystack: &str, name: &str) -> bool {
-    let region_context = haystack.split_whitespace().any(|word| {
-        matches!(
-            word,
-            "приморский"
-                | "приморском"
-                | "приморье"
-                | "приморья"
-                | "приморью"
-                | "край"
-                | "крае"
-        )
-    });
-    if region_context && (name.contains("приморск") || name.contains("приморь")) {
+    if mentions_region(haystack) && (name.contains("приморск") || name.contains("приморь")) {
         return false;
     }
     let text_words: Vec<&str> = haystack.split_whitespace().collect();
@@ -137,6 +146,19 @@ fn settlement_matches(haystack: &str, name: &str) -> bool {
             .zip(&name_words)
             .all(|(text, name)| word_matches(text, name, multi_word_name))
     })
+}
+
+/// True when the text talks about the region itself ("по Приморью",
+/// "приморский край"), not about the village Приморский in Khasansky district.
+/// Expects text already passed through [`normalize`].
+pub fn mentions_region(normalized: &str) -> bool {
+    let words: Vec<&str> = normalized.split_whitespace().collect();
+    let has_word = |list: &[&str]| words.iter().any(|word| list.contains(word));
+    if has_word(&["приморье", "приморья", "приморью", "приморьем"]) {
+        return true;
+    }
+    has_word(&["приморский", "приморском", "приморского", "приморскому"])
+        && has_word(&["край", "крае", "краю", "края", "краем"])
 }
 
 /// Every settlement whose name appears in the text. Longer names win over
@@ -184,6 +206,33 @@ pub fn center(name: &str) -> Option<(f64, f64)> {
         .map(|settlement| (settlement.lat, settlement.lon))
 }
 
+/// Resolves an `area` argument ("Уссурийск", "село Сергеевка", "Приморский")
+/// to a gazetteer entry: exact name first, then the fuzzy in-text match.
+pub fn resolve(area: &str) -> Option<&'static Settlement> {
+    let normalized = normalize(area);
+    if normalized.is_empty() {
+        return None;
+    }
+    if let Some(settlement) = all()
+        .iter()
+        .find(|settlement| normalize(&settlement.name) == normalized)
+    {
+        return Some(settlement);
+    }
+    find_in_text(area)
+}
+
+/// Search radius for a settlement name, so callers can scope results to the
+/// place the user asked for. Unknown names fall back to a generic town radius.
+pub fn scope_km(name: &str) -> f64 {
+    let normalized = normalize(name);
+    all()
+        .iter()
+        .find(|settlement| normalize(&settlement.name) == normalized)
+        .map(Settlement::scope_km)
+        .unwrap_or(15.0)
+}
+
 pub fn nearest(lat: f64, lon: f64) -> Option<&'static Settlement> {
     all()
         .iter()
@@ -221,5 +270,42 @@ mod tests {
             Some("Сергеевка")
         );
         assert!(find_in_text("хорошая погода в приморье").is_none());
+    }
+
+    #[test]
+    fn village_primorsky_is_a_place_not_the_region() {
+        assert_eq!(
+            find_in_text("поехали в Приморский").map(|item| item.name.as_str()),
+            Some("Приморский")
+        );
+        assert_eq!(
+            find_in_text("на выходные в приморский край")
+                .map(|item| item.name.as_str()),
+            None
+        );
+        assert_eq!(
+            resolve("Приморский").map(|item| item.name.as_str()),
+            Some("Приморский")
+        );
+    }
+
+    #[test]
+    fn scopes_are_tighter_for_small_places() {
+        assert!(scope_km("Владивосток") > scope_km("Сергеевка"));
+        assert!(scope_km("Владивосток") <= 25.0);
+        assert!(scope_km("Сергеевка") >= 5.0);
+    }
+
+    #[test]
+    fn resolve_accepts_cases_and_prefixes() {
+        assert_eq!(
+            resolve("в Кировский на выходные").map(|item| item.name.as_str()),
+            Some("Кировский")
+        );
+        assert_eq!(
+            resolve("Кавалерово").map(|item| item.name.as_str()),
+            Some("Кавалерово")
+        );
+        assert!(resolve("Атлантида").is_none());
     }
 }

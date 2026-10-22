@@ -941,9 +941,16 @@ fn search_categories(intent: &Intent) -> Vec<String> {
             "shopping" => &["clothes", "mall", "department_store", "shoes"],
             "mountains" => &["nature", "viewpoint"],
             "fishing" => &["beach", "nature", "viewpoint"],
+            // Any other interest the parser emits is already an OSM tag value
+            // (water_park, aquarium, zoo, sauna, waterfall, lighthouse, ...).
+            // The tools accept arbitrary tag values, so pass it through as is.
             _ => &[],
         };
-        categories.extend(wanted.iter().map(|category| (*category).to_string()));
+        if wanted.is_empty() {
+            categories.push(interest.clone());
+        } else {
+            categories.extend(wanted.iter().map(|category| (*category).to_string()));
+        }
     }
     categories.sort();
     categories.dedup();
@@ -1070,6 +1077,21 @@ fn project_fields(item: &Value, fields: &[&str]) -> Value {
 mod tests {
     use super::*;
 
+    fn today() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 10, 21).unwrap()
+    }
+
+    fn intent_for(query: &str) -> Intent {
+        crate::domain::intent::parse(query, today())
+            .unwrap_or_else(|refusal| panic!("guard refused {query:?}: {}", refusal.category))
+    }
+
+    fn intent_with_interests(interests: &[&str]) -> Intent {
+        let mut intent = intent_for("на выходные по Приморью");
+        intent.interests = interests.iter().map(|item| (*item).to_string()).collect();
+        intent
+    }
+
     #[test]
     fn oversized_tool_result_remains_valid_json() {
         let value = json!({
@@ -1084,5 +1106,123 @@ mod tests {
             text.chars().count()
         );
         assert!(serde_json::from_str::<Value>(&text).is_ok());
+    }
+
+    #[test]
+    fn water_park_query_maps_to_search_categories() {
+        // The bare "поехали в аквапарк" is refused by the is_travel gate in
+        // src/domain/intent.rs (no activity words there); adding the weekend
+        // wording keeps the same interest path while passing the guard.
+        let intent = intent_for("поехали в аквапарк на выходные");
+        assert!(intent.interests.iter().any(|item| item == "water_park"));
+        let categories = search_categories(&intent);
+        assert!(!categories.is_empty());
+        assert!(categories.iter().any(|item| item == "water_park"));
+    }
+
+    #[test]
+    fn waterfall_query_yields_waterfall_interest() {
+        let intent = intent_for("хочу на водопад");
+        assert!(intent.interests.iter().any(|item| item == "waterfall"));
+        assert!(search_categories(&intent)
+            .iter()
+            .any(|item| item == "waterfall"));
+    }
+
+    #[test]
+    fn sauna_query_yields_sauna_interest() {
+        let intent = intent_for("в баню на выходные");
+        assert!(intent.interests.iter().any(|item| item == "sauna"));
+        assert!(search_categories(&intent).iter().any(|item| item == "sauna"));
+    }
+
+    #[test]
+    fn lighthouse_query_yields_lighthouse_interest() {
+        let intent = intent_for("посмотреть маяк");
+        assert!(intent.interests.iter().any(|item| item == "lighthouse"));
+        assert!(search_categories(&intent)
+            .iter()
+            .any(|item| item == "lighthouse"));
+    }
+
+    #[test]
+    fn zoo_query_with_children_yields_zoo_interest() {
+        // Same guard caveat as the water park query above.
+        let intent = intent_for("в зоопарк с детьми на выходные");
+        assert!(intent.interests.iter().any(|item| item == "zoo"));
+        assert!(intent.with_children);
+        assert!(search_categories(&intent).iter().any(|item| item == "zoo"));
+    }
+
+    #[test]
+    fn plain_city_query_adds_no_categories() {
+        let intent = intent_for("на выходные в Находку");
+        assert!(intent.interests.is_empty());
+        assert!(search_categories(&intent).is_empty());
+    }
+
+    #[test]
+    fn osm_tag_interests_pass_through_unchanged() {
+        let interests = [
+            "water_park",
+            "aquarium",
+            "zoo",
+            "swimming_pool",
+            "playground",
+            "bowling_alley",
+            "karting",
+            "horse_riding",
+            "fitness_centre",
+            "sauna",
+            "scuba_diving",
+            "surfing",
+            "rental",
+            "trail",
+            "waterfall",
+            "cave_entrance",
+            "lighthouse",
+            "place_of_worship",
+            "picnic_table",
+            "camp_site",
+            "viewpoint",
+        ];
+        let intent = intent_with_interests(&interests);
+        let categories = search_categories(&intent);
+        assert_eq!(categories.len(), interests.len(), "{categories:?}");
+        for interest in interests {
+            assert!(
+                categories.iter().any(|item| item == interest),
+                "missing {interest}: {categories:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn documented_interests_keep_their_mappings() {
+        let intent = intent_with_interests(&["food", "nightlife", "shopping", "attractions", "mountains"]);
+        let categories = search_categories(&intent);
+        for expected in [
+            "restaurant",
+            "cafe",
+            "bar",
+            "club",
+            "clothes",
+            "mall",
+            "attraction",
+            "museum",
+            "historic",
+            "viewpoint",
+            "park",
+            "nature",
+        ] {
+            assert!(
+                categories.iter().any(|item| item == expected),
+                "missing {expected}: {categories:?}"
+            );
+        }
+        let mut sorted = categories.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(categories, sorted);
     }
 }

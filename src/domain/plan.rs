@@ -442,9 +442,12 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
 
             // When the query names a single city, drop everything else so
             // the plan does not pull Nakhodka stops into a Vladivostok tour.
+            // The radius follows the place itself: a village tour must not
+            // accept a stop that belongs to the next town.
             if let Some(city) = intent.city() {
                 if let Some(center) = city_center(city) {
-                    if fact.is_some_and(|place| haversine_km((place.lat, place.lon), center) > 30.0)
+                    let scope = crate::domain::settlements::scope_km(city).max(15.0);
+                    if fact.is_some_and(|place| haversine_km((place.lat, place.lon), center) > scope)
                     {
                         outside_items += 1;
                         continue;

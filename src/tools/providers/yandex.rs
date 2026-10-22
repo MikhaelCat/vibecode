@@ -310,6 +310,7 @@ mod tests {
             lon: 131.8855,
             bbox: (43.0, 131.7, 43.3, 132.05),
             label: "Владивосток".to_string(),
+            radius_km: 25.0,
         }
     }
 

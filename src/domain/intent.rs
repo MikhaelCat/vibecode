@@ -274,6 +274,58 @@ pub fn parse(query: &str, today: NaiveDate) -> Result<Intent, Refusal> {
             "nightlife",
         ),
         (prefix("клуб") || prefix("ночн"), "nightlife"),
+        // Family and activity requests. Each interest name is an OSM tag value,
+        // so a new interest needs no extra mapping table to reach the search.
+        (
+            prefix("аквапарк"),
+            "water_park",
+        ),
+        (prefix("океанариум") || prefix("дельфинар"), "aquarium"),
+        (prefix("зоопарк"), "zoo"),
+        (prefix("бассейн"), "swimming_pool"),
+        (
+            prefix("детск") && (prefix("площадк") || prefix("городок"))
+                || prefix("детям")
+                || lower.contains("детская площадка"),
+            "playground",
+        ),
+        (prefix("боулинг"), "bowling_alley"),
+        (
+            prefix("картинг") || prefix("квадроцикл") || prefix("багги"),
+            "karting",
+        ),
+        (
+            prefix("конн") || prefix("лошад") || prefix("верхом") || prefix("ипподром"),
+            "horse_riding",
+        ),
+        (
+            prefix("фитнес") || prefix("спортзал") || prefix("тренаж"),
+            "fitness_centre",
+        ),
+        (prefix("баня") || prefix("баню") || prefix("саун"), "sauna"),
+        (
+            prefix("дайвинг") || exact(&["дайв", "дайвцентр"]),
+            "scuba_diving",
+        ),
+        (
+            prefix("серфинг") || exact(&["сап", "sup", "сапе", "серф"]),
+            "surfing",
+        ),
+        (prefix("прокат") || prefix("аренд"), "rental"),
+        (
+            prefix("хайкинг") || prefix("треккинг") || prefix("тропа") || prefix("трек"),
+            "trail",
+        ),
+        (prefix("водопад"), "waterfall"),
+        (prefix("пещер"), "cave_entrance"),
+        (prefix("маяк"), "lighthouse"),
+        (
+            prefix("церков") || prefix("храм") || prefix("собор") || prefix("монастыр"),
+            "place_of_worship",
+        ),
+        (prefix("пикник"), "picnic_table"),
+        (prefix("кемпинг"), "camp_site"),
+        (prefix("смотров"), "viewpoint"),
     ];
     let mut interests = Vec::new();
     for (hit, interest) in checks {
@@ -721,15 +773,21 @@ fn generic_venue_word(word: &str) -> bool {
 fn is_travel_action(lower: &str) -> bool {
     const ACTIONS: &[&str] = &[
         "поехать",
+        "поех",
         "поездк",
         "поездка",
         "съездить",
+        "скатать",
+        "сгоня",
+        "прокатит",
         "маршрут",
         "путешеств",
         "отпуск",
         "посмотреть",
         "смотрет",
         "прогул",
+        "погуля",
+        "гуля",
         "поход",
         "тропа",
         "пляж",
@@ -739,6 +797,11 @@ fn is_travel_action(lower: &str) -> bool {
         "выходн",
         "тур",
         "отдых",
+        "отдохн",
+        "побыва",
+        "посети",
+        "сходи",
+        "заеха",
         "ночёвк",
         "ночевк",
     ];
@@ -751,8 +814,11 @@ fn is_travel(lower: &str) -> bool {
     const WORDS: &[&str] = &[
         "поезд",
         "поехать",
+        "поех",
         "поездк",
         "прогул",
+        "погуля",
+        "гуля",
         "поесть",
         "пицц",
         "ресторан",
@@ -771,11 +837,20 @@ fn is_travel(lower: &str) -> bool {
         "маршрут",
         "посмотреть",
         "съездить",
+        "скатать",
+        "сгоня",
+        "прокатит",
         "тур",
         "отпуск",
         "ночёвк",
         "ночевк",
         "отдых",
+        "отдохн",
+        "побыва",
+        "посети",
+        "сходи",
+        "заеха",
+        "вылазк",
         "примор",
         "владивосток",
         "уссурийск",
@@ -790,6 +865,9 @@ fn is_travel(lower: &str) -> bool {
         "бухт",
         "залив",
         "пляж",
+        "купат",
+        "искупат",
+        "поплава",
         "горы",
         "природ",
         "музей",
@@ -820,6 +898,31 @@ fn is_travel(lower: &str) -> bool {
         "паб",
         "клуб",
         "ночн",
+        "аквапарк",
+        "зоопарк",
+        "океанариум",
+        "дельфинар",
+        "бассейн",
+        "боулинг",
+        "картинг",
+        "конн",
+        "лошад",
+        "фитнес",
+        "саун",
+        "баня",
+        "баню",
+        "бане",
+        "дайв",
+        "сёрф",
+        "серф",
+        "рыбалк",
+        "хайк",
+        "трекк",
+        "пещер",
+        "церков",
+        "храм",
+        "кемпинг",
+        "пикник",
     ];
     let words = words(lower);
     WORDS
@@ -1016,6 +1119,50 @@ mod tests {
         let bars = parse("поехали в бары и клубы владивостока", today()).unwrap();
         assert!(bars.must_see.is_empty());
         assert!(bars.interests.iter().any(|item| item == "nightlife"));
+    }
+
+    #[test]
+    fn activity_requests_are_travel_not_off_topic() {
+        let water_park = parse("поехали в аквапарк", today()).unwrap();
+        assert!(water_park
+            .interests
+            .iter()
+            .any(|item| item == "water_park"));
+
+        let zoo = parse("в зоопарк с детьми", today()).unwrap();
+        assert!(zoo.interests.iter().any(|item| item == "zoo"));
+        assert!(zoo.with_children);
+
+        let sauna = parse("хочу в баню на выходные", today()).unwrap();
+        assert!(sauna.interests.iter().any(|item| item == "sauna"));
+
+        let waterfall = parse("поедем на водопад", today()).unwrap();
+        assert!(waterfall.interests.iter().any(|item| item == "waterfall"));
+
+        let lighthouse = parse("хочу посмотреть маяк", today()).unwrap();
+        assert!(lighthouse.interests.iter().any(|item| item == "lighthouse"));
+
+        let cave = parse("поехали в пещеры", today()).unwrap();
+        assert!(cave
+            .interests
+            .iter()
+            .any(|item| item == "cave_entrance"));
+
+        let swimming = parse("на выходные в бассейн", today()).unwrap();
+        assert!(swimming
+            .interests
+            .iter()
+            .any(|item| item == "swimming_pool"));
+    }
+
+    #[test]
+    fn gibberish_activities_are_still_refused() {
+        assert_eq!(
+            parse("расскажи анекдот про аквапарк", today())
+                .unwrap_err()
+                .category,
+            "off_topic"
+        );
     }
 
     #[test]
