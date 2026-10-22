@@ -7,6 +7,7 @@ use serde_json::{json, Value};
 use crate::domain::facts::{SourceKind, ToolOutput};
 use crate::domain::plan::parse_time;
 use crate::tools::providers::geo;
+use crate::tools::providers::yandex_weather;
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
 pub struct WeatherTool;
@@ -66,26 +67,50 @@ impl Tool for WeatherTool {
              &timezone=Asia%2FVladivostok&start_date={start}&end_date={end}"
         );
 
-        if let Ok(Ok(response)) =
-            tokio::time::timeout(Duration::from_secs(3), ctx.http.get(url).send()).await
-        {
-            if response.status().is_success() {
-                if let Ok(value) = response.json::<Value>().await {
-                    let days = parse_days(&value);
-                    if !days.is_empty() {
-                        return Ok(ToolOutput::ok(
-                            json!({"days": days, "forecast_available": true}),
-                            SourceKind::Live,
-                            "Прогноз Open-Meteo",
-                        ));
-                    }
+        // Both live sources are asked at once: the Yandex page is heavy and the
+        // Open-Meteo answer is small, so waiting for them in turn doubled the
+        // weather latency of every plan. Open-Meteo wins when it answers
+        // because it carries a real precipitation probability; the Yandex page
+        // (the source the review asked for) is the first fallback.
+        let (yandex, open_meteo) =
+            tokio::join!(yandex_weather::forecast(ctx, lat, lon, start, end), async {
+                let response =
+                    tokio::time::timeout(Duration::from_secs(4), ctx.http.get(url.clone()).send())
+                        .await
+                        .ok()?
+                        .ok()?;
+                if !response.status().is_success() {
+                    return None;
                 }
+                let value = response.json::<Value>().await.ok()?;
+                let days = parse_days(&value);
+                if days.is_empty() {
+                    None
+                } else {
+                    Some(days)
+                }
+            });
+
+        if let Some(days) = open_meteo {
+            return Ok(ToolOutput::ok(
+                json!({"days": days, "forecast_available": true}),
+                SourceKind::Live,
+                "Прогноз Open-Meteo",
+            ));
+        }
+
+        if let Some((days, city)) = yandex {
+            if !days.is_empty() {
+                return Ok(ToolOutput::ok(
+                    json!({"days": days, "forecast_available": true}),
+                    SourceKind::Live,
+                    yandex_weather::summary_label(&city),
+                ));
             }
         }
 
-        // Open-Meteo can be unreachable from some networks. VL.ru publishes a
-        // 9-day forecast for Primorye cities as Next.js JSON; use the nearest
-        // city as a clearly-labelled live fallback.
+        // VL.ru publishes a 9-day forecast for Primorye cities as Next.js JSON;
+        // the last live source before reporting the forecast as missing.
         if let Some((city, slug)) = geo::nearest_city(lat, lon) {
             if let Some(days) = vlru_days(ctx, slug, start, end).await {
                 if !days.is_empty() {

@@ -70,6 +70,78 @@ function waterName(name) {
   return water.test(words[0] || '') || water.test(words[words.length - 1] || '');
 }
 
+// ---------- маршрут и АЗС ----------
+const ROUTE_COLOR = '#0f766e';
+
+// A leg geometry arrives as a GeoJSON LineString serialized to a JSON string.
+// Both the GeoJSON object ({coordinates:[[lon,lat],...]}) and a bare array of
+// [lon,lat] pairs are accepted. Malformed values, short lines and any point
+// outside Primorye reject the whole line: a broken geometry draws nothing
+// instead of a line across (or out of) the map.
+function legLine(leg) {
+  let raw = leg && leg.geometry;
+  if (typeof raw === 'string') {
+    try { raw = JSON.parse(raw); } catch { return null; }
+  }
+  if (!raw || typeof raw !== 'object') return null;
+  const coords = Array.isArray(raw) ? raw : raw.coordinates;
+  if (!Array.isArray(coords) || coords.length < 2) return null;
+  const line = [];
+  for (const pair of coords) {
+    if (!Array.isArray(pair) || pair.length < 2) return null;
+    const lon = Number(pair[0]);
+    const lat = Number(pair[1]);
+    if (!Number.isFinite(lat) || !Number.isFinite(lon)) return null;
+    if (lat < PRIMORYE_BBOX.south || lat > PRIMORYE_BBOX.north
+      || lon < PRIMORYE_BBOX.west || lon > PRIMORYE_BBOX.east) return null;
+    line.push([lat, lon]);
+  }
+  return line;
+}
+
+// Fuel stations are an optional per-day extra (`day.fuel[]`); a missing or
+// malformed list simply means "no fuel markers". Prices only exist in the
+// demo fixture, so every price label is explicitly marked as demo.
+const FUEL_GRADES = [['price_ai95', 'АИ-95'], ['price_ai92', 'АИ-92'], ['price_dt', 'ДТ']];
+const FUEL_GLYPH = '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4.5 21V5.5A2.5 2.5 0 0 1 7 3h4.5A2.5 2.5 0 0 1 14 5.5V21"/><path d="M3 21h12.5"/><path d="M6.7 8.6h5.6"/><path d="M14 12.6h1.8a2 2 0 0 1 2 2v4.2a1.6 1.6 0 0 0 3.2 0v-7.1L18.2 9"/></svg>';
+
+function fuelName(station) {
+  const name = String(station?.name || '').trim() || 'без названия';
+  return /^азс(?![\p{L}])/iu.test(name) ? name : `АЗС ${name}`;
+}
+
+function fuelGrades(station) {
+  return Array.isArray(station?.fuel) ? station.fuel.filter(Boolean).map(String) : [];
+}
+
+function fuelPrices(station) {
+  const entries = [];
+  for (const [key, label] of FUEL_GRADES) {
+    const price = Number(station?.[key]);
+    if (Number.isFinite(price) && price > 0) entries.push([label, price]);
+  }
+  return entries;
+}
+
+function fuelTooltipText(station) {
+  const prices = fuelPrices(station);
+  const price = prices.length ? ` · ${prices[0][0]} ${prices[0][1]} ₽/л (демо)` : '';
+  return `${esc(fuelName(station))}${esc(price)}`;
+}
+
+function fuelPopupHtml(station) {
+  const grades = fuelGrades(station);
+  const prices = fuelPrices(station);
+  const lines = [`<b>${esc(fuelName(station))}</b>`];
+  if (grades.length) lines.push(`<span>Продаёт: ${esc(grades.join(', '))}</span>`);
+  if (prices.length) {
+    const text = prices.map(([label, price]) => `${label} — ${price} ₽/л`).join(' · ');
+    lines.push(`<span>${esc(text)} (демо)</span>`);
+  }
+  lines.push(`<span>${prices.length ? 'Цены демонстрационные — уточняйте на АЗС' : 'Цены уточняйте на АЗС'}</span>`);
+  return lines.join('<br>');
+}
+
 // ---------- карта ----------
 let map = null;
 let layer = null;
@@ -469,7 +541,11 @@ function renderPlan() {
   $('results').hidden = false;
   $('result').hidden = false;
   $('p-title').textContent = plan.title || 'Ваш маршрут';
-  $('p-sum').textContent = plan.summary || '';
+  // Summary не показываем: текст модели описывал служебные детали («51 объект
+  // из Википедии», «план состоит из sights/museum/historic», «данные
+  // демонстрационные»). Дни, предупреждения и погода и так видны ниже.
+  const summary = $('p-sum');
+  if (summary) { summary.textContent = ''; summary.hidden = true; }
 
   const intent = plan.intent || {};
   const meta = [];
@@ -479,13 +555,15 @@ function renderPlan() {
   const transport = plan.transport || intent.transport;
   if (transport) meta.push(`<span class="pill">${esc(transportRu[transport] || transport)}</span>`);
   if (plan.total_km) meta.push(`<span class="pill">${(+plan.total_km).toFixed(0)} км</span>`);
-  if (plan.cost_estimate_rub) {
-    meta.push(`<span class="pill">≈ ${Number(plan.cost_estimate_rub).toLocaleString('ru-RU')} ₽</span>`);
-  }
   for (const weather of (plan.weather || []).slice(0, 3)) {
     meta.push(`<span class="pill pill-weather">${esc(fmtDate(weather.date))} · ${esc(weather.t_min ?? '')}…${esc(weather.t_max ?? '')}° · ${esc(weather.desc || '')}</span>`);
   }
-  const warnings = [...new Set((plan.warnings || []).map((w) => w.message || w))];
+  // "Убрано повторяющихся точек: 9" is an internal counter, not something the
+  // traveller needs; the remaining warnings stay.
+  const hiddenWarnings = /повтор|дубл/i;
+  const warnings = [...new Set((plan.warnings || [])
+    .map((w) => w.message || w)
+    .filter((message) => !hiddenWarnings.test(message)))];
   for (const warning of warnings) meta.push(`<span class="pill pill-warn">${esc(warning)}</span>`);
   $('p-meta').innerHTML = meta.join('');
 
@@ -540,6 +618,40 @@ function renderDay() {
   if (layer) layer.clearLayers();
   markers = [];
   if (!map || !window.L) return;
+  // Route geometry of the active day first: Leaflet keeps paths in the overlay
+  // pane, below the marker pane, so the line is drawn under both marker types.
+  // A leg without usable geometry draws nothing.
+  legs.forEach((leg) => {
+    const line = legLine(leg);
+    if (!line) return;
+    L.polyline(line, {
+      color: ROUTE_COLOR,
+      weight: 4,
+      opacity: 0.85,
+      lineCap: 'round',
+      lineJoin: 'round',
+      interactive: false,
+    }).addTo(layer);
+  });
+  // Fuel stations of the active day: orange square markers with a tooltip and
+  // a popup. They are independent of the stop list and are cleared with the
+  // layer whenever another day is rendered.
+  const fuel = Array.isArray(current.fuel) ? current.fuel : [];
+  fuel.forEach((station) => {
+    const point = mapPoint(station);
+    if (!point) return;
+    L.marker(point, {
+      icon: L.divIcon({
+        className: 'pin-wrap',
+        html: `<div class="fuel-pin">${FUEL_GLYPH}</div>`,
+        iconSize: [22, 22],
+        iconAnchor: [11, 11],
+      }),
+    })
+      .bindTooltip(fuelTooltipText(station), { direction: 'top', offset: [0, -12] })
+      .bindPopup(fuelPopupHtml(station))
+      .addTo(layer);
+  });
   const points = [];
   items.forEach((stop, index) => {
     const point = mapPoint(stop);
@@ -569,7 +681,6 @@ function stopDescription(stop) {
   const kind = kindRu[stop.kind] || 'точка маршрута';
   parts.push(kind.charAt(0).toUpperCase() + kind.slice(1));
   if (stop.opening_hours) parts.push(`часы: ${stop.opening_hours}`);
-  if (stop.price_rub) parts.push(`${stop.price_rub} ₽`);
   return parts.join(' · ');
 }
 
@@ -663,9 +774,8 @@ function renderLodging() {
   const chosen = new Set((plan.days || []).map((item) => item.lodging_id).filter(Boolean));
   $('lodging').innerHTML = list.map((item, index) => {
     const kind = lodgingKindRu[item.kind] || item.kind || 'жильё';
-    const price = item.price_per_night
-      ? `${Number(item.price_per_night).toLocaleString('ru-RU')} ₽<small>за ночь</small>`
-      : 'цена за ночь не указана';
+    // Цену не показываем: у нас она демонстрационная.
+    const price = '';
     const tag = chosen.has(item.id) ? 'в плане' : (index === 0 ? 'рекомендация' : '');
     return `<article class="lodge${chosen.has(item.id) ? ' chosen' : ''}">
       <div class="lodge-top">

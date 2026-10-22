@@ -5,84 +5,142 @@
       "name": "АЗС «Роснефть», ул. Днепровская, Владивосток",
       "lat": 43.1579813,
       "lon": 131.9398728,
-      "source": "mock"
+      "source": "mock",
+      "fuel": ["АИ-92", "АИ-95", "ДТ"],
+      "price_ai92": 62,
+      "price_ai95": 66,
+      "price_dt": 73,
+      "price_note": "демо-оценка"
     },
     {
       "id": "mock:fuel/rosneft-vladivostok-kommunarov",
       "name": "АЗС «Роснефть», ул. Коммунаров, Владивосток",
       "lat": 43.0916808,
       "lon": 131.9266653,
-      "source": "mock"
+      "source": "mock",
+      "fuel": ["АИ-92", "АИ-95", "ДТ"],
+      "price_ai92": 62,
+      "price_ai95": 67,
+      "price_dt": 74,
+      "price_note": "демо-оценка"
     },
     {
       "id": "mock:fuel/rosneft-vladivostok-shosseynaya",
       "name": "АЗС «Роснефть», 2-я Шоссейная ул., Владивосток",
       "lat": 43.2853232,
       "lon": 132.0671849,
-      "source": "mock"
+      "source": "mock",
+      "fuel": ["АИ-92", "АИ-95", "ДТ"],
+      "price_ai92": 63,
+      "price_ai95": 67,
+      "price_dt": 74,
+      "price_note": "демо-оценка"
     },
     {
       "id": "mock:fuel/rosneft-artem-solnechnaya",
       "name": "АЗС «Роснефть», ул. Солнечная, Артём",
       "lat": 43.3513248,
       "lon": 132.1045501,
-      "source": "mock"
+      "source": "mock",
+      "fuel": ["АИ-92", "АИ-95", "ДТ"],
+      "price_ai92": 61,
+      "price_ai95": 66,
+      "price_dt": 73,
+      "price_note": "демо-оценка"
     },
     {
       "id": "mock:fuel/oktant-ussuriysk-dekabristov",
       "name": "АЗС «Октант», ул. Декабристов, Уссурийск",
       "lat": 43.8220626,
       "lon": 131.946127,
-      "source": "mock"
+      "source": "mock",
+      "fuel": ["АИ-92", "АИ-95"],
+      "price_ai92": 60,
+      "price_ai95": 65,
+      "price_note": "демо-оценка"
     },
     {
       "id": "mock:fuel/rosneft-nakhodka-432",
       "name": "АЗС № 432 «Роснефть», ул. Перевальная, Находка",
       "lat": 42.8571702,
       "lon": 132.9122111,
-      "source": "mock"
+      "source": "mock",
+      "fuel": ["АИ-92", "АИ-95", "ДТ"],
+      "price_ai92": 62,
+      "price_ai95": 67,
+      "price_dt": 74,
+      "price_note": "демо-оценка"
     },
     {
       "id": "mock:fuel/alyans-nakhodka-shosseynaya",
       "name": "АЗС «Альянс», Шоссейная ул., Находка",
       "lat": 42.8450756,
       "lon": 132.9345105,
-      "source": "mock"
+      "source": "mock",
+      "fuel": ["АИ-92", "АИ-95"],
+      "price_ai92": 60,
+      "price_ai95": 64,
+      "price_note": "демо-оценка"
     },
     {
       "id": "mock:fuel/rosneft-nakhodka-421",
       "name": "АЗС № 421 «Роснефть», Объездная дорога, Находка",
       "lat": 42.8229555,
       "lon": 132.8527347,
-      "source": "mock"
+      "source": "mock",
+      "fuel": ["АИ-92", "АИ-95", "ДТ"],
+      "price_ai92": 61,
+      "price_ai95": 66,
+      "price_dt": 73,
+      "price_note": "демо-оценка"
     },
     {
       "id": "mock:fuel/rosneft-partizansk-419",
       "name": "АЗС № 419 «Роснефть», Партизанская ул., Партизанск",
       "lat": 43.1384154,
       "lon": 133.1567225,
-      "source": "mock"
+      "source": "mock",
+      "fuel": ["АИ-92", "АИ-95", "ДТ"],
+      "price_ai92": 62,
+      "price_ai95": 66,
+      "price_dt": 75,
+      "price_note": "демо-оценка"
     },
     {
       "id": "mock:fuel/rosneft-lesozavodsk",
       "name": "АЗС «Роснефть», Межгорье, Лесозаводск",
       "lat": 45.4636372,
       "lon": 133.4343099,
-      "source": "mock"
+      "source": "mock",
+      "fuel": ["АИ-92", "АИ-95", "ДТ"],
+      "price_ai92": 63,
+      "price_ai95": 68,
+      "price_dt": 75,
+      "price_note": "демо-оценка"
     },
     {
       "id": "mock:fuel/rosneft-bolshoy-kamen-dzerzhinskogo",
       "name": "АЗС «Роснефть», ул. Дзержинского, Большой Камень",
       "lat": 43.1189755,
       "lon": 132.3763694,
-      "source": "mock"
+      "source": "mock",
+      "fuel": ["АИ-92", "АИ-95", "ДТ"],
+      "price_ai92": 62,
+      "price_ai95": 67,
+      "price_dt": 74,
+      "price_note": "демо-оценка"
     },
     {
       "id": "mock:fuel/rosneft-dalnegorsk-primorskaya",
       "name": "АЗС «Роснефть», Приморская ул., Дальнегорск",
       "lat": 44.5537065,
       "lon": 135.5094034,
-      "source": "mock"
+      "source": "mock",
+      "fuel": ["АИ-92", "АИ-95", "ДТ"],
+      "price_ai92": 63,
+      "price_ai95": 68,
+      "price_dt": 75,
+      "price_note": "демо-оценка"
     }
   ]
 }

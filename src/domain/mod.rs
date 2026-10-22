@@ -13,6 +13,7 @@ pub mod geo;
 pub mod hubs;
 pub mod intent;
 pub mod plan;
+pub mod routing;
 pub mod settlements;
 pub mod spatial;
 pub mod trace;

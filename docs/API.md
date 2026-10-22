@@ -85,7 +85,7 @@ event: tool_call
 data: {"id":"mock_call_1","name":"get_weather","args":{"lat":43.1155,"lon":131.8855,"start_date":"2026-10-24","end_date":"2026-10-24"}}
 
 event: tool_result
-data: {"id":"mock_call_1","name":"get_weather","ok":true,"ms":180,"cached":false,"source":"live","summary":"Прогноз Open-Meteo"}
+data: {"id":"mock_call_1","name":"get_weather","ok":true,"ms":180,"cached":false,"source":"live","summary":"Яндекс.Погода: прогноз по Владивосток"}
 
 event: tool_call
 data: {"id":"mock_call_2","name":"submit_plan","args":{"title":"План по Приморью","summary":"1 дн.","transport":"car","days":[{"date":"2026-10-24","items":[{"place_id":"mock:place:oceanarium"},{"place_id":"mock:place:fortress"}]}],"lodging_ids":[]}}

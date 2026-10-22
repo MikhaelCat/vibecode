@@ -119,6 +119,28 @@ impl LlmClient for MockLlm {
             &intent,
             collect_bad_weather(&request.messages, &intent),
         );
+        // One more tool round before the plan: the day needs a real route, both
+        // for the distance numbers and for the line on the map. Without it the
+        // offline model produced legs with `geometry: null` and the map stayed
+        // empty, which the review reported as "нет отображения маршрутов".
+        if !has_route_result(&request.messages) && places.len() >= 2 {
+            let points: Vec<Value> = places
+                .iter()
+                .take(8)
+                .map(|place| json!({"lat": place.lat, "lon": place.lon}))
+                .collect();
+            return Ok(ChatResponse {
+                content: None,
+                tool_calls: vec![LlmToolCall::new(
+                    self.call_id(),
+                    "get_route",
+                    json!({"points": points, "mode": intent.transport.as_str()}).to_string(),
+                )],
+                usage: estimate_usage(&request.messages, 200),
+                model: self.model.clone(),
+                finish_reason: Some("tool_calls".to_string()),
+            });
+        }
         let lodging_ids = collect_lodging(&request.messages, intent.nights() > 0);
         let draft = build_draft(&intent, &places, &lodging_ids);
         let arguments =
@@ -337,15 +359,23 @@ fn select_places(mut places: Vec<MockPlace>, intent: &Intent, rainy: bool) -> Ve
             places.retain(|place| haversine_km(center, (place.lat, place.lon)) <= 30.0);
         }
     }
-    places.sort_by(|left, right| {
-        let left_match = matches_interest(left, intent);
-        let right_match = matches_interest(right, intent);
-        right_match.cmp(&left_match).then_with(|| {
-            haversine_km(base, (left.lat, left.lon))
-                .partial_cmp(&haversine_km(base, (right.lat, right.lon)))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-    });
+    // Requested kinds first, and each group walked as a route: the offline
+    // model must not hand the plan a day that jumps between two clusters.
+    {
+        let points: Vec<(f64, f64)> = places.iter().map(|place| (place.lat, place.lon)).collect();
+        let ranks: Vec<u8> = places
+            .iter()
+            .map(|place| u8::from(!matches_interest(place, intent)))
+            .collect();
+        let order = crate::domain::routing::priority_route(&points, &ranks, base);
+        let mut reordered: Vec<Option<MockPlace>> = places.drain(..).map(Some).collect();
+        for index in order {
+            if let Some(place) = reordered.get_mut(index).and_then(Option::take) {
+                places.push(place);
+            }
+        }
+        places.extend(reordered.into_iter().flatten());
+    }
     places.truncate(30);
     places
 }
@@ -382,6 +412,18 @@ fn matches_interest(place: &MockPlace, intent: &Intent) -> bool {
             "fishing" => matches!(kind, "beach" | "nature" | "viewpoint"),
             _ => false,
         })
+}
+
+/// True when a route has already been measured in this run.
+fn has_route_result(messages: &[crate::llm::LlmMessage]) -> bool {
+    messages.iter().any(|message| {
+        message.role == "tool"
+            && message
+                .content
+                .as_deref()
+                .map(|content| content.contains("\"distance_km\""))
+                .unwrap_or(false)
+    })
 }
 
 fn collect_lodging(messages: &[crate::llm::LlmMessage], need_lodging: bool) -> Vec<String> {

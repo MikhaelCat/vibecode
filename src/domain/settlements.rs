@@ -127,6 +127,35 @@ fn is_adjectival(word: &str) -> bool {
     .any(|ending| word.ends_with(ending))
 }
 
+/// Positions of the consonants inside a word, counted in letters.
+pub(crate) fn consonant_positions(word: &str) -> Vec<usize> {
+    word.chars()
+        .filter(|character| character.is_alphabetic())
+        .enumerate()
+        .filter(|(_, character)| {
+            !matches!(
+                character,
+                'а' | 'е' | 'ё' | 'и' | 'о' | 'у' | 'ы' | 'э' | 'ю' | 'я' | 'ь' | 'ъ'
+            )
+        })
+        .map(|(index, _)| index)
+        .collect()
+}
+
+/// The consonant skeleton alone is not enough: "Посьет" and "поесть" share the
+/// skeleton "пст", so a user asking for "поесть морепродукты" was sent to the
+/// village Посьет. Case endings move only the *last* consonant, so every
+/// earlier consonant must sit in the same place: "Сергеевка"/"Сергеевке" agree,
+/// "Посьет"/"поесть" do not.
+pub(crate) fn consonants_align(name_positions: &[usize], text_positions: &[usize]) -> bool {
+    let shared = name_positions.len().min(text_positions.len());
+    if shared < 2 {
+        return true;
+    }
+    let compared = shared - 1;
+    name_positions[..compared] == text_positions[..compared]
+}
+
 fn word_matches(text_word: &str, name_word: &str, multi_word_name: bool) -> bool {
     let name_length = name_word.chars().count();
     if name_length < 5 || ambiguous(name_word) {
@@ -140,7 +169,13 @@ fn word_matches(text_word: &str, name_word: &str, multi_word_name: bool) -> bool
     let limit = if name_length >= 8 { 4 } else { 3 };
     let name_key = consonant_key(name_word, limit);
     let text_key = consonant_key(text_word, limit);
-    !name_key.is_empty() && text_key.starts_with(&name_key)
+    if name_key.is_empty() || !text_key.starts_with(&name_key) {
+        return false;
+    }
+    consonants_align(
+        &consonant_positions(name_word),
+        &consonant_positions(text_word),
+    )
 }
 
 fn settlement_matches(haystack: &str, name: &str) -> bool {
@@ -249,8 +284,14 @@ pub fn scope_km(name: &str) -> f64 {
 }
 
 pub fn nearest(lat: f64, lon: f64) -> Option<&'static Settlement> {
+    nearest_within(lat, lon, 30.0)
+}
+
+/// Nearest settlement inside `max_km`. Lakes and other large areas use a wider
+/// reach to find the village on their shore.
+pub fn nearest_within(lat: f64, lon: f64, max_km: f64) -> Option<&'static Settlement> {
     let (index, distance) = tree().nearest(lat, lon, 1).into_iter().next()?;
-    if distance > 30.0 {
+    if distance > max_km {
         return None;
     }
     all().get(index)
@@ -311,5 +352,25 @@ mod tests {
             Some("Кавалерово")
         );
         assert!(resolve("Атлантида").is_none());
+    }
+
+    #[test]
+    fn common_words_are_not_settlements() {
+        // "поесть" shares the consonant skeleton "пст" with "Посьет".
+        assert!(find_in_text("хочу на выходные к морю, погулять и поесть морепродукты").is_none());
+        assert!(find_in_text("поесть и погулять").is_none());
+        // Inflected settlement names still match.
+        assert_eq!(
+            find_in_text("в Сергеевке погулять").map(|item| item.name.as_str()),
+            Some("Сергеевка")
+        );
+        assert_eq!(
+            find_in_text("поездка во Владивосток").map(|item| item.name.as_str()),
+            Some("Владивосток")
+        );
+        assert_eq!(
+            find_in_text("вернуться из Владивостока").map(|item| item.name.as_str()),
+            Some("Владивосток")
+        );
     }
 }

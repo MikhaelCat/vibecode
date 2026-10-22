@@ -181,6 +181,10 @@ pub struct TransportOption {
 }
 
 /// A fuel station returned by `find_fuel`.
+///
+/// Coordinates come from OSM. `fuel` and the prices are only populated for the
+/// demo fixture (`data/mock/fuel.json`); live OSM stations have no availability
+/// or price data, so those fields stay empty.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FuelStation {
     pub id: String,
@@ -190,6 +194,18 @@ pub struct FuelStation {
     pub lon: f64,
     #[serde(default)]
     pub source: SourceKind,
+    /// Fuel grades the station sells (demo data for mock stations).
+    #[serde(default)]
+    pub fuel: Vec<String>,
+    /// Demo price for АИ-92, roubles per litre.
+    #[serde(default)]
+    pub price_ai92: Option<u32>,
+    /// Demo price for АИ-95, roubles per litre.
+    #[serde(default)]
+    pub price_ai95: Option<u32>,
+    /// Demo price for diesel (ДТ), roubles per litre.
+    #[serde(default)]
+    pub price_dt: Option<u32>,
 }
 
 /// A dated event returned by `find_events`.

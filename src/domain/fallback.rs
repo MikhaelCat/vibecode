@@ -52,17 +52,25 @@ pub fn assemble(facts: &mut Facts, intent: &Intent) -> Plan {
     if !nearby.is_empty() {
         places = nearby;
     }
-    // Keep all places, but put the requested venues and kinds first. This
-    // lets a bars/food request dominate while still filling 3+ slots per day.
-    places.sort_by(|left, right| {
-        let left_match = matches_request(left, intent);
-        let right_match = matches_request(right, intent);
-        right_match.cmp(&left_match).then_with(|| {
-            haversine_km(base, (left.lat, left.lon))
-                .partial_cmp(&haversine_km(base, (right.lat, right.lon)))
-                .unwrap_or(std::cmp::Ordering::Equal)
-        })
-    });
+    // Keep all places, but put the requested venues and kinds first, and walk
+    // each group as a route: a day must not zig-zag between two clusters
+    // hundreds of kilometres apart, which the daily-mileage rule rejects.
+    {
+        let points: Vec<(f64, f64)> = places.iter().map(|place| (place.lat, place.lon)).collect();
+        let ranks: Vec<u8> = places
+            .iter()
+            .map(|place| u8::from(!matches_request(place, intent)))
+            .collect();
+        let order = crate::domain::routing::priority_route(&points, &ranks, base);
+        let mut reordered: Vec<Option<crate::domain::facts::PlaceFact>> =
+            places.drain(..).map(Some).collect();
+        for index in order {
+            if let Some(place) = reordered.get_mut(index).and_then(Option::take) {
+                places.push(place);
+            }
+        }
+        places.extend(reordered.into_iter().flatten());
+    }
     let interest_available = places.iter().any(|place| matches_request(place, intent));
     if !intent.interests.is_empty() && interest_available {
         // Do not pad a bars/food request with unrelated sights or a fish

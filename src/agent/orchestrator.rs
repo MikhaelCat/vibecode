@@ -425,7 +425,7 @@ impl Orchestrator {
                             facts.ingest(&name, &output);
                             tools_used.push(name.clone());
                             let compact = compact_tool_data(&name, &output.data);
-                            let content = json_for_model(&compact, 12_000);
+                            let content = json_for_model(&compact, 8_000);
                             trace.tool_calls.push(ToolCallTrace {
                                 id: call_id.clone(),
                                 name: name.clone(),
@@ -925,7 +925,7 @@ fn enforce_search_intent(name: &str, args: &mut Value, intent: &Intent) {
     if wanted.is_empty() && intent.must_see.is_empty() {
         return;
     }
-    object.insert("limit".to_string(), json!(120));
+    object.insert("limit".to_string(), json!(40));
 }
 
 fn search_categories(intent: &Intent) -> Vec<String> {

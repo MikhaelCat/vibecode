@@ -23,7 +23,7 @@ sudoedit /opt/travel-ai/.env
 
 Без ключа (или при `MOCK_LLM=1`) включается детерминированный MockLlm —
 подменяется только LLM; инструменты при наличии сети по-прежнему берут живые
-данные (OSM, Wikipedia, Nominatim, Open-Meteo, VL.ru), а при их недоступности —
+данные (OSM, Wikipedia, Nominatim, Яндекс.Погода, Open-Meteo, VL.ru), а при их недоступности —
 каталог `data/mock`. Для публичного демо задайте `APP_TOKEN`: он передаётся в
 `x-app-token` или `Authorization: Bearer` и закрывает `/api/plan`,
 `/api/plan/sync`, `/api/stats` и `/api/runs/{id}`. Расход ограничивают

@@ -158,8 +158,14 @@ impl Tool for PlacesTool {
         // The OSM map API is small and fast, and Overpass is often blocked.
         // For food/nightlife search it before Overpass so a blocked endpoint
         // cannot eat the whole tool timeout.
-        if wants_osm_business(&categories) {
-            if let Some(places) = osm_map_places(ctx, &area, &categories, limit).await {
+        let deadline = std::time::Instant::now() + SEARCH_BUDGET;
+        // The live providers get a hard time budget: the tool itself is killed
+        // at TOOL_TIMEOUT_SECS (15 s), and a killed call returns nothing at all
+        // — a bar search in Vladivostok once timed out that way and the plan
+        // came out empty. Whatever is not ready in time is skipped, and the
+        // local catalogue below always answers.
+        if wants_osm_business(&categories) && std::time::Instant::now() < deadline {
+            if let Some(places) = osm_map_places(ctx, &area, &categories, limit, deadline).await {
                 let places = scope_to_area(places, &area, nearest_only, limit);
                 if !places.is_empty() {
                     return Ok(ToolOutput::ok(
@@ -175,18 +181,21 @@ impl Tool for PlacesTool {
             }
         }
 
-        if let Some(places) = overpass_places(ctx, &area, &categories, limit).await {
-            let places = scope_to_area(places, &area, nearest_only, limit);
-            if !places.is_empty() {
-                return Ok(ToolOutput::ok(
-                    json!({"places": places}),
-                    SourceKind::Live,
-                    format!("OSM: {} объектов в районе {}", places.len(), area.label),
-                ));
+        if std::time::Instant::now() < deadline {
+            if let Some(places) = overpass_places(ctx, &area, &categories, limit, deadline).await {
+                let places = scope_to_area(places, &area, nearest_only, limit);
+                if !places.is_empty() {
+                    return Ok(ToolOutput::ok(
+                        json!({"places": places}),
+                        SourceKind::Live,
+                        format!("OSM: {} объектов в районе {}", places.len(), area.label),
+                    ));
+                }
             }
         }
 
-        if !wikipedia_tried && wants_wikipedia(&categories) {
+        if !wikipedia_tried && wants_wikipedia(&categories) && std::time::Instant::now() < deadline
+        {
             if let Some(places) = wikipedia_matching_places(
                 ctx,
                 area.lat,
@@ -237,6 +246,10 @@ impl Tool for PlacesTool {
 
 /// Default starting point when the query names the region, not a place.
 const DEFAULT_AREA_CITY: &str = "Владивосток";
+
+/// Time the live providers of one search may spend before the tool gives the
+/// remaining seconds to the local catalogue instead of being killed.
+const SEARCH_BUDGET: Duration = Duration::from_secs(6);
 
 /// A user who asks for the nearest café must get the nearest one, not merely
 /// the ones inside the search box. The model often keeps that wording in
@@ -323,6 +336,7 @@ async fn overpass_places(
     area: &geo::Area,
     categories: &[String],
     limit: usize,
+    deadline: std::time::Instant,
 ) -> Option<Vec<Value>> {
     let filters = overpass_filters(categories);
     let (south, west, north, east) = area.bbox;
@@ -346,8 +360,11 @@ async fn overpass_places(
         "https://overpass-api.de/api/interpreter",
         "https://overpass.kumi.systems/api/interpreter",
     ] {
+        if std::time::Instant::now() >= deadline {
+            return None;
+        }
         let response = tokio::time::timeout(
-            Duration::from_secs(4),
+            Duration::from_secs(2),
             ctx.http.post(endpoint).body(query.clone()).send(),
         )
         .await
@@ -463,58 +480,62 @@ fn osm_values(categories: &[String]) -> Vec<String> {
     values
 }
 
+/// One OSM map-API tile around a centre point.
+///
+/// The timeout covers the whole exchange: a dense city tile is a couple of
+/// megabytes, and reading the body without a limit was what pushed a search
+/// past the 15-second tool timeout and left the plan without points.
+async fn fetch_osm_tile(
+    ctx: &ToolCtx,
+    lat: f64,
+    lon: f64,
+    span: f64,
+    timeout: Duration,
+) -> Option<String> {
+    let bbox = format!(
+        "{:.5},{:.5},{:.5},{:.5}",
+        lon - span * 1.2,
+        lat - span,
+        lon + span * 1.2,
+        lat + span
+    );
+    let url = format!("https://api.openstreetmap.org/api/0.6/map?bbox={bbox}");
+    let user_agent = ctx.nominatim_user_agent.clone();
+    let request = async move {
+        let response = ctx
+            .http
+            .get(&url)
+            .header("User-Agent", user_agent)
+            .send()
+            .await
+            .ok()?;
+        if !response.status().is_success() {
+            return None;
+        }
+        response.text().await.ok()
+    };
+    tokio::time::timeout(timeout, request).await.ok()?
+}
+
 async fn osm_map_places(
     ctx: &ToolCtx,
     area: &geo::Area,
     categories: &[String],
     limit: usize,
+    deadline: std::time::Instant,
 ) -> Option<Vec<Value>> {
     let wanted = osm_values(categories);
     if wanted.is_empty() {
         return None;
     }
-    // The city centre tile is not enough for a 12-points-a-day plan. Scan a
-    // small grid of tiles around the centre — in parallel, so a search stays
-    // fast even when the model calls it several times.
-    let offsets = [
-        (0.0_f64, 0.0_f64),
-        (0.01, 0.0),
-        (-0.01, 0.0),
-        (0.0, 0.012),
-        (0.0, -0.012),
-    ];
-    let requests = offsets.into_iter().map(|(delta_lat, delta_lon)| {
-        let center_lat = area.lat + delta_lat;
-        let center_lon = area.lon + delta_lon;
-        let span = 0.008_f64;
-        let bbox = format!(
-            "{:.5},{:.5},{:.5},{:.5}",
-            center_lon - span * 1.2,
-            center_lat - span,
-            center_lon + span * 1.2,
-            center_lat + span
-        );
-        let url = format!("https://api.openstreetmap.org/api/0.6/map?bbox={bbox}");
-        let http = ctx.http.clone();
-        let user_agent = ctx.nominatim_user_agent.clone();
-        async move {
-            let response = tokio::time::timeout(
-                Duration::from_secs(4),
-                http.get(&url).header("User-Agent", user_agent).send(),
-            )
-            .await
-            .ok()?
-            .ok()?;
-            if !response.status().is_success() {
-                return None;
-            }
-            response.text().await.ok()
-        }
-    });
-    let responses = futures::future::join_all(requests).await;
+    // Tiles are fetched and parsed one after another, nearest first: a city
+    // centre tile alone usually fills the day, while parsing five large
+    // documents used to blow the 15-second tool timeout and return nothing at
+    // all ("поиск не нашёл точек"). Parsing happens only while the budget lasts.
     let mut all: Vec<Value> = Vec::new();
     let mut seen_ids: HashSet<String> = HashSet::new();
-    for xml in responses.into_iter().flatten() {
+    let mut take = |xml: Option<String>, all: &mut Vec<Value>| {
+        let Some(xml) = xml else { return };
         for place in parse_osm_map(&xml, area, &wanted, limit) {
             if let Some(id) = place.get("id").and_then(Value::as_str) {
                 if seen_ids.insert(id.to_string()) {
@@ -522,34 +543,41 @@ async fn osm_map_places(
                 }
             }
         }
-    }
-    if all.is_empty() {
-        // Dense city centres can hit the 50k-node limit on the wider tiles;
-        // retry once with a small centre box.
-        let span = 0.004_f64;
-        let bbox = format!(
-            "{:.5},{:.5},{:.5},{:.5}",
-            area.lon - span * 1.2,
-            area.lat - span,
-            area.lon + span * 1.2,
-            area.lat + span
-        );
-        let url = format!("https://api.openstreetmap.org/api/0.6/map?bbox={bbox}");
-        if let Ok(Ok(response)) = tokio::time::timeout(
-            Duration::from_secs(4),
-            ctx.http
-                .get(&url)
-                .header("User-Agent", &ctx.nominatim_user_agent)
-                .send(),
-        )
-        .await
-        {
-            if response.status().is_success() {
-                if let Ok(xml) = response.text().await {
-                    all = parse_osm_map(&xml, area, &wanted, limit);
-                }
-            }
+    };
+
+    take(
+        fetch_osm_tile(ctx, area.lat, area.lon, 0.008, Duration::from_secs(3)).await,
+        &mut all,
+    );
+    for (delta_lat, delta_lon) in [
+        (0.01_f64, 0.0_f64),
+        (-0.01, 0.0),
+        (0.0, 0.012),
+        (0.0, -0.012),
+    ] {
+        if all.len() >= limit / 2 || std::time::Instant::now() >= deadline {
+            break;
         }
+        take(
+            fetch_osm_tile(
+                ctx,
+                area.lat + delta_lat,
+                area.lon + delta_lon,
+                0.008,
+                Duration::from_secs(2),
+            )
+            .await,
+            &mut all,
+        );
+    }
+
+    if all.is_empty() && std::time::Instant::now() < deadline {
+        // Dense city centres can hit the 50k-node limit on the wider tiles;
+        // retry once with a small centre box, unless the budget is already gone.
+        take(
+            fetch_osm_tile(ctx, area.lat, area.lon, 0.004, Duration::from_secs(2)).await,
+            &mut all,
+        );
     }
     all.sort_by(|left, right| {
         let left = left

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Headless frontend test: static shell + SSE plan rendering + refusal UI.
+# Headless frontend test: static shell + SSE plan rendering + refusal UI +
+# the map's fuel-station markers and per-day route polylines.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -16,7 +17,9 @@ cleanup() {
 trap cleanup EXIT
 
 fail() { echo "FAIL: $*" >&2; exit 1; }
+bad() { echo "FAIL: $*" >&2; exit 1; }
 ok() { echo "OK  $*"; }
+note() { echo "NOTE $*"; }
 
 command -v "$CHROME" >/dev/null || fail "chromium not found (set CHROME=...)"
 curl -fsS "$BASE_URL/api/health" -o "$TMP_DIR/health.json" || fail "backend is not running at $BASE_URL"
@@ -44,11 +47,11 @@ done
 curl -fsS "http://127.0.0.1:$PORT/json" >/dev/null || fail "chromium CDP did not start"
 sleep 3
 
-python3 - "$PORT" "$BASE_URL" <<'PY'
+python3 - "$PORT" "$BASE_URL" "$TMP_DIR/layers.json" <<'PY'
 import asyncio, json, sys, urllib.request
 import websockets
 
-port, base = sys.argv[1], sys.argv[2]
+port, base, status_path = sys.argv[1], sys.argv[2], sys.argv[3]
 
 async def main():
     targets = json.load(urllib.request.urlopen(f"http://127.0.0.1:{port}/json"))
@@ -191,9 +194,261 @@ async def main():
                 print(json.dumps({"refusal": data}, ensure_ascii=False))
                 break
 
+        # ---- fuel markers and route polylines -------------------------------
+        # 1. The test installs its own fetch hook (test-side only; app.js is
+        #    untouched) so it can read the exact SSE bytes this page received.
+        #    Everything below is asserted against that captured payload.
+        # 2. A car query is submitted: fuel is only meaningful on the road, and
+        #    app.js draws `day.fuel[]` markers and `day.legs[].geometry` lines
+        #    for the active day. This particular query is one of the car demo
+        #    queries whose payload carries both layers in mock mode (the
+        #    Владивосток — Андреевка smoke query currently has no fuel stations
+        #    and no drawable leg in this sandbox, so it would only skip).
+        # 3. Marker/polyline counts come from the live page: `.fuel-pin` is the
+        #    marker glyph class app.js renders inside its divIcon, and polylines
+        #    are read from the Leaflet layer tree (`map._layers`, top-level
+        #    `let` bindings of the classic app.js script are visible to CDP
+        #    evaluation). Canvas rendering (preferCanvas: true) means the DOM
+        #    has no <path> elements to count, hence the Leaflet introspection.
+        # 4. If the backend cannot provide fuel or geometry in this sandbox,
+        #    the matching assertion is skipped with a WARN — never a silent pass.
+        hook_js = """(() => {
+          if (window.__ftHooked) return 'already';
+          window.__ftHooked = true;
+          window.__ftSSE = [];
+          const orig = window.fetch.bind(window);
+          window.fetch = async (...args) => {
+            const req = args[0];
+            const url = typeof req === 'string' ? req : (req && req.url) || '';
+            const res = await orig(...args);
+            if (String(url).includes('/api/plan')) {
+              try { res.clone().text().then((text) => window.__ftSSE.push(text)).catch(() => {}); } catch (e) {}
+            }
+            return res;
+          };
+          return 'installed';
+        })()"""
+        await ws.send(json.dumps({"id": 5, "method": "Runtime.evaluate", "params": {
+            "expression": hook_js, "returnByValue": True}}))
+        while True:
+            msg = json.loads(await ws.recv())
+            if msg.get("id") == 5:
+                break
+
+        fuel_js = """(async () => {
+          const q = document.getElementById('q');
+          q.value = 'Один день на машине вокруг Владивостока, где заправиться';
+          document.getElementById('form').requestSubmit();
+          for (let i = 0; i < 200; i++) {
+            await new Promise(r => setTimeout(r, 500));
+            if (window.__ftSSE.length && !document.getElementById('result').hidden) break;
+          }
+          await new Promise(r => setTimeout(r, 1000));
+          if (!window.__ftSSE.length) return JSON.stringify({ok: false, reason: 'no SSE body captured'});
+          let plan = null;
+          for (const text of window.__ftSSE.slice().reverse()) {
+            for (const block of String(text).replace(/\\r/g, '').split('\\n\\n')) {
+              let event = 'message';
+              const data = [];
+              for (const line of block.split('\\n')) {
+                if (line.startsWith('event:')) event = line.slice(6).trim();
+                else if (line.startsWith('data:')) data.push(line.slice(5).trimStart());
+              }
+              if (event !== 'plan' || !data.length) continue;
+              try { const parsed = JSON.parse(data.join('\\n')); plan = parsed.plan || parsed; } catch (e) { plan = null; }
+              if (plan) break;
+            }
+            if (plan) break;
+          }
+          if (!plan) return JSON.stringify({ok: false, reason: 'captured stream has no plan event'});
+          const days = Array.isArray(plan.days) ? plan.days : [];
+          const countLayers = () => {
+            let polylines = null, markers = null;
+            try {
+              if (typeof map !== 'undefined' && map && map._layers && typeof L !== 'undefined') {
+                let lines = 0, pins = 0;
+                const seen = new Set();
+                const walk = (obj) => {
+                  if (!obj || typeof obj !== 'object' || seen.has(obj)) return;
+                  seen.add(obj);
+                  if (obj instanceof L.Polyline) lines++;
+                  if (obj instanceof L.Marker) pins++;
+                  if (obj._layers) for (const key in obj._layers) walk(obj._layers[key]);
+                };
+                walk(map);
+                polylines = lines;
+                markers = pins;
+              }
+            } catch (e) { polylines = 'error: ' + e; }
+            const el = document.getElementById('map');
+            return {
+              polylines,
+              markers,
+              fuelPins: el ? el.querySelectorAll('.fuel-pin').length : 0,
+              stopPins: el ? el.querySelectorAll('.pin').length : 0,
+              markerIcons: el ? el.querySelectorAll('.leaflet-marker-icon').length : 0
+            };
+          };
+          // Mirrors mapPoint() in app.js: only finite, non-(0,0) points inside
+          // the Primorye bbox can become map layers.
+          const drawable = (item) => {
+            const lat = Number(item && (item.lat !== undefined ? item.lat : item.latitude));
+            const lon = Number(item && (item.lon !== undefined ? item.lon : (item.lng !== undefined ? item.lng : item.longitude)));
+            if (!Number.isFinite(lat) || !Number.isFinite(lon)) return false;
+            if (lat < 42.2 || lat > 48.5 || lon < 130.0 || lon > 139.1) return false;
+            return !(Math.abs(lat) < 0.0001 && Math.abs(lon) < 0.0001);
+          };
+          const tabs = [...document.querySelectorAll('#tabs .tab')];
+          const evidence = [];
+          for (let i = 0; i < days.length; i++) {
+            const current = days[i] || {};
+            const fuel = Array.isArray(current.fuel) ? current.fuel : [];
+            const legs = Array.isArray(current.legs) ? current.legs : [];
+            const geometries = legs.map((leg) => leg && leg.geometry).filter((g) => g !== null && g !== undefined);
+            const item = {
+              day: i,
+              fuel: fuel.length,
+              drawableFuel: fuel.filter(drawable).length,
+              geometries: geometries.length,
+              geometry: geometries.map((g) => (typeof g === 'string' ? g : JSON.stringify(g)))
+            };
+            if (!fuel.length && !geometries.length) { item.counts = null; evidence.push(item); continue; }
+            if (tabs[i]) {
+              tabs[i].click();
+              await new Promise(r => setTimeout(r, 500));
+            }
+            item.counts = countLayers();
+            evidence.push(item);
+          }
+          return JSON.stringify({ok: true, days: days.length, tabs: tabs.length, evidence});
+        })()"""
+        await ws.send(json.dumps({"id": 6, "method": "Runtime.evaluate", "params": {
+            "expression": fuel_js, "awaitPromise": True, "returnByValue": True}}))
+        while True:
+            msg = json.loads(await ws.recv())
+            if msg.get("id") == 6:
+                if "result" not in msg or "exceptionDetails" in msg.get("result", {}):
+                    raise SystemExit(f"CDP fuel/route evaluate failed: {json.dumps(msg)[:1200]}")
+                value = msg["result"]["result"].get("value")
+                layers = json.loads(value) if value else None
+                break
+        if not layers or not layers.get("ok"):
+            raise SystemExit(f"fuel/route plan did not render: {layers}")
+
+        # The same bbox/mapPoint rules app.js applies before drawing a layer.
+        def parse_line(raw):
+            try:
+                geo = json.loads(raw)
+            except (TypeError, ValueError):
+                return None
+            coords = geo if isinstance(geo, list) else (geo.get("coordinates") if isinstance(geo, dict) else None)
+            if not isinstance(coords, list) or len(coords) < 2:
+                return None
+            points = []
+            for pair in coords:
+                if not isinstance(pair, list) or len(pair) < 2:
+                    return None
+                lon, lat = pair[0], pair[1]
+                if isinstance(lon, bool) or isinstance(lat, bool) or not isinstance(lon, (int, float)) or not isinstance(lat, (int, float)):
+                    return None
+                if not (130.0 <= lon <= 139.1 and 42.2 <= lat <= 48.5):
+                    return None
+                points.append((lat, lon))
+            return points
+
+        status = {"fuel": "skipped", "route": "skipped"}
+        fuel_in_payload = any(item["fuel"] > 0 for item in layers["evidence"])
+        geometry_in_payload = any(item["geometries"] > 0 for item in layers["evidence"])
+
+        if not fuel_in_payload:
+            print("WARN: the car query plan carries no plan.days[].fuel in this sandbox "
+                  "build — fuel-marker assertion skipped")
+        else:
+            checked = 0
+            for item in layers["evidence"]:
+                if item["drawableFuel"] <= 0 or item["counts"] is None:
+                    continue
+                pins = item["counts"]["fuelPins"]
+                if pins < 1 or pins < item["drawableFuel"]:
+                    raise SystemExit(
+                        f"fuel stations are in the payload but not on the map "
+                        f"(day {item['day']}): expected >= {item['drawableFuel']} .fuel-pin markers, got {pins}")
+                checked += 1
+            if checked == 0:
+                print("WARN: payload fuel stations carry no drawable coordinates — "
+                      "fuel-marker assertion skipped")
+            else:
+                status["fuel"] = "asserted"
+
+        linestrings = 0
+        for item in layers["evidence"]:
+            for raw in item["geometry"]:
+                try:
+                    geo = json.loads(raw)
+                except (TypeError, ValueError):
+                    continue
+                if isinstance(geo, dict) and geo.get("type") == "LineString":
+                    linestrings += 1
+        if not geometry_in_payload:
+            print("WARN: the car query plan carries no plan.days[].legs[].geometry in this "
+                  "sandbox build — route-polyline assertion skipped")
+        else:
+            valid_lines = sum(1 for item in layers["evidence"] for raw in item["geometry"] if parse_line(raw))
+            if linestrings == 0:
+                raise SystemExit("leg geometry is present but no leg is a GeoJSON LineString")
+            if valid_lines == 0:
+                raise SystemExit("leg geometry is present but none is a drawable Primorye line")
+            checked = 0
+            for item in layers["evidence"]:
+                day_lines = sum(1 for raw in item["geometry"] if parse_line(raw))
+                if day_lines == 0 or item["counts"] is None:
+                    continue
+                polylines = item["counts"]["polylines"]
+                if not isinstance(polylines, int):
+                    raise SystemExit(f"could not read the Leaflet layer tree: {polylines}")
+                if polylines < 1 or polylines < day_lines:
+                    raise SystemExit(
+                        f"route geometry is in the payload but no polyline is on the map "
+                        f"(day {item['day']}): expected >= {day_lines}, got {polylines}")
+                checked += 1
+            if checked == 0:
+                print("WARN: geometry present only on days without map evidence — "
+                      "route-polyline assertion skipped")
+            else:
+                status["route"] = "asserted"
+
+        with open(status_path, "w", encoding="utf-8") as handle:
+            json.dump(status, handle, ensure_ascii=False, separators=(",", ":"))
+        summary = {
+            "layers": status,
+            "plan_days": layers["days"],
+            "days": [
+                {
+                    "day": item["day"],
+                    "fuel": item["fuel"],
+                    "drawable_fuel": item["drawableFuel"],
+                    "geometry_legs": item["geometries"],
+                    "map": item["counts"],
+                }
+                for item in layers["evidence"]
+            ],
+        }
+        print(json.dumps(summary, ensure_ascii=False))
+
 asyncio.run(main())
 PY
 
 ok "plan rendered with weather or an explicit missing-data warning"
 ok "refusal rendered"
+[[ -f "$TMP_DIR/layers.json" ]] || bad "fuel/route assertions produced no status"
+if grep -q '"fuel":"asserted"' "$TMP_DIR/layers.json"; then
+  ok "fuel-station markers rendered on the map"
+else
+  note "fuel-station markers not asserted (no plan.days[].fuel in this sandbox run)"
+fi
+if grep -q '"route":"asserted"' "$TMP_DIR/layers.json"; then
+  ok "route polylines rendered on the map"
+else
+  note "route polylines not asserted (no legs[].geometry in this sandbox run)"
+fi
 echo "All frontend checks passed against $BASE_URL"

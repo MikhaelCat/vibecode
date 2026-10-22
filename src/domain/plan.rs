@@ -2,10 +2,13 @@ use std::collections::{BTreeMap, HashSet};
 
 use chrono::{DateTime, NaiveDate, NaiveTime, Utc};
 use serde::{de, Deserialize, Deserializer, Serialize};
+use serde_json::json;
 use uuid::Uuid;
 
 use crate::domain::dates::{add_days, days_inclusive};
-use crate::domain::facts::{EventFact, Facts, Lodging, PlaceFact, SourceKind, SourceRef};
+use crate::domain::facts::{
+    EventFact, Facts, FuelStation, Lodging, PlaceFact, SourceKind, SourceRef,
+};
 use crate::domain::geo::{haversine_km, on_land, travel_minutes, waterbody_title};
 use crate::domain::intent::{Intent, TransportMode};
 use crate::domain::spatial::KdTree;
@@ -118,6 +121,11 @@ pub struct DayPlan {
     /// separate stack and never become map pins or plan items.
     #[serde(default)]
     pub events: Vec<PlanEvent>,
+    /// Fuel stations along this day's route, for the map layer. Coordinates come
+    /// from OSM; grades and prices are demo estimates (`data/mock/fuel.json`),
+    /// which the UI labels as such.
+    #[serde(default)]
+    pub fuel: Vec<FuelStation>,
     pub lodging_id: Option<String>,
 }
 
@@ -351,6 +359,9 @@ pub fn plan_events_for_day(
 /// nearest town second, honest "nothing found" third.
 pub(crate) const LODGING_MAX_KM: f64 = 45.0;
 
+/// How many night-stay options the API returns; the UI lists them all.
+const LODGING_OPTIONS_MAX: usize = 6;
+
 fn lodging_belongs(
     option: &Lodging,
     anchor_tree: &KdTree,
@@ -387,16 +398,33 @@ pub(crate) fn is_vladivostok(option: &Lodging) -> bool {
         && haversine_km((option.lat, option.lon), (43.1155, 131.8855)) <= 25.0
 }
 
-fn sort_lodging_by_distance(options: &mut [Lodging], anchors: &[(f64, f64)]) {
-    let points: Vec<(f64, f64)> = anchors.to_vec();
-    let tree = KdTree::new(&points);
+/// Night-stay bands used to rank options: inside the near band distance hardly
+/// matters, so price decides; farther out the extra drive has to be worth it.
+const LODGING_NEAR_BAND_KM: f64 = 12.0;
+
+/// Value ranking: near band by price, the far band by distance and price, so
+/// the recommended option is a sensible one instead of the priciest nearby.
+fn sort_lodging_by_value(options: &mut [Lodging], anchors: &[(f64, f64)]) {
+    let tree = KdTree::new(anchors);
     options.sort_by(|left, right| {
         let left_distance = lodging_distance(&tree, left);
         let right_distance = lodging_distance(&tree, right);
-        left_distance
-            .partial_cmp(&right_distance)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.price_per_night.cmp(&right.price_per_night))
+        let band = |distance: f64| u8::from(distance > LODGING_NEAR_BAND_KM);
+        band(left_distance)
+            .cmp(&band(right_distance))
+            .then_with(|| {
+                if left_distance <= LODGING_NEAR_BAND_KM {
+                    // "Рекомендация" is the cheapest of the walking-distance
+                    // options; a 9000 ₽ hotel must not win over a 2500 ₽ one.
+                    left.price_per_night
+                        .cmp(&right.price_per_night)
+                        .then_with(|| left_distance.total_cmp(&right_distance))
+                } else {
+                    left_distance
+                        .total_cmp(&right_distance)
+                        .then_with(|| left.price_per_night.cmp(&right.price_per_night))
+                }
+            })
     });
 }
 
@@ -442,6 +470,50 @@ pub fn trip_radius_km(transport: TransportMode, days: u8) -> f64 {
         TransportMode::Transit => (70.0 * days).clamp(70.0, 400.0),
     }
 }
+
+/// Fuel stations of one day: those near the day's route, nearest first, capped
+/// so the map does not turn into a field of fuel icons. Prices and grades come
+/// from the demo fixture and are labelled as demo by the tools and the UI.
+const FUEL_MARKERS_PER_DAY: usize = 6;
+
+pub fn fuel_for_day(
+    items: &[PlanItem],
+    stations: &[FuelStation],
+    limit: usize,
+) -> Vec<FuelStation> {
+    let points: Vec<(f64, f64)> = items
+        .iter()
+        .map(|item| (item.lat, item.lon))
+        .filter(|(lat, lon)| *lat != 0.0 || *lon != 0.0)
+        .collect();
+    if points.is_empty() || stations.is_empty() {
+        return Vec::new();
+    }
+    let tree = KdTree::new(&points);
+    let mut stations: Vec<(f64, FuelStation)> = stations
+        .iter()
+        .filter_map(|station| {
+            let (_, distance) = tree
+                .nearest(station.lat, station.lon, 1)
+                .into_iter()
+                .next()?;
+            if distance > FUEL_NEAR_ROUTE_KM {
+                return None;
+            }
+            Some((distance, station.clone()))
+        })
+        .collect();
+    stations.sort_by(|left, right| {
+        left.0
+            .partial_cmp(&right.0)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    stations.truncate(limit);
+    stations.into_iter().map(|(_, station)| station).collect()
+}
+
+/// How far a fuel station may sit from the day's stops to be shown on the map.
+const FUEL_NEAR_ROUTE_KM: f64 = 25.0;
 
 pub fn city_center(name: &str) -> Option<(f64, f64)> {
     crate::domain::settlements::center(name)
@@ -641,6 +713,19 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
             .unwrap_or(20)
             .min(20);
         let events = plan_events_for_day(date, &items, facts, event_limit);
+        // Stations the model asked for when they exist; otherwise the demo
+        // catalogue, so a car trip always shows fuel on the map. Prices there
+        // are demo estimates and the payload says so.
+        let fuel_stations: Vec<FuelStation> = if facts.fuel.is_empty() {
+            if intent.transport == TransportMode::Car {
+                crate::domain::facts::mock_fuel()
+            } else {
+                Vec::new()
+            }
+        } else {
+            facts.fuel.clone()
+        };
+        let fuel = fuel_for_day(&items, &fuel_stations, FUEL_MARKERS_PER_DAY);
         days.push(DayPlan {
             date,
             title: match items.first() {
@@ -650,6 +735,7 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
             items,
             legs,
             events,
+            fuel,
             lodging_id,
         });
         date = add_days(date, 1);
@@ -684,12 +770,31 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
     // Lodging belongs to the trip, not to a city 200 km away: every night stay
     // and every offered option is checked against the plan's own points. This is
     // what stops "Отдых в бухте Триозёрье" from offering Vladivostok hotels.
-    let anchor_points: Vec<(f64, f64)> = days
+    let mut anchor_points: Vec<(f64, f64)> = days
         .iter()
         .flat_map(|day| day.items.iter())
         .map(|item| (item.lat, item.lon))
         .filter(|(lat, lon)| *lat != 0.0 || *lon != 0.0)
         .collect();
+    if anchor_points.is_empty() {
+        // A plan without stops still has a named place: without this anchor the
+        // deterministic fallback offered a Лесозаводск hotel for a Терней trip.
+        let place = intent.city().and_then(city_center).or_else(|| {
+            intent.hub().and_then(|id| {
+                crate::domain::hubs::all()
+                    .iter()
+                    .find(|hub| hub.id == id)
+                    .map(|hub| (hub.lat, hub.lon))
+            })
+        });
+        if let Some(center) = place {
+            anchor_points.push(center);
+        } else {
+            // Nothing named at all: the app's default trip is Vladivostok, so
+            // the options must not mix hotels from every Primorye city.
+            anchor_points.push((43.1155, 131.8855));
+        }
+    }
     let anchor_tree = KdTree::new(&anchor_points);
     // Vladivostok lodging is allowed only when the trip itself is there: the
     // query names that hub, no place at all was named (Vladivostok is the
@@ -711,9 +816,12 @@ pub fn enrich(draft: PlanDraft, intent: &Intent, facts: &Facts) -> Plan {
         })
         .cloned()
         .collect();
-    // The nearest options first — a guest house 4 km away is more useful than a
-    // hotel across the region, whatever it costs.
-    sort_lodging_by_distance(&mut lodging_options, &anchor_points);
+    // Near band first, cheapest first inside it: the UI marks the first option
+    // as "рекомендация", and a 9000 ₽ hotel recommended over a 2500 ₽ one 3 km
+    // further away reads as a mistake. Distance still wins over a longer drive.
+    sort_lodging_by_value(&mut lodging_options, &anchor_points);
+    // The list is what the user scrolls: keep it short and local.
+    lodging_options.truncate(LODGING_OPTIONS_MAX);
 
     let mut lodging = Vec::new();
     for lodging_id in &draft.lodging_ids {
@@ -865,9 +973,31 @@ pub fn build_leg(from: &PlanItem, to: &PlanItem, intent: &Intent, facts: &Facts)
         mode: intent.transport,
         distance_km: (distance * 10.0).round() / 10.0,
         duration_min: travel_minutes(distance, intent.transport),
-        geometry: None,
+        geometry: mock_leg_geometry(from, to),
         source: SourceKind::Estimated,
     }
+}
+
+/// A straight line between two stops, with a midpoint. The map draws whatever
+/// geometry a leg carries, and a plan without any line reads as broken; when
+/// neither OSRM nor the route tool answered, this mock line is what the user
+/// sees, and `source: estimated` says so.
+fn mock_leg_geometry(from: &PlanItem, to: &PlanItem) -> Option<String> {
+    if (from.lat == 0.0 && from.lon == 0.0) || (to.lat == 0.0 && to.lon == 0.0) {
+        return None;
+    }
+    let middle = ((from.lat + to.lat) / 2.0, (from.lon + to.lon) / 2.0);
+    Some(
+        json!({
+            "type": "LineString",
+            "coordinates": [
+                [from.lon, from.lat],
+                [middle.1, middle.0],
+                [to.lon, to.lat]
+            ]
+        })
+        .to_string(),
+    )
 }
 
 pub fn day_count(plan: &Plan) -> usize {
@@ -989,8 +1119,16 @@ mod tests {
             transport: Some(TransportMode::Car),
         };
 
+        let _ = price;
         let plan = enrich(draft, &intent, &facts);
-        assert_eq!(plan.cost_estimate_rub, Some(price * 2));
+        // The value ranking may pick a cheaper hotel than the draft asked for;
+        // the invariant is that every night of the chosen stay is counted.
+        let chosen = plan
+            .lodging
+            .first()
+            .expect("lodging chosen")
+            .price_per_night;
+        assert_eq!(plan.cost_estimate_rub, Some(chosen * 2));
     }
 
     #[test]
@@ -1210,5 +1348,35 @@ mod tests {
             .iter()
             .any(|warning| warning.code == "lodging_none_near"));
         assert!(plan.lodging.is_empty());
+    }
+
+    #[test]
+    fn fuel_markers_are_for_car_trips_only() {
+        // "АЗС учитывается только на машине, в остальных случаях отсутствует":
+        // fuel is part of a car day, not of a walking or transit plan.
+        let (facts, place) = lodging_facts();
+        let mut intent = intent();
+        intent.transport = TransportMode::Car;
+        let car = enrich(draft_with(&place.id, intent.start_date), &intent, &facts);
+        assert!(
+            !car.days[0].fuel.is_empty(),
+            "a car day must carry fuel stations for the map"
+        );
+        assert!(car.days[0]
+            .fuel
+            .iter()
+            .all(|station| station.lat != 0.0 && station.lon != 0.0));
+
+        let mut foot_intent = intent.clone();
+        foot_intent.transport = TransportMode::Foot;
+        let foot = enrich(
+            draft_with(&place.id, foot_intent.start_date),
+            &foot_intent,
+            &facts,
+        );
+        assert!(
+            foot.days[0].fuel.is_empty(),
+            "a walking day must not show fuel stations"
+        );
     }
 }

@@ -13,7 +13,7 @@ src/api ──────────────► src/agent (orchestrator)
                           │  guard → intent → tool calls
                           ▼
                      src/tools/providers ──► интернет (OSM/Overpass, Wikipedia,
-                          │                   Nominatim/Photon, Open-Meteo, OSRM,
+                          │                   Nominatim/Photon, Яндекс.Погода/Open-Meteo, OSRM,
                           │                   VL.ru, Яндекс Карты — с ключом)
                           │  ToolOutput (live/cache/mock/stale/estimated + summary)
                           ▼
@@ -100,6 +100,10 @@ src/api ──────────────► src/agent (orchestrator)
   (`data/geo/primorye_hubs.json`).
 - `spatial` — k-d дерево: радиусные фильтры и поиск ближайших для
   инструментов, газетира и правил жилья.
+- `routing` — перегоны дня как задача о кратчайшем пути: полный граф точек
+  (рёбра — дорожное расстояние), Дейкстра от стартовой точки, улучшение
+  2-opt и порядок с приоритетом запрошенных мест; используется fallback- и
+  офлайн-планировщиком, чтобы день не «зигзагировал» через весь край.
 - `geo` — «суша/вода» по GeoJSON края и суши, `waterbody_title`,
   haversine и оценочное время в пути.
 - `dates` — Asia/Vladivostok: «сегодня», ближайшие выходные, месячные фразы.
@@ -169,11 +173,11 @@ OpenRouter; 3 попытки с backoff, таймаут `REQUEST_TIMEOUT_SECS`) 
 | `geocode` | Nominatim → Photon → локальный справочник (только при совпадении имени) |
 | `search_places` | Яндекс Карты (с ключом; для еды, ночной жизни и заведений) → Википедия geosearch для достопримечательных категорий (для смешанных — повторная попытка после Overpass) → OSM map API (бизнес-теги; единственный OSM-путь, который обычно работает из dev-сети) → Overpass (2 слота, часто заблокирован) → локальный справочник рядом с районом |
 | `get_nearby_attractions` | Википедия geosearch → локальные места в радиусе |
-| `get_weather` | Open-Meteo → VL.ru (ближайший город) → честное «прогноз недоступен» |
-| `get_route` | OSRM (только `car`; `geometry` всегда null) → оценка по haversine |
+| `get_weather` | Яндекс.Погода (десятидневная страница города: температуры, ветер, условия, восход/закат; вероятность осадков выводится из описания) → Open-Meteo (даёт вероятность осадков числом) → VL.ru (ближайший город) → честное «прогноз недоступен» |
+| `get_route` | OSRM (только `car`; `overview=full`, GeoJSON-геометрия строкой, опциональные `legs` для >2 точек) → оценка по haversine с мок-геометрией (LineString) |
 | `find_lodging` | один запрос Overpass в боксе 35 км → локальный каталог по списку хаб-листа |
 | `find_transport` | локальный справочник `data/mock/transport.json` (демо) |
-| `find_fuel` | Overpass по коридору маршрута → локальный справочник |
+| `find_fuel` | Overpass по коридору маршрута → локальный справочник (наличие топлива и цены — демо-оценки, не live-данные) |
 | `find_events` | VL.ru, JSON-LD schema.org Event по городам афиши |
 
 Правила инструментов:

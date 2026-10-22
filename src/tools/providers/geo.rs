@@ -290,6 +290,19 @@ async fn resolve_area_uncached(ctx: &ToolCtx, area: &str, normalized: &str) -> O
         .iter()
         .find(|(name, _, _, _)| normalized.contains(*name))
     {
+        // A lake is an area to search, but its stops stand on the shore: Ханка
+        // is ~70 km across, and a search around the water centroid spread a
+        // two-day plan over the whole lake. Anchor to the nearest shore
+        // settlement (Камень-Рыболов, Астраханка, …) and keep the water bbox
+        // only when there is no village in reach.
+        if let Some(shore) = crate::domain::settlements::nearest_within(*lat, *lon, 60.0) {
+            return Some(area_around(
+                shore.lat,
+                shore.lon,
+                shore.scope_km().max(20.0),
+                area,
+            ));
+        }
         return Some(Area {
             lat: *lat,
             lon: *lon,

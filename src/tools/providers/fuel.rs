@@ -17,7 +17,7 @@ impl Tool for FuelTool {
     }
 
     fn description(&self) -> &'static str {
-        "АЗС вдоль маршрута. Станции из OSM; наличие топлива и цены не проверяются."
+        "АЗС вдоль маршрута. Координаты станций — OpenStreetMap; наличие топлива и цены — демо-оценки (не live-данные)."
     }
 
     fn parameters(&self) -> Value {
@@ -65,7 +65,10 @@ impl Tool for FuelTool {
                         return Ok(ToolOutput::ok(
                             json!({"stations": stations}),
                             SourceKind::Live,
-                            format!("АЗС из OpenStreetMap: {} рядом с маршрутом", stations.len()),
+                            format!(
+                                "АЗС из OpenStreetMap: {} рядом с маршрутом (наличие и цены в OSM не публикуются)",
+                                stations.len()
+                            ),
                         ));
                     }
                 }
@@ -82,9 +85,12 @@ impl Tool for FuelTool {
             radius_km,
         );
         let summary = if stations.is_empty() {
-            "АЗС: рядом с маршрутом нет станций в локальном справочнике"
+            "АЗС: рядом с маршрутом нет станций в локальном справочнике".to_string()
         } else {
-            "АЗС: локальный справочник"
+            format!(
+                "АЗС вдоль маршрута: {} (наличие и цены — демо-оценки)",
+                stations.len()
+            )
         };
         Ok(ToolOutput::ok(
             json!({"stations": stations}),
@@ -157,7 +163,13 @@ fn parse_stations(value: &Value) -> Vec<Value> {
             "name": name,
             "lat": lat,
             "lon": lon,
-            "source": "live"
+            "source": "live",
+            // OSM has no fuel availability or prices; leave them empty so no
+            // consumer can mistake nulls for real values.
+            "fuel": [],
+            "price_ai92": null,
+            "price_ai95": null,
+            "price_dt": null
         }));
     }
     stations
@@ -176,5 +188,67 @@ mod tests {
         let filtered = near_route(stations, &[(43.1155, 131.8855)], 30.0);
         assert_eq!(filtered.len(), 1);
         assert_eq!(filtered[0]["id"], "near");
+    }
+
+    /// The committed mock file is the only source of fuel availability and
+    /// prices, so it must stay parseable and clearly labelled as a demo.
+    #[test]
+    fn mock_fuel_carries_labelled_demo_prices() {
+        #[derive(serde::Deserialize)]
+        struct MockStation {
+            #[serde(default)]
+            fuel: Vec<String>,
+            #[serde(default)]
+            price_ai92: Option<u32>,
+            #[serde(default)]
+            price_ai95: Option<u32>,
+            #[serde(default)]
+            price_dt: Option<u32>,
+            #[serde(default)]
+            price_note: String,
+        }
+        #[derive(serde::Deserialize)]
+        struct MockFile {
+            stations: Vec<MockStation>,
+        }
+
+        let raw = include_str!("../../../data/mock/fuel.json");
+        let file: MockFile = serde_json::from_str(raw).expect("mock fuel.json must parse");
+        assert_eq!(file.stations.len(), 12);
+
+        let plausible = |price: u32| price > 50 && price < 100;
+        assert!(
+            file.stations.iter().any(|station| {
+                !station.fuel.is_empty()
+                    && station.price_ai92.is_some_and(plausible)
+                    && station.price_ai95.is_some_and(plausible)
+            }),
+            "at least one station must carry a plausible price and a non-empty fuel list"
+        );
+        for station in &file.stations {
+            assert!(!station.fuel.is_empty(), "fuel list must not be empty");
+            assert_eq!(station.price_note, "демо-оценка");
+            assert!(station.price_ai92.is_some_and(plausible));
+            assert!(station.price_ai95.is_some_and(plausible));
+            assert!(station.price_dt.is_none_or(plausible));
+            if !station.fuel.iter().any(|grade| grade == "ДТ") {
+                assert_eq!(
+                    station.price_dt, None,
+                    "a station without ДТ must not carry a diesel price"
+                );
+            }
+        }
+
+        // The same file feeds `mock_fuel()` and must survive the Facts ingest
+        // with the prices and the fuel list intact.
+        let mut facts = crate::domain::facts::Facts::default();
+        facts.ingest(
+            "find_fuel",
+            &ToolOutput::ok(fallback_fuel(), SourceKind::Mock, "test"),
+        );
+        assert_eq!(facts.fuel.len(), file.stations.len());
+        assert!(facts.fuel.iter().any(|station| {
+            !station.fuel.is_empty() && station.price_ai92.is_some() && station.price_ai95.is_some()
+        }));
     }
 }

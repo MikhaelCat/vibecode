@@ -95,7 +95,16 @@ fn word_matches(text_word: &str, trigger_word: &str) -> bool {
     }
     let limit = if length >= 8 { 4 } else { 3 };
     let key = consonant_key(trigger_word, limit);
-    !key.is_empty() && consonant_key(text_word, limit).starts_with(&key)
+    if key.is_empty() || !consonant_key(text_word, limit).starts_with(&key) {
+        return false;
+    }
+    // Same guard as the settlements matcher: "поесть" shares the skeleton
+    // "пст" with the hangul trigger "Посьет", so the user asking for seafood
+    // was routed to the Khasan hub. Case endings move only the last consonant.
+    crate::domain::settlements::consonants_align(
+        &crate::domain::settlements::consonant_positions(trigger_word),
+        &crate::domain::settlements::consonant_positions(text_word),
+    )
 }
 
 /// Best match of one trigger inside the text: how many trigger words matched
