@@ -438,7 +438,7 @@ pub fn validate(plan: &Plan, facts: &Facts, intent: &Intent) -> ValidationReport
                 Violation::soft("V15", format!("{}: в дне нет ни одной точки", day.date))
             };
             violations.push(violation);
-        } else if day.items.len() < 3 {
+        } else if day.items.len() < 4 {
             violations.push(Violation::soft(
                 "V15",
                 format!("{}: всего {} точки", day.date, day.items.len()),

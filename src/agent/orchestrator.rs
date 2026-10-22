@@ -932,12 +932,7 @@ fn enforce_search_intent(name: &str, args: &mut Value, intent: &Intent) {
     if wanted.is_empty() && intent.must_see.is_empty() {
         return;
     }
-    let limit = object
-        .get("limit")
-        .and_then(Value::as_u64)
-        .unwrap_or(10)
-        .clamp(30, 40);
-    object.insert("limit".to_string(), json!(limit));
+    object.insert("limit".to_string(), json!(40));
 }
 
 fn search_categories(intent: &Intent) -> Vec<String> {

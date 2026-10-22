@@ -229,36 +229,20 @@ pub fn parse_time(text: &str) -> Option<NaiveTime> {
 /// nature are daytime stops. Keeping this in one place stops fallback and mock
 /// plans from scheduling a bar at 10:00 and failing the opening-hours check.
 pub fn slot_times(kind: ItemKind, slot: usize) -> (Option<NaiveTime>, Option<NaiveTime>) {
-    let (start_hour, start_minute, end_hour, end_minute) = match kind {
-        ItemKind::Bar | ItemKind::Club => match slot {
-            0 => (20, 0, 21, 30),
-            1 => (21, 30, 23, 0),
-            _ => (23, 0, 23, 59),
-        },
-        ItemKind::Food => match slot {
-            0 => (10, 0, 12, 0),
-            1 => (13, 0, 15, 0),
-            _ => (19, 0, 21, 0),
-        },
-        ItemKind::Cinema | ItemKind::Theater => match slot {
-            0 => (12, 0, 14, 0),
-            1 => (16, 0, 18, 0),
-            _ => (19, 0, 21, 0),
-        },
-        ItemKind::Market | ItemKind::Shop => match slot {
-            0 => (10, 0, 12, 0),
-            1 => (13, 0, 15, 0),
-            _ => (16, 0, 18, 0),
-        },
-        _ => match slot {
-            0 => (10, 0, 12, 0),
-            1 => (13, 0, 15, 0),
-            _ => (17, 0, 19, 0),
-        },
+    let slot = slot.min(11) as u32;
+    let (start_hour, end_hour) = match kind {
+        ItemKind::Bar | ItemKind::Club => {
+            let offset = slot % 6;
+            (18 + offset, (19 + offset) % 24)
+        }
+        ItemKind::Food => (8 + slot, 9 + slot),
+        ItemKind::Cinema | ItemKind::Theater => (10 + slot, 11 + slot),
+        ItemKind::Market | ItemKind::Shop => (10 + slot, 11 + slot),
+        _ => (8 + slot, 9 + slot),
     };
     (
-        NaiveTime::from_hms_opt(start_hour, start_minute, 0),
-        NaiveTime::from_hms_opt(end_hour, end_minute, 0),
+        NaiveTime::from_hms_opt(start_hour, 0, 0),
+        NaiveTime::from_hms_opt(end_hour, 0, 0),
     )
 }
 

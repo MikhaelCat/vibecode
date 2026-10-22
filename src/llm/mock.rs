@@ -405,7 +405,7 @@ fn build_draft(intent: &Intent, places: &[MockPlace], lodging_ids: &[String]) ->
             .iter()
             .filter(|place| !used.contains(&place.id))
             .count();
-        let slots = ((available + remaining_days - 1) / remaining_days.max(1)).clamp(1, 3);
+        let slots = ((available + remaining_days - 1) / remaining_days.max(1)).clamp(1, 12);
         for slot in 0..slots {
             let Some(place) = places.iter().find(|place| !used.contains(&place.id)) else {
                 break;

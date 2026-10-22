@@ -87,7 +87,7 @@ async fn plan_sse(
         let _permit = permit;
         let run = tokio::select! {
             run = tokio::time::timeout(
-                Duration::from_secs(120),
+                Duration::from_secs(300),
                 orchestrator.execute_with(query, Some(tx.clone()), overrides),
             ) => run,
             // The browser tab closed: drop the run instead of spending
@@ -102,7 +102,7 @@ async fn plan_sse(
                     event: "refusal",
                     data: json!({
                         "category": "timeout",
-                        "message": "Не удалось собрать план за 120 секунд. Попробуйте более короткий запрос."
+                        "message": "Не удалось собрать план за 300 секунд. Попробуйте более короткий запрос."
                     }),
                 })
                 .await;
@@ -138,14 +138,14 @@ async fn plan_sync(
         .try_acquire_owned()
         .map_err(|_| ApiError::rate_limited("Слишком много одновременных запросов"))?;
     let outcome = tokio::time::timeout(
-        Duration::from_secs(180),
+        Duration::from_secs(300),
         state.orchestrator.execute_with(query, None, overrides),
     )
     .await
     .map_err(|_| ApiError {
         status: StatusCode::GATEWAY_TIMEOUT,
         code: "upstream_timeout",
-        message: "Запрос не успел завершиться за 180 секунд".to_string(),
+        message: "Запрос не успел завершиться за 300 секунд".to_string(),
         hint: Some("Попробуйте более короткий запрос".to_string()),
     })?;
     drop(permit);

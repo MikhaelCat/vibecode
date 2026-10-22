@@ -324,7 +324,7 @@ async fn osm_map_places(
         return None;
     }
     let mut last = Vec::new();
-    for span in [0.008_f64, 0.004, 0.016] {
+    for span in [0.012_f64, 0.008, 0.004, 0.016] {
         let bbox = format!(
             "{:.5},{:.5},{:.5},{:.5}",
             area.lon - span * 1.2,
