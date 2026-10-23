@@ -56,6 +56,28 @@ fn names(output: &travel_ai::domain::facts::ToolOutput, key: &str) -> Vec<String
         .unwrap_or_default()
 }
 
+/// Name and the price the card would show.
+fn priced(output: &travel_ai::domain::facts::ToolOutput, key: &str) -> Vec<(String, u64)> {
+    output
+        .data
+        .get(key)
+        .and_then(serde_json::Value::as_array)
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    Some((
+                        item.get("name")?.as_str()?.to_string(),
+                        item.get("price_per_night")
+                            .and_then(serde_json::Value::as_u64)
+                            .unwrap_or(0),
+                    ))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
 #[tokio::test]
 #[ignore = "hits live OSM/Nominatim/Wikipedia; run with -- --ignored"]
 async fn eateries_and_sights_of_a_city_are_live() {
@@ -125,6 +147,26 @@ async fn lodging_of_a_city_is_live() {
         options.len() >= 5,
         "a city must offer more than the demo catalogue: {:?}",
         options
+    );
+    // Prices are demo estimates, but every card must carry one: a row of
+    // "цена за ночь не указана" on live hotels is what the user reported.
+    let with_prices = priced(&lodging, "options");
+    println!(
+        "lodging prices: {}",
+        with_prices
+            .iter()
+            .map(|(name, price)| format!("{name} {price} ₽"))
+            .collect::<Vec<_>>()
+            .join(", ")
+    );
+    let priced_out: Vec<String> = with_prices
+        .iter()
+        .filter(|(_, price)| *price == 0)
+        .map(|(name, _)| name.clone())
+        .collect();
+    assert!(
+        priced_out.is_empty(),
+        "every lodging option must show a demo price, these have none: {priced_out:?}"
     );
 
     // A village on the coast: the nearest town has to serve it.

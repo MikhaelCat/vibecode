@@ -805,9 +805,11 @@ function renderLodging() {
   const chosen = new Set((plan.days || []).map((item) => item.lodging_id).filter(Boolean));
   $('lodging').innerHTML = list.map((item, index) => {
     const kind = lodgingKindRu[item.kind] || item.kind || 'жильё';
-    // Цена за ночь — демонстрационная оценка, поэтому подписываем это.
+    // Цена за ночь — демонстрационная оценка по населённому пункту и типу
+    // жилья (реальных цен открытые источники не публикуют), поэтому подпись
+    // говорит об этом прямо.
     const price = item.price_per_night
-      ? `${Number(item.price_per_night).toLocaleString('ru-RU')} ₽<small>за ночь, демо</small>`
+      ? `${Number(item.price_per_night).toLocaleString('ru-RU')} ₽<small>за ночь, демо-оценка</small>`
       : 'цена за ночь не указана';
     const tag = chosen.has(item.id) ? 'в плане' : (index === 0 ? 'рекомендация' : '');
     return `<article class="lodge${chosen.has(item.id) ? ' chosen' : ''}">

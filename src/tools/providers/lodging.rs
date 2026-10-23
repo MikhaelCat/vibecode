@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
@@ -21,7 +21,7 @@ impl Tool for LodgingTool {
     }
 
     fn description(&self) -> &'static str {
-        "Варианты ночёвки в любом населённом пункте или рядом с ориентиром Приморья (маяк, пляж, озеро), отсортированные по расстоянию: сначала сам посёлок, затем ближайший город в радиусе 35 км (например, Находка для Южно-Морского). Владивостокские отели возвращаются только для владивостокских запросов. Наличие и цены нужно проверять перед выездом."
+        "Варианты ночёвки в любом населённом пункте или рядом с ориентиром Приморья (маяк, пляж, озеро), отсортированные по расстоянию: сначала сам посёлок, затем ближайший город в радиусе 35 км (например, Находка для Южно-Морского). Координаты и типы жилья — OpenStreetMap; цены — демо-оценки по населённому пункту и типу жилья, их нужно проверять перед выездом. Владивостокские отели возвращаются только для владивостокских запросов."
     }
 
     fn parameters(&self) -> Value {
@@ -133,6 +133,11 @@ impl Tool for LodgingTool {
         }
         options.extend(local_lodging(ctx, &requested, &candidates));
         let options = rank_lodging(dedupe_lodging(options), &area, &requested, limit);
+        // Prices exist only in the local catalogue: no open source publishes
+        // them. A live hotel therefore gets the estimate of its settlement and
+        // kind, so every card carries a labelled demo price instead of a row of
+        // "цена за ночь не указана".
+        let options = attach_demo_prices(options, &DemoPrices::load(ctx));
 
         let live = options
             .iter()
@@ -142,13 +147,13 @@ impl Tool for LodgingTool {
             format!("Жильё в {requested} не найдено{hint}")
         } else if live {
             format!(
-                "Жильё в {} и рядом: {} вариантов (живые данные OSM)",
+                "Жильё в {} и рядом: {} вариантов (живые данные OSM, цены — демо-оценки)",
                 area.label,
                 options.len()
             )
         } else {
             format!(
-                "Жильё в {} и рядом: {} вариантов",
+                "Жильё в {} и рядом: {} вариантов (цены — демо-оценки)",
                 area.label,
                 options.len()
             )
@@ -517,6 +522,135 @@ fn local_lodging(ctx: &ToolCtx, requested: &str, candidates: &[String]) -> Vec<V
     matched
 }
 
+/// Demo prices by settlement and kind, read from the local catalogue.
+///
+/// No open source publishes lodging prices, so a price the app shows is an
+/// estimate: first the settlement's own catalogue price for that kind of stay,
+/// then any of the settlement's prices, then the region's median for the kind.
+/// A live hotel never gets a price invented for it alone — the estimate belongs
+/// to the place and the kind, and every row is labelled `демо-оценка`.
+#[derive(Default)]
+struct DemoPrices {
+    by_settlement_kind: HashMap<(String, String), Vec<u32>>,
+    by_settlement: HashMap<String, Vec<u32>>,
+    by_kind: HashMap<String, Vec<u32>>,
+}
+
+impl DemoPrices {
+    fn load(ctx: &ToolCtx) -> Self {
+        let mock = load_mock(ctx.data_dir.as_path(), "lodging.json", fallback_lodging());
+        Self::from_catalogue(&mock)
+    }
+
+    fn from_catalogue(catalogue: &Value) -> Self {
+        let mut prices = DemoPrices::default();
+        for option in catalogue
+            .get("options")
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+        {
+            let (Some(settlement), Some(kind)) = (
+                option.get("settlement").and_then(Value::as_str),
+                option.get("kind").and_then(Value::as_str),
+            ) else {
+                continue;
+            };
+            let Some(price) = option
+                .get("price_per_night")
+                .and_then(Value::as_u64)
+                .filter(|price| *price > 0)
+                .map(|price| price as u32)
+            else {
+                continue;
+            };
+            let settlement = normalize_name(settlement);
+            prices
+                .by_settlement_kind
+                .entry((settlement.clone(), kind.to_string()))
+                .or_default()
+                .push(price);
+            prices
+                .by_settlement
+                .entry(settlement)
+                .or_default()
+                .push(price);
+            prices
+                .by_kind
+                .entry(kind.to_string())
+                .or_default()
+                .push(price);
+        }
+        prices
+    }
+
+    /// The demo price of a stay in `settlement` of `kind`, if the catalogue can
+    /// say anything about it at all.
+    fn estimate(&self, settlement: &str, kind: &str) -> Option<u32> {
+        let settlement = normalize_name(settlement);
+        if let Some(prices) = self
+            .by_settlement_kind
+            .get(&(settlement.clone(), kind.to_string()))
+        {
+            return Some(median(prices));
+        }
+        if let Some(prices) = self.by_settlement.get(&settlement) {
+            return Some(median(prices));
+        }
+        self.by_kind.get(kind).map(|prices| median(prices))
+    }
+}
+
+/// The middle price of a list; an even list averages its two middle values.
+fn median(prices: &[u32]) -> u32 {
+    let mut sorted = prices.to_vec();
+    sorted.sort_unstable();
+    let middle = sorted.len() / 2;
+    if sorted.len() % 2 == 1 {
+        sorted[middle]
+    } else {
+        (sorted[middle - 1] + sorted[middle]) / 2
+    }
+}
+
+/// Fills the demo price of every option that has none: the catalogue rows keep
+/// their own numbers, live rows get their settlement's estimate.
+fn attach_demo_prices(options: Vec<Value>, prices: &DemoPrices) -> Vec<Value> {
+    let mut priced = Vec::with_capacity(options.len());
+    for mut option in options {
+        let known = option
+            .get("price_per_night")
+            .and_then(Value::as_u64)
+            .unwrap_or(0);
+        let (Some(lat), Some(lon)) = (
+            option.get("lat").and_then(Value::as_f64),
+            option.get("lon").and_then(Value::as_f64),
+        ) else {
+            priced.push(option);
+            continue;
+        };
+        if known > 0 {
+            priced.push(option);
+            continue;
+        }
+        // The estimate follows the settlement the option actually stands in,
+        // not the place the user named: "Находка (22 км от Южно-Морского)"
+        // is priced with Находка's demo price.
+        let settlement =
+            crate::domain::settlements::nearest(lat, lon).map(|settlement| settlement.name.clone());
+        let kind = option.get("kind").and_then(Value::as_str).unwrap_or("");
+        let estimate = settlement
+            .as_deref()
+            .and_then(|settlement| prices.estimate(settlement, kind));
+        if let (Some(object), Some(estimate)) = (option.as_object_mut(), estimate) {
+            object.insert("price_per_night".to_string(), json!(estimate));
+            object.insert("price_note".to_string(), json!("демо-оценка"));
+        }
+        priced.push(option);
+    }
+    priced
+}
+
 /// One place, one card. The demo catalogue repeats what the live sources have
 /// already found ("Пекинский Дворик" is in both), and a duplicate wastes one of
 /// the few slots the plan sees. The live row wins: it carries coordinates and
@@ -604,5 +738,45 @@ mod tests {
         assert_eq!(kept.len(), 2);
         assert_eq!(kept[0]["source"], "live");
         assert_eq!(kept[1]["name"], "Версаль");
+    }
+
+    fn catalogue() -> DemoPrices {
+        let raw: Value = serde_json::from_str(include_str!("../../../data/mock/lodging.json"))
+            .expect("mock lodging.json must parse");
+        DemoPrices::from_catalogue(&raw)
+    }
+
+    #[test]
+    fn the_demo_estimate_belongs_to_the_place_and_the_kind() {
+        let prices = catalogue();
+        // The settlement knows this kind of stay: its own median.
+        assert_eq!(prices.estimate("Владивосток", "hotel"), Some(6500));
+        assert_eq!(prices.estimate("Владивосток", "hostel"), Some(1500));
+        assert_eq!(prices.estimate("Находка", "hotel"), Some(4950));
+        assert_eq!(prices.estimate("Андреевка", "guesthouse"), Some(4350));
+        // A settlement the catalogue knows nothing about falls back to the
+        // region's median for the kind (nine hotels: 3000 … 9000, middle 4700).
+        assert_eq!(prices.estimate("Кировский", "hostel"), Some(1500));
+        assert_eq!(prices.estimate("Кировский", "hotel"), Some(4700));
+        assert_eq!(prices.estimate("Кировский", "chalet"), None);
+    }
+
+    #[test]
+    fn a_live_hotel_gets_a_labelled_demo_price() {
+        let prices = catalogue();
+        let options = vec![
+            // A live row in Владивосток takes the city's hotel estimate.
+            json!({"id": "osm:node/1", "name": "Holiday hotel", "lat": 43.1155, "lon": 131.8855, "kind": "hotel", "source": "live", "price_per_night": 0}),
+            // A village the catalogue does not price takes the region's median
+            // for the kind of stay.
+            json!({"id": "osm:node/2", "name": "Хостел", "lat": 45.0898, "lon": 133.5062, "kind": "hostel", "source": "live", "price_per_night": 0}),
+            // A catalogue row keeps the price it came with.
+            json!({"id": "mock:lodging/lotte", "name": "ЛОТТЕ Отель Владивосток", "lat": 43.1155, "lon": 131.8855, "kind": "hotel", "source": "mock", "price_per_night": 9000}),
+        ];
+        let priced = attach_demo_prices(options, &prices);
+        assert_eq!(priced[0]["price_per_night"], 6500);
+        assert_eq!(priced[0]["price_note"], "демо-оценка");
+        assert_eq!(priced[1]["price_per_night"], 1500);
+        assert_eq!(priced[2]["price_per_night"], 9000);
     }
 }
