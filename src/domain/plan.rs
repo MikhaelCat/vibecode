@@ -345,16 +345,16 @@ pub fn plan_events_for_day(
             score: event.score,
         })
         .collect();
-    // Хронология дня: события без времени идут «весь день» — первыми, дальше
-    // по времени начала; при равном времени решает score. Раньше сортировка
-    // была только по score, и утренние события прятались за вечерними
-    // концертами, когда лимит обрезал список.
+    // Хронология дня: сначала события со временем начала (утро -> вечер), и
+    // только потом «весь день» — длинные выставки и ярмарки. Порядок по score
+    // выносил вперёд вечерние концерты, а «весь день первыми» вытеснял
+    // утренние события из списка, который обрезается лимитом.
     events.sort_by(|left, right| {
         match (left.start_time.as_deref(), right.start_time.as_deref()) {
-            (None, None) => std::cmp::Ordering::Equal,
-            (None, Some(_)) => std::cmp::Ordering::Less,
-            (Some(_), None) => std::cmp::Ordering::Greater,
             (Some(left_time), Some(right_time)) => left_time.cmp(right_time),
+            (Some(_), None) => std::cmp::Ordering::Less,
+            (None, Some(_)) => std::cmp::Ordering::Greater,
+            (None, None) => std::cmp::Ordering::Equal,
         }
         .then_with(|| {
             right
@@ -1424,15 +1424,22 @@ mod tests {
         assert_eq!(
             titles,
             vec![
-                "Городской маркет",
+                // Сначала то, у чего есть время: утро -> вечер, «весь день»
+                // (маркет) последним, иначе длинные выставки вытесняют
+                // утренние события из обрезаемого лимитом списка.
                 "Дневная прогулка",
                 "Дневная выставка",
                 "Вечерний концерт",
                 "Ночное шоу",
+                "Городской маркет",
             ]
         );
-        assert_eq!(events[0].start_time, None);
-        assert_eq!(events[1].start_time.as_deref(), Some("10:00"));
+        assert_eq!(events[0].start_time.as_deref(), Some("10:00"));
+        // «Весь день» — в конце списка, а не первым.
+        assert_eq!(
+            events.last().map(|event| event.start_time.clone()),
+            Some(None)
+        );
     }
 
     #[test]
