@@ -11,8 +11,14 @@ PORT=$((9300 + RANDOM % 200))
 CHROME_PID=""
 
 cleanup() {
-  [[ -n "$CHROME_PID" ]] && kill "$CHROME_PID" 2>/dev/null || true
-  rm -rf "$TMP_DIR"
+  if [[ -n "$CHROME_PID" ]]; then
+    kill "$CHROME_PID" 2>/dev/null || true
+    # Chromium keeps writing its profile while it shuts down, and removing the
+    # directory while it does fails with ENOTEMPTY: that alone used to turn a
+    # green run into "frontend test failed" from the exit trap.
+    wait "$CHROME_PID" 2>/dev/null || true
+  fi
+  rm -rf -- "$TMP_DIR" 2>/dev/null || true
 }
 trap cleanup EXIT
 
