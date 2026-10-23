@@ -250,6 +250,11 @@ impl Orchestrator {
         // for the fallback), so they are collected right before that point.
         let mut events_prefetch =
             start_events_prefetch(self.registry.clone(), intent.clone(), &query);
+        // Погода нужна плану всегда, но модель её забывает: даты известны
+        // сразу, поэтому фоновая загрузка стартует рядом с афишей, а перед
+        // валидацией города черновика добирают оставшиеся даты.
+        let mut weather_prefetch =
+            start_weather_prefetch(self.registry.clone(), intent.clone(), &query);
         let mut usage = TokenUsage::default();
         let mut tools_used: Vec<String> = Vec::new();
         let mut repairs = 0usize;
@@ -397,6 +402,16 @@ impl Orchestrator {
                         abort_events_prefetch(&mut events_prefetch, area);
                     }
                 }
+                // Модель сама запросила погоду того же города — фон не нужен.
+                if name == "get_weather" {
+                    let lat = args.get("lat").and_then(Value::as_f64);
+                    let lon = args.get("lon").and_then(Value::as_f64);
+                    if let (Some(lat), Some(lon)) = (lat, lon) {
+                        if let Some(city) = crate::domain::plan::city_for_point(lat, lon) {
+                            abort_weather_prefetch(&mut weather_prefetch, city);
+                        }
+                    }
+                }
             }
 
             if !regular_calls.is_empty() {
@@ -487,6 +502,14 @@ impl Orchestrator {
                 // The validator reads `facts`, so the prefetched posters must
                 // be in before the plan is judged.
                 drain_events_prefetch(&mut events_prefetch, &mut facts).await;
+                drain_weather_prefetch(&mut weather_prefetch, &mut facts).await;
+                // Погода обязана быть в фактах до enrich/validate; если фон не
+                // ответил, запрашиваем её по городам черновика и ждём —
+                // презентация ждёт погоду, а не наоборот.
+                for (_, _, args) in &submit_calls {
+                    let cities = draft_weather_cities(args, &facts, &query, &intent);
+                    self.ensure_weather(&cities, &intent, &mut facts).await;
+                }
             }
             for (call_id, name, args) in submit_calls {
                 let submit_started = Instant::now();
@@ -549,6 +572,7 @@ impl Orchestrator {
         // exhausted); the fallback path also reads `facts`, so collect the
         // prefetched posters before it runs. A no-op when already collected.
         drain_events_prefetch(&mut events_prefetch, &mut facts).await;
+        drain_weather_prefetch(&mut weather_prefetch, &mut facts).await;
 
         self.emit(
             &sink,
@@ -557,6 +581,10 @@ impl Orchestrator {
         )
         .await;
 
+        // Погода решает, что попадёт в деградированный план (дождь → indoor),
+        // поэтому её догружаем до сборки, а не после.
+        let cities = fact_weather_cities(&facts, &query, &intent);
+        self.ensure_weather(&cities, &intent, &mut facts).await;
         let mut plan = fallback::assemble(&mut facts, &intent);
         let report = validate(&plan, &facts, &intent);
         plan.generation = Generation::Fallback;
@@ -621,6 +649,45 @@ impl Orchestrator {
         for day in &mut plan.days {
             day.events =
                 crate::domain::plan::plan_events_for_day(day.date, &day.items, facts, event_limit);
+        }
+    }
+
+    /// Гарантирует погоду детерминированно: по одному вызову на город, пока
+    /// даты поездки не покрыты фактами. Если все источники молчат, погоды в
+    /// плане не будет: валидатор оставит мягкое «прогноз недоступен», никаких
+    /// выдуманных значений.
+    async fn ensure_weather(&self, cities: &[String], intent: &Intent, facts: &mut Facts) {
+        for city in cities {
+            if weather_covers_trip(facts, intent) {
+                break;
+            }
+            let Some((lat, lon)) = crate::domain::settlements::center(city) else {
+                continue;
+            };
+            let args = json!({
+                "lat": lat,
+                "lon": lon,
+                "start_date": intent.start_date.to_string(),
+                "end_date": intent.end_date.to_string()
+            });
+            if let Ok(Ok(output)) = tokio::time::timeout(
+                std::time::Duration::from_secs(12),
+                self.registry.call("get_weather", args, intent),
+            )
+            .await
+            {
+                let days = output
+                    .data
+                    .get("days")
+                    .and_then(Value::as_array)
+                    .map_or(0, Vec::len);
+                facts.ingest("get_weather", &output);
+                if days > 0 {
+                    // Источник ответил; для тех же дат другой город ничего не
+                    // добавит, а горизонт прогноза от города не зависит.
+                    break;
+                }
+            }
         }
     }
 
@@ -955,6 +1022,147 @@ async fn drain_events_prefetch(prefetch: &mut Vec<EventsPrefetch>, facts: &mut F
     for item in std::mem::take(prefetch) {
         if let Ok(Some(output)) = item.handle.await {
             facts.ingest("find_events", &output);
+        }
+    }
+}
+
+/// Город для фоновой погоды: явный город запроса, иначе первый населённый
+/// пункт из текста, иначе основной город хаба, иначе Владивосток — как у
+/// `search_places`, который тоже без района стартует от Владивостока.
+fn weather_city_for_query(query: &str, intent: &Intent) -> String {
+    if let Some(city) = intent.city() {
+        return city.to_string();
+    }
+    if let Some(settlement) = crate::domain::settlements::find_in_text(query) {
+        return settlement.name.clone();
+    }
+    if let Some(city) = intent
+        .hub()
+        .and_then(|id| crate::domain::hubs::all().iter().find(|hub| hub.id == id))
+        .and_then(|hub| crate::domain::hubs::primary_city(hub))
+    {
+        return city.to_string();
+    }
+    crate::tools::providers::DEFAULT_AREA_CITY.to_string()
+}
+
+/// Города черновика: ближайший населённый пункт к первому известному пункту
+/// каждого дня. Ни один день не разрешился — берём город запроса.
+fn draft_weather_cities(args: &Value, facts: &Facts, query: &str, intent: &Intent) -> Vec<String> {
+    let mut cities: Vec<String> = Vec::new();
+    if let Ok(draft) = serde_json::from_value::<PlanDraft>(args.clone()) {
+        for day in &draft.days {
+            let city = day.items.iter().find_map(|item| {
+                let place = facts.place(&item.place_id)?;
+                crate::domain::plan::city_for_point(place.lat, place.lon)
+            });
+            if let Some(city) = city {
+                let city = city.to_string();
+                if !cities.contains(&city) {
+                    cities.push(city);
+                }
+            }
+        }
+    }
+    if cities.is_empty() {
+        cities.push(weather_city_for_query(query, intent));
+    }
+    cities
+}
+
+/// Города для fallback-плана: город запроса первым, затем все города, которые
+/// встречаются среди найденных мест.
+fn fact_weather_cities(facts: &Facts, query: &str, intent: &Intent) -> Vec<String> {
+    let mut cities = vec![weather_city_for_query(query, intent)];
+    for place in facts.places.values() {
+        if let Some(city) = crate::domain::plan::city_for_point(place.lat, place.lon) {
+            let city = city.to_string();
+            if !cities.contains(&city) {
+                cities.push(city);
+            }
+        }
+    }
+    cities
+}
+
+/// Все даты поездки покрыты фактами погоды.
+fn weather_covers_trip(facts: &Facts, intent: &Intent) -> bool {
+    let mut date = intent.start_date;
+    while date <= intent.end_date {
+        if facts.weather_for(date).is_none() {
+            return false;
+        }
+        date += chrono::Duration::days(1);
+    }
+    true
+}
+
+/// Одна фоновая загрузка погоды: город и её задача.
+struct WeatherPrefetch {
+    city: String,
+    handle: tokio::task::JoinHandle<Option<ToolOutput>>,
+}
+
+/// Starts the deterministic weather fetch for the trip city. Dates come from
+/// the intent, so it runs next to the first LLM turn instead of holding it
+/// back; the result is ingested only where `facts` is read (before validation
+/// and before the fallback), so it never adds latency to a plan that is never
+/// assembled. Ten seconds cover both live sources plus the VL.ru fallback.
+fn start_weather_prefetch(
+    registry: Arc<Registry>,
+    intent: Intent,
+    query: &str,
+) -> Vec<WeatherPrefetch> {
+    let city = weather_city_for_query(query, &intent);
+    let Some((lat, lon)) = crate::domain::settlements::center(&city) else {
+        return Vec::new();
+    };
+    let args = json!({
+        "lat": lat,
+        "lon": lon,
+        "start_date": intent.start_date.to_string(),
+        "end_date": intent.end_date.to_string()
+    });
+    let task_intent = intent.clone();
+    let handle = tokio::spawn(async move {
+        match tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            registry.call("get_weather", args, &task_intent),
+        )
+        .await
+        {
+            Ok(Ok(output)) => Some(output),
+            _ => None,
+        }
+    });
+    vec![WeatherPrefetch { city, handle }]
+}
+
+/// Drops the background weather fetch when the model is calling `get_weather`
+/// for the same city itself, so the forecast is never fetched twice.
+fn abort_weather_prefetch(prefetch: &mut Vec<WeatherPrefetch>, city: &str) {
+    let city = city.trim().to_lowercase();
+    if city.is_empty() {
+        return;
+    }
+    prefetch.retain(|item| {
+        let known = item.city.to_lowercase();
+        let same_city = known == city || known.contains(&city) || city.contains(&known);
+        if same_city {
+            item.handle.abort();
+            false
+        } else {
+            true
+        }
+    });
+}
+
+/// Collects the background weather fetches into `facts`, like the poster drain;
+/// the second call is a no-op because the list is taken by the first one.
+async fn drain_weather_prefetch(prefetch: &mut Vec<WeatherPrefetch>, facts: &mut Facts) {
+    for item in std::mem::take(prefetch) {
+        if let Ok(Some(output)) = item.handle.await {
+            facts.ingest("get_weather", &output);
         }
     }
 }
