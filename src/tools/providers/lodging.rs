@@ -5,7 +5,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
-use crate::domain::geo::haversine_km;
+use crate::domain::geo::{haversine_km, on_land};
 use crate::tools::providers::{
     fallback_lodging, geo, is_place_name, limit_from, load_mock, normalize_name, osmmap, overpass,
     DEFAULT_AREA_CITY,
@@ -373,6 +373,11 @@ fn rank_lodging(
         ) else {
             continue;
         };
+        // A night is spent on land: a boat or a pier tagged as a hotel would
+        // otherwise put a stop in the bay with a lodging card to match.
+        if !on_land(lat, lon) {
+            continue;
+        }
         let distance_km = haversine_km((area.lat, area.lon), (lat, lon));
         if distance_km > 35.0 {
             continue;

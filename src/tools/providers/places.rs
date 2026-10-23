@@ -471,6 +471,12 @@ fn scope_to_area(
             place.get("lon").and_then(Value::as_f64),
         ) {
             (Some(lat), Some(lon)) => {
+                // A stop stands on land. Providers filter most of these, but a
+                // search that answers from several sources must not let a pin
+                // in a bay through just because one source was less careful.
+                if !on_land(lat, lon) {
+                    continue;
+                }
                 points.push((lat, lon));
                 with_coords.push(place);
             }
@@ -1390,6 +1396,26 @@ mod tests {
         let kept = dedupe_places(rows);
         assert_eq!(kept.len(), 2);
         assert_eq!(kept[0]["id"], "wikipedia:1");
+    }
+
+    #[test]
+    fn a_pin_in_the_bay_is_not_a_stop() {
+        // The Golden Horn bay next to the Vladivostok centre: a hostel mapped on
+        // a boat there must not reach the plan, while the museum 350 m away does.
+        let water =
+            json!({"id": "osm:node/1", "name": "Вояж", "lat": 43.1092471, "lon": 131.8857033});
+        let land =
+            json!({"id": "osm:node/2", "name": "Музей", "lat": 43.1163613, "lon": 131.8821714});
+        let area = geo::Area {
+            lat: 43.1155,
+            lon: 131.8855,
+            bbox: (43.09, 131.86, 43.14, 131.91),
+            label: "Владивосток".to_string(),
+            radius_km: 25.0,
+        };
+        let kept = scope_to_area(vec![water, land], &area, false, 10);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0]["name"], "Музей");
     }
 
     #[test]
