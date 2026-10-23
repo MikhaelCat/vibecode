@@ -750,6 +750,11 @@ function eventDates(event) {
   if (!end || String(start) === String(end)) return fmtDate(start);
   return `${fmtDate(start)} — ${fmtDate(end)}`;
 }
+// Время афиши, когда оно есть: «25 окт · 10:00». События без времени
+// (например, «весь день») остаются с одной датой.
+function eventWhen(event) {
+  return [eventDates(event), fmtTime(event.start_time)].filter(Boolean).join(' · ');
+}
 
 // Events are a per-day stack of cards: they have no coordinates and never
 // become map pins or stops. Missing fields fall back to neutral text.
@@ -767,13 +772,13 @@ function renderEvents(events) {
     const event = value && typeof value === 'object' ? value : {};
     const title = String(event.title || '').trim() || 'Событие без названия';
     const place = String(event.place || '').trim() || 'Место уточняется';
-    const dates = eventDates(event);
+    const when = eventWhen(event);
     const url = String(event.url || '');
     const link = /^https?:\/\//i.test(url)
       ? `<a class="event-link" href="${esc(url)}" target="_blank" rel="noopener noreferrer">Подробнее <span aria-hidden="true">→</span></a>`
       : '';
     return `<article class="event-card">
-      ${dates ? `<span class="event-date">${esc(dates)}</span>` : ''}
+      ${when ? `<span class="event-date">${esc(when)}</span>` : ''}
       <h3>${esc(title)}</h3>
       <p class="event-meta">${esc(place)}</p>
       ${link}

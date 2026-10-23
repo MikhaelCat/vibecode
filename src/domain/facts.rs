@@ -218,6 +218,10 @@ pub struct EventFact {
     pub date: Option<NaiveDate>,
     #[serde(default)]
     pub end_date: Option<NaiveDate>,
+    /// Начало события «ЧЧ:ММ», если афиша его публикует; у событий «на весь
+    /// день» времени нет. Default — кэшированные записи без поля парсятся.
+    #[serde(default)]
+    pub start_time: Option<String>,
     #[serde(default)]
     pub place: String,
     #[serde(default = "default_event_area")]

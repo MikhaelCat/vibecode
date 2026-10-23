@@ -105,6 +105,9 @@ pub struct PlanEvent {
     pub title: String,
     pub date: Option<NaiveDate>,
     pub end_date: Option<NaiveDate>,
+    /// «ЧЧ:ММ» начала события, если афиша его отдала; None — событие дня.
+    #[serde(default)]
+    pub start_time: Option<String>,
     pub place: String,
     pub url: Option<String>,
     #[serde(default)]
@@ -336,17 +339,30 @@ pub fn plan_events_for_day(
             title: event.title.clone(),
             date: event.date,
             end_date: event.end_date,
+            start_time: event.start_time.clone(),
             place: event.place.clone(),
             url: event.url.clone(),
             score: event.score,
         })
         .collect();
+    // Хронология дня: события без времени идут «весь день» — первыми, дальше
+    // по времени начала; при равном времени решает score. Раньше сортировка
+    // была только по score, и утренние события прятались за вечерними
+    // концертами, когда лимит обрезал список.
     events.sort_by(|left, right| {
-        right
-            .score
-            .partial_cmp(&left.score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| left.title.cmp(&right.title))
+        match (left.start_time.as_deref(), right.start_time.as_deref()) {
+            (None, None) => std::cmp::Ordering::Equal,
+            (None, Some(_)) => std::cmp::Ordering::Less,
+            (Some(_), None) => std::cmp::Ordering::Greater,
+            (Some(left_time), Some(right_time)) => left_time.cmp(right_time),
+        }
+        .then_with(|| {
+            right
+                .score
+                .partial_cmp(&left.score)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .then_with(|| left.title.cmp(&right.title))
     });
     let mut seen = HashSet::new();
     events.retain(|event| seen.insert(event.id.clone()));
@@ -1363,6 +1379,60 @@ mod tests {
             .iter()
             .any(|warning| warning.code == "lodging_none_near"));
         assert!(plan.lodging.is_empty());
+    }
+
+    /// Утреннее событие не должно прятаться за вечерним концертом: список
+    /// дня идёт по времени, «весь день» — первым, при равном времени — score.
+    #[test]
+    fn day_events_are_sorted_chronologically() {
+        let date = NaiveDate::from_ymd_opt(2026, 10, 25).unwrap();
+        let mut facts = Facts::default();
+        let event = |title: &str, start_time: Option<&str>, score: f64| EventFact {
+            id: format!("test:event:{title}"),
+            title: title.to_string(),
+            date: Some(date),
+            end_date: Some(date),
+            start_time: start_time.map(str::to_string),
+            place: "Владивосток".to_string(),
+            area: "Владивосток".to_string(),
+            url: None,
+            score,
+            source: SourceKind::Live,
+        };
+        facts.events = vec![
+            event("Вечерний концерт", Some("19:00"), 12.0),
+            event("Ночное шоу", Some("22:00"), 20.0),
+            event("Дневная выставка", Some("10:00"), 1.0),
+            event("Дневная прогулка", Some("10:00"), 5.0),
+            event("Городской маркет", None, 6.0),
+        ];
+        let items = vec![PlanItem {
+            place_id: "test:center".to_string(),
+            name: "Центр".to_string(),
+            kind: ItemKind::Sight,
+            lat: 43.1155,
+            lon: 131.8855,
+            start: None,
+            end: None,
+            opening_hours: None,
+            price_rub: None,
+            source: SourceKind::Live,
+            note: None,
+        }];
+        let events = plan_events_for_day(date, &items, &facts, 20);
+        let titles: Vec<&str> = events.iter().map(|event| event.title.as_str()).collect();
+        assert_eq!(
+            titles,
+            vec![
+                "Городской маркет",
+                "Дневная прогулка",
+                "Дневная выставка",
+                "Вечерний концерт",
+                "Ночное шоу",
+            ]
+        );
+        assert_eq!(events[0].start_time, None);
+        assert_eq!(events[1].start_time.as_deref(), Some("10:00"));
     }
 
     #[test]
