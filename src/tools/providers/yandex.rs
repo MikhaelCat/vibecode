@@ -12,6 +12,7 @@ use serde_json::{json, Value};
 use crate::domain::geo::{haversine_km, on_land};
 use crate::domain::spatial::KdTree;
 use crate::tools::providers::geo::Area;
+use crate::tools::providers::normalize_name;
 use crate::tools::registry::ToolCtx;
 
 const SEARCH_ENDPOINT: &str = "https://search-maps.yandex.ru/v1/";
@@ -300,17 +301,6 @@ fn kind_from_class(class: &str) -> &'static str {
         "attraction" => "sight",
         _ => "sight",
     }
-}
-
-fn normalize_name(name: &str) -> String {
-    name.to_lowercase()
-        .replace('ё', "е")
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
 }
 
 #[cfg(test)]

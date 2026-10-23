@@ -1018,7 +1018,9 @@ fn search_categories(intent: &Intent) -> Vec<String> {
     let mut categories: Vec<String> = Vec::new();
     for interest in &intent.interests {
         let wanted: &[&str] = match interest.as_str() {
-            "food" => &["restaurant", "cafe"],
+            // "Где поесть" is the whole eatery family: a bistro, a bakery and
+            // a food court are answers to it, not only a restaurant.
+            "food" => &["food"],
             "nightlife" => &["bar", "club"],
             "nature" => &["nature", "park", "beach"],
             "sea" | "beach" => &["beach", "nature", "viewpoint"],
@@ -1299,8 +1301,8 @@ mod tests {
             intent_with_interests(&["food", "nightlife", "shopping", "attractions", "mountains"]);
         let categories = search_categories(&intent);
         for expected in [
-            "restaurant",
-            "cafe",
+            // Food is the family: the tool expands it into every eatery tag.
+            "food",
             "bar",
             "club",
             "clothes",
@@ -1317,6 +1319,9 @@ mod tests {
                 "missing {expected}: {categories:?}"
             );
         }
+        // A query that names restaurants stays on restaurants.
+        let named = search_categories(&intent_with_interests(&["restaurant"]));
+        assert_eq!(named, vec!["restaurant".to_string()]);
         let mut sorted = categories.clone();
         sorted.sort();
         sorted.dedup();

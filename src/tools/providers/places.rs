@@ -1,13 +1,35 @@
+//! `search_places`: places of a requested kind around a Primorye settlement,
+//! lake or landmark.
+//!
+//! Four live sources answer in parallel, because each one alone leaves a hole:
+//!
+//! * OSM map-API tiles hold the nearest objects with exact coordinates and
+//!   opening hours, but only ever cover a neighbourhood;
+//! * Nominatim's phrase search returns up to fifty objects of one OSM type
+//!   across the whole search window in about a second (`гостиница`, `кафе`,
+//!   `достопримечательность`), which is how a city outside the centre becomes
+//!   visible at all;
+//! * Wikipedia geosearch covers the sights an OSM tag misses;
+//! * Overpass is the only source that can filter a whole district by tag, and
+//!   the slowest: it starts next to the others and is waited for only while the
+//!   answer is still thin.
+//!
+//! The local catalogue stays the last resort, and every summary says which
+//! source answered.
+
 use std::collections::{HashMap, HashSet};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
-use crate::domain::geo::{haversine_km, on_land, on_land_strict, waterbody_title};
+use crate::domain::geo::{haversine_km, on_land, waterbody_title};
 use crate::domain::spatial::KdTree;
-use crate::tools::providers::{fallback_places, geo, limit_from, load_mock, yandex};
+use crate::tools::providers::{
+    fallback_places, geo, is_place_name, limit_from, load_mock, normalize_name, osmmap, overpass,
+    yandex, DEFAULT_AREA_CITY,
+};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
 pub struct PlacesTool;
@@ -123,196 +145,98 @@ impl Tool for PlacesTool {
             }
         }
 
-        // Wikipedia geosearch answers in one request and does not compete for
-        // the two Overpass slots, so try it first for attraction-like
-        // categories. Food and lodging stay on OSM, where they are precise.
-        let wikipedia_first = prefers_wikipedia(&categories);
-        let mut wikipedia_tried = false;
-        if wikipedia_first {
-            wikipedia_tried = true;
-            if let Some(places) = wikipedia_matching_places(
-                ctx,
-                area.lat,
-                area.lon,
-                limit,
-                &categories,
-                area_is_water,
+        let deadline = Instant::now() + SEARCH_BUDGET;
+        let wanted = osm_values(&categories);
+        // Enough objects for the answer to count as full: half of what was
+        // asked for, and never less than the catalogue top-up threshold. A
+        // dense city reaches it with one tile, so the search rarely waits for
+        // the slow source at all.
+        let target = limit.div_ceil(2).max(MIN_LIVE_PLACES);
+
+        let tiles = osmmap::search(ctx, area.lat, area.lon, &wanted, target, deadline);
+        let phrases = phrases_for(&categories);
+        let phrase_rows = async {
+            let mut rows: Vec<Value> = Vec::new();
+            for phrase in &phrases {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                rows.extend(geo::nominatim_pois(ctx, phrase, area.bbox, limit).await);
+            }
+            rows
+        };
+        let wikipedia_rows = async {
+            if !wants_wikipedia(&categories) {
+                return Vec::new();
+            }
+            wikipedia_matching_places(ctx, area.lat, area.lon, limit, &categories, area_is_water)
+                .await
+                .unwrap_or_default()
+        };
+        // Overpass is optional by design: it gets its own task so a queued
+        // mirror cannot hold the fast answer, and it is only awaited when the
+        // tiles and Nominatim came back thin.
+        let mut overpass_task = (!wanted.is_empty()).then(|| {
+            let http = ctx.http.clone();
+            let body = overpass_query(&categories, &area);
+            tokio::spawn(
+                async move { overpass::query(http, &body, deadline, OVERPASS_BUDGET).await },
             )
-            .await
-            {
-                let places = scope_to_area(places, &area, nearest_only, limit);
-                if !places.is_empty() {
-                    let (places, supplemented) =
-                        with_local_supplement(ctx, &area, &categories, places, nearest_only, limit);
-                    return Ok(ToolOutput::ok(
-                        json!({"places": places}),
-                        SourceKind::Live,
-                        format!(
-                            "Википедия: {} объектов рядом с {}{}",
-                            places.len(),
-                            area.label,
-                            supplement_note(supplemented)
-                        ),
-                    ));
+        });
+
+        let (tiles, phrase_rows, wikipedia_rows) = tokio::join!(tiles, phrase_rows, wikipedia_rows);
+
+        let mut sources: Vec<&str> = Vec::new();
+        let mut rows: Vec<Value> = Vec::new();
+        if !tiles.is_empty() {
+            sources.push("OSM (тайлы)");
+            rows.extend(tiles.iter().map(osmmap::Poi::to_place));
+        }
+        if !phrase_rows.is_empty() {
+            sources.push("Nominatim (категории)");
+            rows.extend(phrase_rows);
+        }
+        if !wikipedia_rows.is_empty() {
+            sources.push("Википедия");
+            rows.extend(wikipedia_rows);
+        }
+
+        let mut places = dedupe_places(rows);
+        let mut overpass_answer = None;
+        if places.len() < target {
+            if let Some(task) = overpass_task.as_mut() {
+                if let Ok(Ok(Some(value))) = tokio::time::timeout_at(deadline.into(), task).await {
+                    overpass_answer = Some(value);
                 }
             }
         }
+        if let Some(task) = overpass_task {
+            task.abort();
+        }
+        if let Some(value) = overpass_answer {
+            let extra = parse_elements(&value, &area, limit);
+            if !extra.is_empty() {
+                sources.push("Overpass");
+                places.extend(extra);
+                places = dedupe_places(places);
+            }
+        }
 
-        // The OSM map API is small and fast, and Overpass is often blocked.
-        // For food/nightlife search it before Overpass so a blocked endpoint
-        // cannot eat the whole tool timeout.
-        let deadline = std::time::Instant::now() + SEARCH_BUDGET;
-
-        // The live providers get a hard time budget: the tool itself is killed
-        // at TOOL_TIMEOUT_SECS (15 s), and a killed call returns nothing at all
-        // — a bar search in Vladivostok once timed out that way and the plan
-        // came out empty. Whatever is not ready in time is skipped, and the
-        // local catalogue below always answers.
-        //
-        // A mixed request — nature plus food, sights plus cafés — needs both
-        // the OSM business rows and the Wikipedia articles. Neither source
-        // needs the other's answer, so both are asked at once and merged
-        // instead of in turn, where the second source only started after the
-        // first one had spent the whole budget on slow map tiles. Pure
-        // business searches keep the plain OSM → Overpass order, where a
-        // Wikipedia article cannot contribute a precise café anyway.
-        let mut prefetched_wikipedia: Option<Vec<Value>> = None;
-        if !wikipedia_first && wants_osm_business(&categories) && wants_wikipedia(&categories) {
-            let (osm, wikipedia) = tokio::join!(
-                osm_map_places(ctx, &area, &categories, limit, deadline),
-                wikipedia_matching_places(
-                    ctx,
-                    area.lat,
-                    area.lon,
-                    limit,
-                    &categories,
-                    area_is_water,
+        let places = scope_to_area(places, &area, nearest_only, limit);
+        if !places.is_empty() {
+            let (places, supplemented) =
+                with_local_supplement(ctx, &area, &categories, places, nearest_only, limit);
+            return Ok(ToolOutput::ok(
+                json!({"places": places}),
+                SourceKind::Live,
+                format!(
+                    "{}: {} мест рядом с {}{}",
+                    sources.join(" + "),
+                    places.len(),
+                    area.label,
+                    supplement_note(supplemented)
                 ),
-            );
-            wikipedia_tried = true;
-            let wikipedia = wikipedia
-                .map(|places| scope_to_area(places, &area, nearest_only, limit))
-                .filter(|places| !places.is_empty());
-            let osm = osm
-                .map(|places| scope_to_area(places, &area, nearest_only, limit))
-                .filter(|places| !places.is_empty());
-            if let Some(osm) = osm {
-                // A source that alone fills the request answers alone; a thin
-                // OSM list is merged with the Wikipedia rows so a "nature and
-                // food" day gets both halves.
-                let places = match &wikipedia {
-                    Some(wikipedia) if osm.len() < limit => {
-                        merge_live_sources(osm, wikipedia.clone(), limit)
-                    }
-                    _ => osm,
-                };
-                let (places, supplemented) =
-                    with_local_supplement(ctx, &area, &categories, places, nearest_only, limit);
-                return Ok(ToolOutput::ok(
-                    json!({"places": places}),
-                    SourceKind::Live,
-                    format!(
-                        "OpenStreetMap и Википедия: {} мест рядом с {}{}",
-                        places.len(),
-                        area.label,
-                        supplement_note(supplemented)
-                    ),
-                ));
-            }
-            // The map API found nothing: Overpass goes first, exactly as it
-            // does for business searches, and the Wikipedia rows are kept for
-            // the step after it — that keeps the order and does not repeat
-            // the request.
-            prefetched_wikipedia = wikipedia;
-        } else if wants_osm_business(&categories) && std::time::Instant::now() < deadline {
-            if let Some(places) = osm_map_places(ctx, &area, &categories, limit, deadline).await {
-                let places = scope_to_area(places, &area, nearest_only, limit);
-                if !places.is_empty() {
-                    let (places, supplemented) =
-                        with_local_supplement(ctx, &area, &categories, places, nearest_only, limit);
-                    return Ok(ToolOutput::ok(
-                        json!({"places": places}),
-                        SourceKind::Live,
-                        format!(
-                            "OpenStreetMap API: {} заведений рядом с {}{}",
-                            places.len(),
-                            area.label,
-                            supplement_note(supplemented)
-                        ),
-                    ));
-                }
-            }
-        }
-
-        if std::time::Instant::now() < deadline {
-            if let Some(places) = overpass_places(ctx, &area, &categories, limit, deadline).await {
-                let places = scope_to_area(places, &area, nearest_only, limit);
-                if !places.is_empty() {
-                    let (places, supplemented) =
-                        with_local_supplement(ctx, &area, &categories, places, nearest_only, limit);
-                    return Ok(ToolOutput::ok(
-                        json!({"places": places}),
-                        SourceKind::Live,
-                        format!(
-                            "OSM: {} объектов в районе {}{}",
-                            places.len(),
-                            area.label,
-                            supplement_note(supplemented)
-                        ),
-                    ));
-                }
-            }
-        }
-
-        if !wikipedia_tried && wants_wikipedia(&categories) && std::time::Instant::now() < deadline
-        {
-            if let Some(places) = wikipedia_matching_places(
-                ctx,
-                area.lat,
-                area.lon,
-                limit,
-                &categories,
-                area_is_water,
-            )
-            .await
-            {
-                let places = scope_to_area(places, &area, nearest_only, limit);
-                if !places.is_empty() {
-                    let (places, supplemented) =
-                        with_local_supplement(ctx, &area, &categories, places, nearest_only, limit);
-                    return Ok(ToolOutput::ok(
-                        json!({"places": places}),
-                        SourceKind::Live,
-                        format!(
-                            "Википедия: {} объектов рядом с {}{}",
-                            places.len(),
-                            area.label,
-                            supplement_note(supplemented)
-                        ),
-                    ));
-                }
-            }
-        }
-
-        // The mixed search asked Wikipedia next to the map tiles; those rows
-        // answer now without another request, even when the live budget is
-        // spent — the data is already in hand, only the demo catalogue below
-        // is a fallback.
-        if let Some(places) = prefetched_wikipedia {
-            if !places.is_empty() {
-                let (places, supplemented) =
-                    with_local_supplement(ctx, &area, &categories, places, nearest_only, limit);
-                return Ok(ToolOutput::ok(
-                    json!({"places": places}),
-                    SourceKind::Live,
-                    format!(
-                        "Википедия: {} объектов рядом с {}{}",
-                        places.len(),
-                        area.label,
-                        supplement_note(supplemented)
-                    ),
-                ));
-            }
+            ));
         }
 
         let local = scope_to_area(
@@ -338,11 +262,156 @@ impl Tool for PlacesTool {
     }
 }
 
+/// Time the live providers of one search may spend before the tool gives the
+/// remaining seconds to the local catalogue instead of being killed: the tool
+/// itself is cut off at TOOL_TIMEOUT_SECS (15 s).
+const SEARCH_BUDGET: Duration = Duration::from_secs(12);
+
+/// Overpass may hold a thin answer for this long. The public instances queue
+/// heavy queries, so this is a ceiling, not a promise.
+const OVERPASS_BUDGET: Duration = Duration::from_secs(10);
+
+/// Nominatim phrase requests per search. Each one costs a second of the shared
+/// rate limit, and three families cover what people ask for.
+const MAX_PHRASES: usize = 3;
+
 /// A live answer with fewer places than this is topped up from the offline
-/// catalogue: a slow or blocked OSM left a two-day plan with two stops, and the
-/// catalogue is the documented reserve. Every entry keeps its own `source`, so
-/// the model and the UI can tell live OSM rows from demo ones.
+/// catalogue: a slow or blocked source left a two-day plan with two stops, and
+/// the catalogue is the documented reserve. Every entry keeps its own `source`,
+/// so the model and the UI can tell live rows from demo ones.
 const MIN_LIVE_PLACES: usize = 8;
+
+/// One row per real object. The sources overlap heavily — the same hotel is a
+/// map tile node, a Nominatim record and an Overpass element — so an id or a
+/// name match within 300 metres keeps the first copy. The tile copy comes
+/// first: it carries the exact coordinates and the opening hours.
+fn dedupe_places(rows: Vec<Value>) -> Vec<Value> {
+    let mut kept: Vec<Value> = Vec::new();
+    let mut ids: HashSet<String> = HashSet::new();
+    let mut names: Vec<(String, String, f64, f64)> = Vec::new();
+    for row in rows {
+        let (Some(lat), Some(lon)) = (
+            row.get("lat").and_then(Value::as_f64),
+            row.get("lon").and_then(Value::as_f64),
+        ) else {
+            // A row without coordinates cannot be placed and cannot be
+            // compared: it is kept as it came, and the caller keeps it only
+            // when the search found nothing else.
+            kept.push(row);
+            continue;
+        };
+        if let Some(id) = row.get("id").and_then(Value::as_str) {
+            if !ids.insert(id.to_string()) {
+                continue;
+            }
+        }
+        let original = row
+            .get("name")
+            .and_then(Value::as_str)
+            .unwrap_or("")
+            .to_string();
+        let name = normalize_name(&original);
+        if name.is_empty()
+            || names
+                .iter()
+                .any(|(known, known_original, known_lat, known_lon)| {
+                    haversine_km((lat, lon), (*known_lat, *known_lon)) < 0.3
+                        && (*known == name || loose_same_name(known_original, &original))
+                })
+        {
+            continue;
+        }
+        names.push((name, original, lat, lon));
+        kept.push(row);
+    }
+    kept
+}
+
+/// The same place under a different name. OSM and Wikipedia describe one museum
+/// as "Музей истории Дальнего Востока имени В. К. Арсеньева" and "…им. В.К.
+/// Арсеньева": the words match, the abbreviations do not, so a row is a
+/// duplicate when the significant words of two names are the same and the two
+/// points are 300 metres apart at most. `"имени"`/`"им."` is the abbreviation
+/// Russian place names actually use.
+fn loose_same_name(left: &str, right: &str) -> bool {
+    let words = |name: &str| -> Vec<String> {
+        normalize_name(name)
+            .split_whitespace()
+            .map(|word| match word {
+                "им" | "имени" | "назван" | "названа" => "имени".to_string(),
+                _ => word.to_string(),
+            })
+            // "в", "к", "ул" and "г" carry no meaning on their own.
+            .filter(|word| word.chars().count() > 2 || word == "имени")
+            .collect()
+    };
+    let mut left = words(left);
+    let mut right = words(right);
+    if left.is_empty() || right.is_empty() {
+        return false;
+    }
+    left.sort();
+    right.sort();
+    left == right
+}
+
+/// Nominatim phrase requests for the requested categories, deduplicated and
+/// capped: the tiles already cover the centre, and every phrase costs a second
+/// of the shared rate limit.
+fn phrases_for(categories: &[String]) -> Vec<geo::Phrase> {
+    let mut phrases: Vec<geo::Phrase> = Vec::new();
+    for category in categories {
+        for phrase in geo::phrases_for(category) {
+            if phrases.len() >= MAX_PHRASES {
+                return phrases;
+            }
+            if phrases.iter().any(|kept| kept.text == phrase.text) {
+                continue;
+            }
+            phrases.push(phrase);
+        }
+    }
+    phrases
+}
+
+/// The Overpass query of one search: every requested tag family over the whole
+/// search window, one request.
+fn overpass_query(categories: &[String], area: &geo::Area) -> String {
+    let filters = overpass_filters(categories);
+    let (south, west, north, east) = area.bbox;
+    let bbox = format!("{south:.4},{west:.4},{north:.4},{east:.4}");
+    let clauses: Vec<String> = filters
+        .iter()
+        .map(|filter| format!("{filter}({bbox});"))
+        .collect();
+    format!(
+        "[out:json][timeout:12];({});out center 120;",
+        clauses.join("")
+    )
+}
+
+/// A user who asks for the nearest café must get the nearest one, not merely
+/// the ones inside the search box. The model often keeps that wording in
+/// `query`, so both the flag and the text are checked.
+fn nearest_requested(args: &Value) -> bool {
+    let text = args
+        .get("query")
+        .and_then(Value::as_str)
+        .map(str::to_lowercase)
+        .unwrap_or_default();
+    ["ближайш", "поблизост", "неподалёк", "недалеко", "рядом"]
+        .iter()
+        .any(|needle| text.contains(needle))
+}
+
+/// Says out loud when a live answer was topped up from the demo catalogue.
+fn supplement_note(supplemented: bool) -> &'static str {
+    if supplemented {
+        " + локальный справочник (демо-данные)"
+    } else {
+        ""
+    }
+}
 
 fn with_local_supplement(
     ctx: &ToolCtx,
@@ -356,117 +425,19 @@ fn with_local_supplement(
         return (places, false);
     }
     let mut merged = places;
-    let mut seen: HashSet<String> = merged
-        .iter()
-        .filter_map(|place| place.get("id").and_then(Value::as_str).map(str::to_string))
-        .collect();
     for place in scope_to_area(
         local_places(ctx, area, categories, limit),
         area,
         nearest_only,
         limit,
     ) {
-        if let Some(id) = place.get("id").and_then(Value::as_str) {
-            if seen.insert(id.to_string()) {
-                merged.push(place);
-            }
-        }
+        merged.push(place);
     }
-    let merged = scope_to_area(merged, area, nearest_only, limit);
+    // The catalogue repeats places the live sources already found (the same
+    // oceanarium, the same fortress museum), and `dedupe_places` keeps the
+    // first row: the live one, with its exact coordinates.
+    let merged = scope_to_area(dedupe_places(merged), area, nearest_only, limit);
     (merged, true)
-}
-
-/// Default starting point when the query names the region, not a place.
-const DEFAULT_AREA_CITY: &str = "Владивосток";
-
-/// Time the live providers of one search may spend before the tool gives the
-/// remaining seconds to the local catalogue instead of being killed.
-const SEARCH_BUDGET: Duration = Duration::from_secs(6);
-
-/// Merges the OSM and Wikipedia rows of one mixed search. Both lists arrive
-/// sorted by distance; the same object is often mapped in both sources under
-/// different ids, so a matching name within half a kilometre drops the
-/// Wikipedia twin instead of showing the same place twice.
-fn merge_live_sources(osm: Vec<Value>, wikipedia: Vec<Value>, limit: usize) -> Vec<Value> {
-    let mut merged = osm;
-    let mut seen: HashSet<String> = merged
-        .iter()
-        .filter_map(|place| place.get("id").and_then(Value::as_str).map(str::to_string))
-        .collect();
-    let osm_names: Vec<(String, f64, f64)> = merged
-        .iter()
-        .filter_map(|place| {
-            Some((
-                normalize_title(place.get("name").and_then(Value::as_str)?),
-                place.get("lat").and_then(Value::as_f64)?,
-                place.get("lon").and_then(Value::as_f64)?,
-            ))
-        })
-        .collect();
-    for place in wikipedia {
-        let Some(id) = place.get("id").and_then(Value::as_str).map(str::to_string) else {
-            continue;
-        };
-        if !seen.insert(id) {
-            continue;
-        }
-        let name = place
-            .get("name")
-            .and_then(Value::as_str)
-            .map(normalize_title)
-            .unwrap_or_default();
-        let twin = match (
-            place.get("lat").and_then(Value::as_f64),
-            place.get("lon").and_then(Value::as_f64),
-        ) {
-            (Some(lat), Some(lon)) => osm_names.iter().any(|(known, known_lat, known_lon)| {
-                !name.is_empty()
-                    && *known == name
-                    && haversine_km((lat, lon), (*known_lat, *known_lon)) < 0.5
-            }),
-            _ => false,
-        };
-        if !twin {
-            merged.push(place);
-        }
-    }
-    merged.sort_by(|left, right| {
-        let left = left
-            .get("distance_meters")
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::MAX);
-        let right = right
-            .get("distance_meters")
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::MAX);
-        left.partial_cmp(&right)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    merged.truncate(limit.max(1));
-    merged
-}
-
-/// A user who asks for the nearest café must get the nearest one, not merely
-/// the ones inside the search box. The model often keeps that wording in
-/// `query`, so both the flag and the text are checked.
-/// Says out loud when a live answer was topped up from the demo catalogue.
-fn supplement_note(supplemented: bool) -> &'static str {
-    if supplemented {
-        " + локальный справочник (демо-данные)"
-    } else {
-        ""
-    }
-}
-
-fn nearest_requested(args: &Value) -> bool {
-    let text = args
-        .get("query")
-        .and_then(Value::as_str)
-        .map(str::to_lowercase)
-        .unwrap_or_default();
-    ["ближайш", "поблизост", "неподалёк", "недалеко", "рядом"]
-        .iter()
-        .any(|needle| text.contains(needle))
 }
 
 /// Keeps the results that belong to the requested place, closest first.
@@ -535,82 +506,12 @@ fn scope_to_area(
     kept
 }
 
-async fn overpass_places(
-    ctx: &ToolCtx,
-    area: &geo::Area,
-    categories: &[String],
-    limit: usize,
-    deadline: std::time::Instant,
-) -> Option<Vec<Value>> {
-    let filters = overpass_filters(categories);
-    let (south, west, north, east) = area.bbox;
-    let bbox = format!("{south:.4},{west:.4},{north:.4},{east:.4}");
-    let clauses: Vec<String> = filters
-        .iter()
-        .map(|filter| format!("{filter}({bbox});"))
-        .collect();
-    let query = format!(
-        "[out:json][timeout:7];({});out center 80;",
-        clauses.join("")
-    );
-    let _permit = crate::tools::providers::OVERPASS_SLOTS
-        .acquire()
-        .await
-        .ok()?;
-    // The main Overpass instance is occasionally busy. Try one mirror only
-    // when the first request fails; a successful empty answer is valid and
-    // must not trigger another network round-trip.
-    for endpoint in [
-        "https://overpass-api.de/api/interpreter",
-        "https://overpass.kumi.systems/api/interpreter",
-    ] {
-        if std::time::Instant::now() >= deadline {
-            return None;
-        }
-        let response = tokio::time::timeout(
-            Duration::from_secs(2),
-            ctx.http.post(endpoint).body(query.clone()).send(),
-        )
-        .await
-        .ok()
-        .and_then(Result::ok);
-        let Some(response) = response else {
-            continue;
-        };
-        if !response.status().is_success() {
-            continue;
-        }
-        let Ok(value) = response.json::<Value>().await else {
-            continue;
-        };
-        let places = parse_elements(&value, area, limit);
-        return Some(places);
-    }
-    None
-}
-
-fn wants_osm_business(categories: &[String]) -> bool {
-    if categories.is_empty() {
-        return false;
-    }
-    categories.iter().any(|category| {
-        let category = category.to_lowercase();
-        ![
-            "nature",
-            "park",
-            "beach",
-            "viewpoint",
-            "lake",
-            "river",
-            "mountain",
-        ]
-        .iter()
-        .any(|plain| category.contains(plain))
-    })
-}
-
-/// Maps free-form model categories to OSM tag values. The model can send
-/// `clothes`, `shop=clothes`, `marketplace`, `театр` or any other tag value.
+/// Maps free-form model categories to the OSM tag values that answer them.
+///
+/// The model can send `clothes`, `shop=clothes`, `marketplace`, `театр` or any
+/// other tag value, and a category always expands to its family: asking for
+/// hotels must not hide guest houses and hostels, and asking for food must not
+/// hide the bistros and bakeries that share the street with restaurants.
 fn osm_values(categories: &[String]) -> Vec<String> {
     let mut values = Vec::new();
     for category in categories {
@@ -620,6 +521,40 @@ fn osm_values(categories: &[String]) -> Vec<String> {
             .map(|(_, value)| value.trim())
             .unwrap_or(category.as_str());
         let mapped: &[&str] = match raw {
+            // Where people eat: the whole family, because "поесть" covers
+            // restaurants, cafés, fast food and bakeries alike.
+            "food" | "еда" | "поесть" | "перекус" | "перекусить" => &[
+                "restaurant",
+                "cafe",
+                "fast_food",
+                "ice_cream",
+                "bakery",
+                "food_court",
+            ],
+            "restaurant" | "ресторан" => &["restaurant"],
+            "cafe" | "кафе" | "кофейня" => &["cafe"],
+            "fast_food" | "фастфуд" | "быстрое питание" | "пиццерия" => {
+                &["fast_food"]
+            }
+            "bakery" | "пекарня" | "хлеб" => &["bakery"],
+            // Where people stay: one family for hotels, guest houses, hostels,
+            // apartments, camp sites and holiday camps.
+            "hotel" | "отель" | "гостиница" | "lodging" | "жилье" | "жильё" | "ночлег" => {
+                &[
+                    "hotel",
+                    "guest_house",
+                    "hostel",
+                    "motel",
+                    "apartment",
+                    "chalet",
+                    "camp_site",
+                    "resort",
+                ]
+            }
+            "hostel" | "хостел" => &["hostel"],
+            "guest_house" | "гостевой дом" => &["guest_house"],
+            "camp_site" | "кемпинг" => &["camp_site"],
+            "resort" | "база отдыха" | "дом отдыха" => &["resort"],
             "market" | "marketplace" | "рынок" | "рынки" => &["marketplace"],
             "theater" | "theatre" | "театр" | "театры" => &["theatre"],
             "cinema" | "кино" | "кинотеатр" => &["cinema"],
@@ -633,22 +568,21 @@ fn osm_values(categories: &[String]) -> Vec<String> {
             "pharmacy" | "аптека" => &["pharmacy"],
             "bank" | "банк" => &["bank"],
             "supermarket" | "супермаркет" => &["supermarket"],
-            "bakery" | "пекарня" => &["bakery"],
-            "restaurant" | "ресторан" => &["restaurant"],
-            "cafe" | "кафе" => &["cafe"],
             "bar" | "бар" => &["bar"],
             "pub" | "паб" => &["pub"],
             "club" | "nightclub" | "клуб" => &["nightclub"],
             "museum" | "музей" => &["museum"],
-            "hotel" | "отель" => &["hotel"],
-            "park" | "парк" => &["park"],
+            "park" | "парк" | "сад" => &["park"],
             "beach" | "пляж" => &["beach"],
-            "viewpoint" | "смотровая" => &["viewpoint"],
-            "attraction" | "достопримечательность" => &["attraction"],
+            "viewpoint" | "смотровая" | "смотровая площадка" => {
+                &["viewpoint", "peak"]
+            }
+            "attraction" | "достопримечательность" | "достопримечательности" => {
+                &["attraction", "artwork"]
+            }
             "fuel" | "азс" => &["fuel"],
             "hospital" | "больница" => &["hospital"],
-            "historic" | "история" => &["historic"],
-            "food" => &["restaurant", "cafe", "fast_food", "bakery"],
+            "historic" | "история" | "памятник" => &["historic"],
             "waterfall" | "водопад" => &["waterfall"],
             "cave_entrance" | "cave" | "пещера" | "пещеры" => &["cave_entrance"],
             "lighthouse" | "маяк" => &["lighthouse"],
@@ -670,7 +604,6 @@ fn osm_values(categories: &[String]) -> Vec<String> {
             }
             "place_of_worship" | "церковь" | "храм" => &["place_of_worship"],
             "picnic_table" | "пикник" => &["picnic_table", "picnic_site"],
-            "camp_site" | "кемпинг" => &["camp_site"],
             _ => &[],
         };
         if mapped.is_empty() {
@@ -682,400 +615,6 @@ fn osm_values(categories: &[String]) -> Vec<String> {
     values.sort();
     values.dedup();
     values
-}
-
-/// One OSM map-API tile around a centre point.
-///
-/// The timeout covers the whole exchange: a dense city tile is a couple of
-/// megabytes, and reading the body without a limit was what pushed a search
-/// past the 15-second tool timeout and left the plan without points.
-async fn fetch_osm_tile(
-    ctx: &ToolCtx,
-    lat: f64,
-    lon: f64,
-    span: f64,
-    timeout: Duration,
-) -> Option<String> {
-    let bbox = format!(
-        "{:.5},{:.5},{:.5},{:.5}",
-        lon - span * 1.2,
-        lat - span,
-        lon + span * 1.2,
-        lat + span
-    );
-    let url = format!("https://api.openstreetmap.org/api/0.6/map?bbox={bbox}");
-    let user_agent = ctx.nominatim_user_agent.clone();
-    let request = async move {
-        let response = ctx
-            .http
-            .get(&url)
-            .header("User-Agent", user_agent)
-            .send()
-            .await
-            .ok()?;
-        if !response.status().is_success() {
-            return None;
-        }
-        response.text().await.ok()
-    };
-    tokio::time::timeout(timeout, request).await.ok()?
-}
-
-async fn osm_map_places(
-    ctx: &ToolCtx,
-    area: &geo::Area,
-    categories: &[String],
-    limit: usize,
-    deadline: std::time::Instant,
-) -> Option<Vec<Value>> {
-    let wanted = osm_values(categories);
-    if wanted.is_empty() {
-        return None;
-    }
-    // Tiles are fetched and parsed one after another, nearest first: a city
-    // centre tile alone usually fills the day, while parsing five large
-    // documents used to blow the 15-second tool timeout and return nothing at
-    // all ("поиск не нашёл точек"). Parsing happens only while the budget lasts.
-    let mut all: Vec<Value> = Vec::new();
-    let mut seen_ids: HashSet<String> = HashSet::new();
-    let mut take = |xml: Option<String>, all: &mut Vec<Value>| {
-        let Some(xml) = xml else { return };
-        for place in parse_osm_map(&xml, area, &wanted, limit) {
-            if let Some(id) = place.get("id").and_then(Value::as_str) {
-                if seen_ids.insert(id.to_string()) {
-                    all.push(place);
-                }
-            }
-        }
-    };
-
-    // The centre tile, its four neighbours and the small centre retry are one
-    // round of independent requests, so they travel together: fetched one
-    // after another they spent the whole search budget on the network alone
-    // (five slow tiles in a row is how a mixed query ran out of time before
-    // Overpass or Wikipedia could answer). Each tile keeps its own timeout and
-    // the parsing below stays nearest-first, stopping as soon as the set is
-    // rich enough or the budget is gone; the retry is a tiny box and is only
-    // parsed when nothing else matched.
-    let (centre, neighbours, retry) = tokio::join!(
-        fetch_osm_tile(ctx, area.lat, area.lon, 0.008, Duration::from_secs(3)),
-        async {
-            let mut tiles = Vec::with_capacity(4);
-            for (delta_lat, delta_lon) in [
-                (0.01_f64, 0.0_f64),
-                (-0.01, 0.0),
-                (0.0, 0.012),
-                (0.0, -0.012),
-            ] {
-                tiles.push(fetch_osm_tile(
-                    ctx,
-                    area.lat + delta_lat,
-                    area.lon + delta_lon,
-                    0.008,
-                    Duration::from_secs(2),
-                ));
-            }
-            futures::future::join_all(tiles).await
-        },
-        // Dense city centres can hit the 50k-node limit on the wider tiles;
-        // this is the documented retry with a small centre box, fetched next
-        // to the others so the retry itself costs no extra wait.
-        fetch_osm_tile(ctx, area.lat, area.lon, 0.004, Duration::from_secs(2)),
-    );
-    take(centre, &mut all);
-    for tile in neighbours {
-        if all.len() >= limit / 2 || std::time::Instant::now() >= deadline {
-            break;
-        }
-        take(tile, &mut all);
-    }
-
-    if all.is_empty() && std::time::Instant::now() < deadline {
-        take(retry, &mut all);
-    }
-    all.sort_by(|left, right| {
-        let left = left
-            .get("distance_meters")
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::MAX);
-        let right = right
-            .get("distance_meters")
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::MAX);
-        left.partial_cmp(&right)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    all.truncate(limit);
-    Some(all)
-}
-
-fn parse_osm_map(xml: &str, area: &geo::Area, wanted: &[String], limit: usize) -> Vec<Value> {
-    let mut node_coords: HashMap<String, (f64, f64)> = HashMap::new();
-    for chunk in xml.split("<node ").skip(1) {
-        let Some(header_end) = chunk.find('>') else {
-            continue;
-        };
-        let header = &chunk[..header_end];
-        let (Some(id), Some(lat), Some(lon)) = (
-            xml_attr(header, "id"),
-            xml_attr(header, "lat").and_then(|value| value.parse::<f64>().ok()),
-            xml_attr(header, "lon").and_then(|value| value.parse::<f64>().ok()),
-        ) else {
-            continue;
-        };
-        node_coords.insert(id.to_string(), (lat, lon));
-    }
-    let mut places = Vec::new();
-    let mut seen_ids = HashSet::new();
-    let mut seen_names: Vec<(String, f64, f64)> = Vec::new();
-    for chunk in xml.split("<node ").skip(1) {
-        let Some(header_end) = chunk.find('>') else {
-            continue;
-        };
-        let header = &chunk[..header_end];
-        let Some(id) = xml_attr(header, "id") else {
-            continue;
-        };
-        let (Some(lat), Some(lon)) = (
-            xml_attr(header, "lat").and_then(|value| value.parse::<f64>().ok()),
-            xml_attr(header, "lon").and_then(|value| value.parse::<f64>().ok()),
-        ) else {
-            continue;
-        };
-        if !on_land_strict(lat, lon) {
-            continue;
-        }
-        let body = if header.ends_with('/') {
-            ""
-        } else {
-            chunk[header_end + 1..]
-                .split("</node>")
-                .next()
-                .unwrap_or("")
-        };
-        let mut tags: HashMap<String, String> = HashMap::new();
-        for tag in body.split("<tag ").skip(1) {
-            let end = tag
-                .find("/>")
-                .or_else(|| tag.find('>'))
-                .unwrap_or(tag.len());
-            let segment = &tag[..end];
-            if let (Some(key), Some(value)) = (xml_attr(segment, "k"), xml_attr(segment, "v")) {
-                tags.insert(key.to_string(), xml_unescape(value));
-            }
-        }
-        let matched = osm_map_matches(&tags, wanted);
-        if !matched {
-            continue;
-        }
-        let Some(name) = tags.get("name:ru").or_else(|| tags.get("name")) else {
-            continue;
-        };
-        let name = name.trim();
-        if name.is_empty() {
-            continue;
-        }
-        let id = format!("osm:node/{id}");
-        if !seen_ids.insert(id.clone()) {
-            continue;
-        }
-        let key = name.to_lowercase();
-        if seen_names.iter().any(|(known, known_lat, known_lon)| {
-            *known == key && haversine_km((lat, lon), (*known_lat, *known_lon)) < 0.1
-        }) {
-            continue;
-        }
-        seen_names.push((key, lat, lon));
-        places.push(json!({
-            "id": id,
-            "name": name,
-            "lat": lat,
-            "lon": lon,
-            "kind": osm_kind(&tags),
-            "opening_hours": tags.get("opening_hours"),
-            "source": "live",
-            "distance_meters": (haversine_km((area.lat, area.lon), (lat, lon)) * 1000.0).round()
-        }));
-    }
-    // Cinemas, malls, theatres and many shops are mapped as ways, not nodes.
-    // Build their centre from the referenced nodes so tag search finds them.
-    for chunk in xml.split("<way ").skip(1) {
-        let Some(header_end) = chunk.find('>') else {
-            continue;
-        };
-        let header = &chunk[..header_end];
-        let Some(id) = xml_attr(header, "id") else {
-            continue;
-        };
-        let body = chunk[header_end + 1..].split("</way>").next().unwrap_or("");
-        let mut tags: HashMap<String, String> = HashMap::new();
-        for tag in body.split("<tag ").skip(1) {
-            let end = tag
-                .find("/>")
-                .or_else(|| tag.find('>'))
-                .unwrap_or(tag.len());
-            let segment = &tag[..end];
-            if let (Some(key), Some(value)) = (xml_attr(segment, "k"), xml_attr(segment, "v")) {
-                tags.insert(key.to_string(), xml_unescape(value));
-            }
-        }
-        let matched = osm_map_matches(&tags, wanted);
-        if !matched {
-            continue;
-        }
-        let mut sum_lat = 0.0;
-        let mut sum_lon = 0.0;
-        let mut count = 0usize;
-        for nd in body.split("<nd ").skip(1) {
-            let end = nd.find("/>").or_else(|| nd.find('>')).unwrap_or(nd.len());
-            let segment = &nd[..end];
-            let Some(reference) = xml_attr(segment, "ref") else {
-                continue;
-            };
-            let Some((lat, lon)) = node_coords.get(reference) else {
-                continue;
-            };
-            sum_lat += lat;
-            sum_lon += lon;
-            count += 1;
-        }
-        if count == 0 {
-            continue;
-        }
-        let lat = sum_lat / count as f64;
-        let lon = sum_lon / count as f64;
-        if !on_land_strict(lat, lon) {
-            continue;
-        }
-        let Some(name) = tags.get("name:ru").or_else(|| tags.get("name")) else {
-            continue;
-        };
-        let name = name.trim();
-        if name.is_empty() {
-            continue;
-        }
-        let id = format!("osm:way/{id}");
-        if !seen_ids.insert(id.clone()) {
-            continue;
-        }
-        let key = name.to_lowercase();
-        if seen_names.iter().any(|(known, known_lat, known_lon)| {
-            *known == key && haversine_km((lat, lon), (*known_lat, *known_lon)) < 0.1
-        }) {
-            continue;
-        }
-        seen_names.push((key, lat, lon));
-        places.push(json!({
-            "id": id,
-            "name": name,
-            "lat": lat,
-            "lon": lon,
-            "kind": osm_kind(&tags),
-            "opening_hours": tags.get("opening_hours"),
-            "source": "live",
-            "distance_meters": (haversine_km((area.lat, area.lon), (lat, lon)) * 1000.0).round()
-        }));
-    }
-    places.sort_by(|left, right| {
-        let left = left
-            .get("distance_meters")
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::MAX);
-        let right = right
-            .get("distance_meters")
-            .and_then(Value::as_f64)
-            .unwrap_or(f64::MAX);
-        left.partial_cmp(&right)
-            .unwrap_or(std::cmp::Ordering::Equal)
-    });
-    places.truncate(limit);
-    places
-}
-
-fn osm_kind(tags: &HashMap<String, String>) -> &'static str {
-    if let Some(amenity) = tags.get("amenity").map(String::as_str) {
-        match amenity {
-            "nightclub" => return "club",
-            "bar" | "pub" => return "bar",
-            "restaurant" | "cafe" | "fast_food" | "bakery" => return "food",
-            "marketplace" => return "market",
-            "theatre" => return "theater",
-            "cinema" => return "cinema",
-            "hotel" | "hostel" | "guest_house" => return "rest",
-            "sauna" | "public_bath" => return "rest",
-            "museum" => return "museum",
-            "place_of_worship" | "monastery" => return "historic",
-            "spa" | "dive_centre" => return "rest",
-            _ => {}
-        }
-    }
-    match tags.get("natural").map(String::as_str) {
-        Some("waterfall" | "cave_entrance" | "peak" | "spring") => return "nature",
-        Some("beach") => return "beach",
-        _ => {}
-    }
-    if tags.get("man_made").map(String::as_str) == Some("lighthouse") {
-        return "viewpoint";
-    }
-    if matches!(
-        tags.get("leisure").map(String::as_str),
-        Some("water_park" | "swimming_pool" | "bowling_alley" | "sports_centre" | "horse_riding")
-    ) {
-        return "park";
-    }
-    if tags.contains_key("shop") {
-        return "shop";
-    }
-    match tags.get("tourism").map(String::as_str) {
-        Some("museum") => return "museum",
-        Some("viewpoint") => return "viewpoint",
-        Some("zoo" | "aquarium" | "theme_park" | "attraction") => return "sight",
-        Some("hotel" | "guest_house" | "hostel" | "apartment" | "camp_site" | "chalet") => {
-            return "rest"
-        }
-        _ => {}
-    }
-    if tags.contains_key("historic") {
-        return "historic";
-    }
-    if matches!(
-        tags.get("leisure").map(String::as_str),
-        Some("park" | "nature_reserve")
-    ) {
-        return "park";
-    }
-    "sight"
-}
-
-fn osm_map_matches(tags: &HashMap<String, String>, wanted: &[String]) -> bool {
-    let keys = [
-        "amenity", "shop", "tourism", "leisure", "natural", "man_made", "sport", "historic",
-    ];
-    keys.iter().any(|key| {
-        tags.get(*key)
-            .is_some_and(|value| wanted.iter().any(|wanted| wanted == value))
-            || (tags.get(*key).is_some() && wanted.iter().any(|wanted| wanted == *key))
-    })
-}
-
-fn xml_attr<'a>(header: &'a str, key: &str) -> Option<&'a str> {
-    let pattern = format!("{key}=\"");
-    let start = header
-        .find(&format!(" {pattern}"))
-        .map(|index| index + 1)
-        .or_else(|| header.find(&pattern))?;
-    let value_start = start + pattern.len();
-    let end = header[value_start..].find('"')? + value_start;
-    Some(&header[value_start..end])
-}
-
-fn xml_unescape(value: &str) -> String {
-    value
-        .replace("&quot;", "\"")
-        .replace("&#39;", "'")
-        .replace("&lt;", "<")
-        .replace("&gt;", ">")
-        .replace("&amp;", "&")
 }
 
 fn overpass_filters(categories: &[String]) -> Vec<String> {
@@ -1131,12 +670,13 @@ fn overpass_filters(categories: &[String]) -> Vec<String> {
         || has("food")
         || has("cafe")
         || has("еда")
+        || has("поесть")
         || has("ресторан")
         || has("кафе")
     {
         add_filter(
             &mut filters,
-            "nwr[\"amenity\"~\"restaurant|cafe|fast_food\"]",
+            "nwr[\"amenity\"~\"restaurant|cafe|fast_food|ice_cream|food_court\"]",
         );
     }
     // Bars and clubs are returned only when the user explicitly asks for
@@ -1147,16 +687,27 @@ fn overpass_filters(categories: &[String]) -> Vec<String> {
     if has("club") || has("клуб") || has("night") || has("ночн") {
         add_filter(&mut filters, "nwr[\"amenity\"~\"nightclub|bar|pub\"]");
     }
-    if has("hotel") || has("отель") || has("гостин") || has("lodging") {
+    if has("hotel")
+        || has("отель")
+        || has("гостин")
+        || has("lodging")
+        || has("хостел")
+        || has("guest_house")
+        || has("кемпинг")
+        || has("жиль")
+        || has("база отдыха")
+        || has("resort")
+    {
         add_filter(
             &mut filters,
-            "nwr[\"tourism\"~\"hotel|guest_house|hostel|apartment|camp_site|chalet\"]",
+            "nwr[\"tourism\"~\"hotel|guest_house|hostel|motel|apartment|chalet|camp_site|resort\"]",
         );
     }
     // Tags that live outside shop/amenity/tourism/leisure: waterfalls and caves
     // are `natural`, lighthouses are `man_made`, karting and diving are `sport`.
     if has("waterfall") || has("водопад") {
         add_filter(&mut filters, "nwr[\"natural\"=\"waterfall\"]");
+        add_filter(&mut filters, "nwr[\"waterway\"=\"waterfall\"]");
     }
     if has("cave") || has("cave_entrance") || has("пещер") {
         add_filter(&mut filters, "nwr[\"natural\"=\"cave_entrance\"]");
@@ -1222,6 +773,7 @@ fn parse_elements(value: &Value, area: &geo::Area, limit: usize) -> Vec<Value> {
             .get("name:ru")
             .or_else(|| tags.get("name"))
             .and_then(Value::as_str)
+            .filter(|name| is_place_name(name))
         else {
             continue;
         };
@@ -1258,7 +810,7 @@ fn parse_elements(value: &Value, area: &geo::Area, limit: usize) -> Vec<Value> {
         if !seen_ids.insert(id.clone()) {
             continue;
         }
-        let normalized = normalize_title(name);
+        let normalized = normalize_name(name);
         if seen_places.iter().any(|(seen_name, seen_lat, seen_lon)| {
             *seen_name == normalized && haversine_km((lat, lon), (*seen_lat, *seen_lon)) < 0.3
         }) {
@@ -1271,7 +823,7 @@ fn parse_elements(value: &Value, area: &geo::Area, limit: usize) -> Vec<Value> {
             "name": name,
             "lat": lat,
             "lon": lon,
-            "kind": kind_from_tags(tags),
+            "kind": osm_kind_of(tags),
             "opening_hours": tags.get("opening_hours").and_then(Value::as_str),
             "source": "live",
             "distance_meters": (haversine_km((area.lat, area.lon), (lat, lon)) * 1000.0).round()
@@ -1293,6 +845,21 @@ fn parse_elements(value: &Value, area: &geo::Area, limit: usize) -> Vec<Value> {
     places
 }
 
+/// The plan vocabulary of an Overpass element: the tag map the shared kind
+/// mapper expects, built from the JSON tags.
+fn osm_kind_of(tags: &Value) -> &'static str {
+    let as_map: HashMap<String, String> = tags
+        .as_object()
+        .map(|object| {
+            object
+                .iter()
+                .filter_map(|(key, value)| Some((key.clone(), value.as_str()?.to_string())))
+                .collect()
+        })
+        .unwrap_or_default();
+    osmmap::osm_kind(&as_map)
+}
+
 fn is_water_feature(tags: &Value) -> bool {
     let value = |key: &str| tags.get(key).and_then(Value::as_str).unwrap_or("");
     value("natural") == "water"
@@ -1300,62 +867,6 @@ fn is_water_feature(tags: &Value) -> bool {
             value("waterway"),
             "river" | "stream" | "canal" | "drain" | "ditch"
         )
-}
-
-fn kind_from_tags(tags: &Value) -> &'static str {
-    let value = |key: &str| tags.get(key).and_then(Value::as_str).unwrap_or("");
-    let amenity = value("amenity");
-    if amenity == "nightclub" {
-        return "club";
-    }
-    if matches!(amenity, "bar" | "pub") {
-        return "bar";
-    }
-    if matches!(amenity, "restaurant" | "cafe" | "fast_food") {
-        return "food";
-    }
-    if amenity == "marketplace" {
-        return "market";
-    }
-    if amenity == "theatre" {
-        return "theater";
-    }
-    if amenity == "cinema" {
-        return "cinema";
-    }
-    if !value("shop").is_empty() {
-        return "shop";
-    }
-    let natural = value("natural");
-    if natural == "beach" || value("leisure") == "beach_resort" {
-        return "beach";
-    }
-    if natural == "water" {
-        return match value("water") {
-            "lake" | "reservoir" | "pond" => "lake",
-            _ => "nature",
-        };
-    }
-    if matches!(value("waterway"), "river" | "stream") {
-        return "river";
-    }
-    if natural == "peak" {
-        return "viewpoint";
-    }
-    match value("tourism") {
-        "museum" => return "museum",
-        "viewpoint" => return "viewpoint",
-        "hotel" | "guest_house" | "hostel" | "apartment" | "camp_site" | "chalet" => return "rest",
-        "zoo" | "aquarium" | "theme_park" | "attraction" => return "sight",
-        _ => {}
-    }
-    if !value("historic").is_empty() {
-        return "historic";
-    }
-    if matches!(value("leisure"), "park" | "nature_reserve") {
-        return "park";
-    }
-    "sight"
 }
 
 /// Yandex is preferred for named venues, food and nightlife. Attraction-like
@@ -1409,61 +920,30 @@ fn wants_yandex(query: &str, categories: &[String]) -> bool {
 fn wants_wikipedia(categories: &[String]) -> bool {
     categories.is_empty()
         || categories.iter().any(|category| {
-            category.contains("nature")
-                || category.contains("природ")
-                || category.contains("museum")
-                || category.contains("музе")
-                || category.contains("viewpoint")
-                || category.contains("смотров")
-                || category.contains("park")
-                || category.contains("парк")
-                || category.contains("historic")
-                || category.contains("истор")
-                || category.contains("attraction")
-                || category.contains("sight")
-                || category.contains("beach")
-                || category.contains("пляж")
-                || category.contains("lake")
-                || category.contains("озер")
-                || category.contains("river")
-                || category.contains("рек")
-        })
-}
-
-/// Attraction-like requests are a good fit for a single fast Wikipedia
-/// geosearch. If any category needs OSM semantics (food, hotels, "all"),
-/// Overpass must run first.
-fn prefers_wikipedia(categories: &[String]) -> bool {
-    categories.is_empty()
-        || categories
+            [
+                "nature",
+                "природ",
+                "museum",
+                "музе",
+                "viewpoint",
+                "смотров",
+                "park",
+                "парк",
+                "historic",
+                "истор",
+                "attraction",
+                "sight",
+                "достоприм",
+                "beach",
+                "пляж",
+                "lake",
+                "озер",
+                "river",
+                "рек",
+            ]
             .iter()
-            .all(|category| attraction_category(category))
-}
-
-fn attraction_category(category: &str) -> bool {
-    [
-        "attraction",
-        "sight",
-        "nature",
-        "museum",
-        "viewpoint",
-        "park",
-        "historic",
-        "beach",
-        "lake",
-        "river",
-        "достоприм",
-        "природ",
-        "музе",
-        "смотров",
-        "парк",
-        "истор",
-        "пляж",
-        "озер",
-        "рек",
-    ]
-    .iter()
-    .any(|needle| category.contains(needle))
+            .any(|needle| category.contains(needle))
+        })
 }
 
 async fn wikipedia_matching_places(
@@ -1487,9 +967,8 @@ async fn wikipedia_matching_places(
 }
 
 /// Keep Wikipedia results category-accurate: a beach query should not be
-/// satisfied by a random museum article, otherwise Overpass never runs. Near a
-/// lake/river the water article is filtered later, so shore objects of any
-/// non-food kind are valid.
+/// satisfied by a random museum article. Near a lake/river the water article is
+/// filtered later, so shore objects of any non-food kind are valid.
 fn wikipedia_matches_categories(place: &Value, categories: &[String], area_is_water: bool) -> bool {
     if categories.is_empty() {
         return true;
@@ -1610,7 +1089,9 @@ fn matches_categories(kind: Option<&str>, categories: &[String]) -> bool {
             if value.contains("food")
                 || value.contains("cafe")
                 || value.contains("кафе")
-                || value.contains("ресторан") =>
+                || value.contains("ресторан")
+                || value.contains("еда")
+                || value.contains("поесть") =>
         {
             kind == "food"
         }
@@ -1709,7 +1190,7 @@ async fn wikipedia_places(ctx: &ToolCtx, lat: f64, lon: f64, limit: usize) -> Op
         if generic_title(title) || waterbody_title(title) {
             continue;
         }
-        let normalized = normalize_title(title);
+        let normalized = normalize_name(title);
         if !seen_ids.insert(page_id) || !seen_titles.insert(normalized) {
             continue;
         }
@@ -1815,18 +1296,6 @@ pub(crate) fn kind_from_title(title: &str) -> &'static str {
     }
 }
 
-fn normalize_title(title: &str) -> String {
-    title
-        .to_lowercase()
-        .replace('ё', "е")
-        .chars()
-        .map(|c| if c.is_alphanumeric() { c } else { ' ' })
-        .collect::<String>()
-        .split_whitespace()
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1841,17 +1310,9 @@ mod tests {
     }
 
     #[test]
-    fn beach_category_maps_to_beach_kind() {
-        let tags = json!({"natural": "beach", "name": "Пляж"});
-        assert_eq!(kind_from_tags(&tags), "beach");
-    }
-
-    #[test]
-    fn lake_and_river_kinds_are_distinct() {
+    fn lake_and_river_water_bodies_are_not_stops() {
         let lake = json!({"natural": "water", "water": "lake"});
         let river = json!({"waterway": "river"});
-        assert_eq!(kind_from_tags(&lake), "lake");
-        assert_eq!(kind_from_tags(&river), "river");
         assert!(is_water_feature(&lake));
         assert!(is_water_feature(&river));
         assert!(!is_water_feature(&json!({"natural": "beach"})));
@@ -1862,27 +1323,93 @@ mod tests {
         let filters = overpass_filters(&["bar".to_string(), "club".to_string()]);
         assert!(filters.iter().any(|filter| filter.contains("bar|pub")));
         assert!(filters.iter().any(|filter| filter.contains("nightclub")));
-        assert_eq!(kind_from_tags(&json!({"amenity": "bar"})), "bar");
-        assert_eq!(kind_from_tags(&json!({"amenity": "nightclub"})), "club");
+        assert_eq!(osm_kind_of(&json!({"amenity": "bar"})), "bar");
+        assert_eq!(osm_kind_of(&json!({"amenity": "nightclub"})), "club");
     }
 
     #[test]
-    fn parses_osm_map_businesses() {
-        let area = geo::Area {
-            lat: 43.1155,
-            lon: 131.8855,
-            bbox: (43.10, 131.87, 43.13, 131.90),
-            label: "Владивосток".to_string(),
-            radius_km: 25.0,
-        };
-        let xml = r#"<osm>
-        <node id="1" lat="43.1155" lon="131.8855"><tag k="amenity" v="bar"/><tag k="name" v="Soda Bar"/></node>
-        <node id="2" lat="43.116" lon="131.886"><tag k="amenity" v="cafe"/><tag k="name" v="Cafe"/></node>
-        <node id="3" lat="43.117" lon="131.887"><tag k="amenity" v="parking"/><tag k="name" v="Parking"/></node>
-        </osm>"#;
-        let places = parse_osm_map(xml, &area, &["bar".to_string(), "cafe".to_string()], 10);
-        assert_eq!(places.len(), 2);
-        assert_eq!(places[0]["kind"], "bar");
-        assert_eq!(places[1]["kind"], "food");
+    fn a_lodging_request_sees_the_whole_family() {
+        let values = osm_values(&["hotel".to_string()]);
+        for expected in [
+            "hotel",
+            "guest_house",
+            "hostel",
+            "motel",
+            "apartment",
+            "camp_site",
+            "resort",
+        ] {
+            assert!(
+                values.iter().any(|value| value == expected),
+                "hotel request must include {expected}"
+            );
+        }
+        // A named venue stays exact: asking for restaurants is not a request
+        // for every eatery in the city.
+        assert_eq!(osm_values(&["restaurant".to_string()]), vec!["restaurant"]);
+    }
+
+    #[test]
+    fn a_generic_food_request_covers_every_eatery() {
+        let values = osm_values(&["food".to_string()]);
+        for expected in ["restaurant", "cafe", "fast_food", "bakery"] {
+            assert!(values.iter().any(|value| value == expected));
+        }
+        let filters = overpass_filters(&["food".to_string()]);
+        assert!(filters
+            .iter()
+            .any(|filter| filter.contains("fast_food") && filter.contains("cafe")));
+        assert!(!filters
+            .iter()
+            .any(|filter| filter.contains("tourism\"~\"hotel")));
+    }
+
+    #[test]
+    fn duplicates_of_one_object_are_kept_once() {
+        let rows = vec![
+            json!({"id": "osm:node/1", "name": "Кафе Полина", "lat": 43.1155, "lon": 131.8855}),
+            // The same café from another source: another id, another spelling.
+            json!({"id": "nominatim:node/1", "name": "кафе «Полина»", "lat": 43.1156, "lon": 131.8856}),
+            json!({"id": "osm:node/2", "name": "Кафе АЛОХА", "lat": 43.1160, "lon": 131.8860}),
+        ];
+        let kept = dedupe_places(rows);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0]["name"], "Кафе Полина");
+    }
+
+    #[test]
+    fn one_museum_under_two_names_is_one_row() {
+        // Wikipedia spells the abbreviation out, OSM shortens it; the museum is
+        // the same building, and two rows would let the plan repeat it.
+        let rows = vec![
+            json!({"id": "wikipedia:1", "name": "Музей истории Дальнего Востока имени В. К. Арсеньева", "lat": 43.1163, "lon": 131.8821}),
+            json!({"id": "osm:node/2", "name": "Музей истории Дальнего Востока им. В.К. Арсеньева", "lat": 43.1164, "lon": 131.8822}),
+            // A different museum on the same street stays.
+            json!({"id": "osm:node/3", "name": "Музей пограничников", "lat": 43.1185, "lon": 131.8848}),
+        ];
+        let kept = dedupe_places(rows);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0]["id"], "wikipedia:1");
+    }
+
+    #[test]
+    fn phrases_follow_the_requested_categories() {
+        let phrases = phrases_for(&[
+            "restaurant".to_string(),
+            "cafe".to_string(),
+            "museum".to_string(),
+            "park".to_string(),
+        ]);
+        assert_eq!(phrases.len(), MAX_PHRASES);
+        assert_eq!(phrases[0].text, "ресторан");
+        assert_eq!(phrases[1].text, "кафе");
+        assert_eq!(phrases[2].text, "музей");
+        // "Где поесть" is two phrases: cafés and restaurants are separate
+        // questions for Nominatim.
+        let food = phrases_for(&["food".to_string()]);
+        assert_eq!(food.len(), 2);
+        assert_eq!(food[0].text, "кафе");
+        assert_eq!(food[1].text, "ресторан");
+        assert!(phrases_for(&["cave_entrance".to_string()]).is_empty());
     }
 }

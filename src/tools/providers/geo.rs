@@ -12,6 +12,7 @@ use std::time::{Duration, Instant};
 use serde_json::{json, Value};
 
 use crate::domain::geo::{haversine_km, in_primorye, PRIMORYE_BBOX};
+use crate::tools::providers::is_place_name;
 use crate::tools::registry::ToolCtx;
 
 static NOMINATIM_LIMIT: tokio::sync::Mutex<Option<Instant>> = tokio::sync::Mutex::const_new(None);
@@ -82,16 +83,7 @@ pub async fn nominatim(ctx: &ToolCtx, query: &str, limit: usize) -> Vec<Value> {
         }
     }
 
-    {
-        let mut last = NOMINATIM_LIMIT.lock().await;
-        if let Some(last_request) = *last {
-            let elapsed = last_request.elapsed();
-            if elapsed < Duration::from_secs(1) {
-                tokio::time::sleep(Duration::from_secs(1) - elapsed).await;
-            }
-        }
-        *last = Some(Instant::now());
-    }
+    nominatim_gate().await;
 
     let limit_text = limit.to_string();
     let viewbox = format!(
@@ -149,6 +141,343 @@ pub async fn nominatim(ctx: &ToolCtx, query: &str, limit: usize) -> Vec<Value> {
                 "lon": lon,
                 "bbox": bbox,
                 "kind": kind,
+                "opening_hours": null,
+                "source": "live"
+            }))
+        })
+        .take(limit)
+        .collect();
+
+    let now = Instant::now();
+    let mut cache = NOMINATIM_CACHE.lock().await;
+    cache.retain(|(_, expires, _)| *expires > now);
+    if cache.len() >= NOMINATIM_CACHE_MAX_ENTRIES {
+        cache.remove(0);
+    }
+    cache.push((key, now + NOMINATIM_CACHE_TTL, items.clone()));
+    items
+}
+
+/// Nominatim's fair-use policy is a rate, not a quota: one request per second
+/// per client, which is why every Nominatim call in the process goes through
+/// this gate.
+async fn nominatim_gate() {
+    let mut last = NOMINATIM_LIMIT.lock().await;
+    if let Some(last_request) = *last {
+        let elapsed = last_request.elapsed();
+        if elapsed < Duration::from_secs(1) {
+            tokio::time::sleep(Duration::from_secs(1) - elapsed).await;
+        }
+    }
+    *last = Some(Instant::now());
+}
+
+/// One category of Nominatim's phrase search: the Russian question to ask and
+/// the OSM types the answer may contain.
+///
+/// The phrase search is the only fast way to see a whole city: Nominatim
+/// answers `гостиница` with 50 hotels, `кафе` with 50 cafés and
+/// `достопримечательность` with 50 attractions in under a second, where a map
+/// tile only ever covers one neighbourhood. The type list is what keeps the
+/// answer honest: Nominatim pads a phrase with look-alikes (a bus stop for
+/// `аптека`), and anything outside the list is dropped.
+#[derive(Clone, Copy)]
+pub struct Phrase {
+    pub text: &'static str,
+    pub accepted: &'static [(&'static str, &'static str)],
+}
+
+/// The lodging family, used by both `search_places` and `find_lodging`.
+const LODGING_TYPES: &[(&str, &str)] = &[
+    ("tourism", "hotel"),
+    ("tourism", "guest_house"),
+    ("tourism", "hostel"),
+    ("tourism", "motel"),
+    ("tourism", "apartment"),
+    ("tourism", "chalet"),
+    ("tourism", "camp_site"),
+];
+
+/// Everything people eat in, for the generic "where to eat" request.
+const FOOD_TYPES: &[(&str, &str)] = &[
+    ("amenity", "restaurant"),
+    ("amenity", "cafe"),
+    ("amenity", "fast_food"),
+    ("amenity", "ice_cream"),
+    ("amenity", "bakery"),
+];
+
+/// Nominatim phrases that answer one requested category: usually one, two for
+/// the families that Nominatim splits (restaurants and cafés are separate
+/// phrases, and "where to eat" means both). An empty list means this category
+/// has no phrase and is left to the map tiles and Overpass.
+pub fn phrases_for(category: &str) -> Vec<Phrase> {
+    let category = category.to_lowercase();
+    let raw = category
+        .split_once('=')
+        .map(|(_, value)| value.trim())
+        .unwrap_or(category.as_str());
+    let has = |needle: &str| raw.contains(needle);
+    let phrases: Vec<Phrase> = if has("hotel") || has("отель") || has("гостин") || has("lodging")
+    {
+        vec![Phrase {
+            text: "гостиница",
+            accepted: LODGING_TYPES,
+        }]
+    } else if has("hostel") || has("хостел") {
+        vec![Phrase {
+            text: "хостел",
+            accepted: &[("tourism", "hostel")],
+        }]
+    } else if has("guest_house") || has("гостевой дом") {
+        vec![Phrase {
+            text: "гостевой дом",
+            accepted: &[("tourism", "guest_house")],
+        }]
+    } else if has("camp_site") || has("кемпинг") {
+        vec![Phrase {
+            text: "кемпинг",
+            accepted: &[("tourism", "camp_site")],
+        }]
+    } else if has("resort") || has("база отдыха") {
+        vec![Phrase {
+            text: "база отдыха",
+            accepted: &[
+                ("leisure", "resort"),
+                ("tourism", "hotel"),
+                ("tourism", "guest_house"),
+                ("tourism", "chalet"),
+                ("tourism", "camp_site"),
+            ],
+        }]
+    } else if has("restaurant") || has("ресторан") {
+        vec![Phrase {
+            text: "ресторан",
+            accepted: &[("amenity", "restaurant")],
+        }]
+    } else if has("fast_food") || has("пицц") {
+        vec![Phrase {
+            text: "пицца",
+            accepted: &[
+                ("amenity", "fast_food"),
+                ("amenity", "restaurant"),
+                ("amenity", "cafe"),
+            ],
+        }]
+    } else if has("food") || has("еда") || has("поесть") || has("перекус") {
+        vec![
+            Phrase {
+                text: "кафе",
+                accepted: FOOD_TYPES,
+            },
+            Phrase {
+                text: "ресторан",
+                accepted: &[("amenity", "restaurant")],
+            },
+        ]
+    } else if has("cafe") || has("кафе") || has("кофейн") {
+        vec![Phrase {
+            text: "кафе",
+            accepted: &[("amenity", "cafe")],
+        }]
+    } else if has("bakery") || has("пекарн") || has("хлеб") {
+        vec![Phrase {
+            text: "пекарня",
+            accepted: &[("shop", "bakery"), ("amenity", "bakery")],
+        }]
+    } else if has("bar") || has("бар") {
+        vec![Phrase {
+            text: "бар",
+            accepted: &[("amenity", "bar"), ("amenity", "pub")],
+        }]
+    } else if has("pub") || has("паб") {
+        vec![Phrase {
+            text: "паб",
+            accepted: &[("amenity", "pub")],
+        }]
+    } else if has("club") || has("клуб") || has("night") || has("ночн") {
+        vec![Phrase {
+            text: "ночной клуб",
+            accepted: &[("amenity", "nightclub")],
+        }]
+    } else if has("museum") || has("музе") {
+        vec![Phrase {
+            text: "музей",
+            accepted: &[("tourism", "museum")],
+        }]
+    } else if has("attraction") || has("достоприм") || has("sight") {
+        vec![Phrase {
+            text: "достопримечательность",
+            accepted: &[("tourism", "attraction"), ("tourism", "artwork")],
+        }]
+    } else if has("viewpoint") || has("смотров") {
+        vec![Phrase {
+            text: "смотровая площадка",
+            accepted: &[("tourism", "viewpoint")],
+        }]
+    } else if has("beach") || has("пляж") {
+        vec![Phrase {
+            text: "пляж",
+            accepted: &[("natural", "beach")],
+        }]
+    } else if has("aquarium") || has("океанариум") || has("дельфинар") {
+        vec![Phrase {
+            text: "океанариум",
+            accepted: &[("tourism", "aquarium")],
+        }]
+    } else if has("waterfall") || has("водопад") {
+        vec![Phrase {
+            text: "водопад",
+            accepted: &[("waterway", "waterfall"), ("natural", "waterfall")],
+        }]
+    } else if has("sauna") || has("баня") || has("сауна") {
+        vec![Phrase {
+            text: "баня",
+            accepted: &[("leisure", "sauna"), ("amenity", "sauna")],
+        }]
+    } else if has("market") || has("рын") {
+        vec![Phrase {
+            text: "рынок",
+            accepted: &[("amenity", "marketplace")],
+        }]
+    } else if has("theat") || has("театр") {
+        vec![Phrase {
+            text: "театр",
+            accepted: &[("amenity", "theatre")],
+        }]
+    } else if has("cinema") || has("кино") {
+        vec![Phrase {
+            text: "кинотеатр",
+            accepted: &[("amenity", "cinema")],
+        }]
+    } else if has("pharmacy") || has("аптек") {
+        vec![Phrase {
+            text: "аптека",
+            accepted: &[("amenity", "pharmacy")],
+        }]
+    } else if has("supermarket") || has("супермаркет") {
+        vec![Phrase {
+            text: "супермаркет",
+            accepted: &[("shop", "supermarket")],
+        }]
+    } else if has("mall") || has("молл") || has("торгов") {
+        vec![Phrase {
+            text: "торговый центр",
+            accepted: &[("shop", "mall"), ("shop", "department_store")],
+        }]
+    } else if has("clothes") || has("одежд") || has("шопинг") {
+        vec![Phrase {
+            text: "магазин одежды",
+            accepted: &[("shop", "clothes")],
+        }]
+    } else if has("park") || has("парк") {
+        vec![Phrase {
+            text: "парк",
+            accepted: &[("leisure", "park")],
+        }]
+    } else {
+        Vec::new()
+    };
+    phrases
+}
+
+/// Category search on Nominatim: the named objects of one phrase inside the
+/// window, closest first. Answers are cached next to the geocoding results so a
+/// repeated plan for the same city costs one request and no rate-limit wait.
+pub async fn nominatim_pois(
+    ctx: &ToolCtx,
+    phrase: &Phrase,
+    bbox: (f64, f64, f64, f64),
+    limit: usize,
+) -> Vec<Value> {
+    let (south, west, north, east) = bbox;
+    let key = format!(
+        "poi|{}|{south:.3},{west:.3},{north:.3},{east:.3}|{limit}",
+        phrase.text
+    );
+    {
+        let cache = NOMINATIM_CACHE.lock().await;
+        if let Some((_, _, items)) = cache
+            .iter()
+            .find(|(cached_key, expires, _)| *cached_key == key && *expires > Instant::now())
+        {
+            return items.clone();
+        }
+    }
+
+    nominatim_gate().await;
+
+    let limit_text = limit.to_string();
+    let viewbox = format!("{west:.4},{north:.4},{east:.4},{south:.4}");
+    let response = match ctx
+        .http
+        .get("https://nominatim.openstreetmap.org/search")
+        .query(&[
+            ("format", "jsonv2"),
+            ("q", phrase.text),
+            ("limit", limit_text.as_str()),
+            ("viewbox", viewbox.as_str()),
+            ("bounded", "1"),
+            ("accept-language", "ru"),
+        ])
+        .header("User-Agent", &ctx.nominatim_user_agent)
+        .send()
+        .await
+    {
+        Ok(response) if response.status().is_success() => response,
+        _ => return Vec::new(),
+    };
+    let Ok(raw_items) = response.json::<Vec<Value>>().await else {
+        return Vec::new();
+    };
+    let items: Vec<Value> = raw_items
+        .into_iter()
+        .filter_map(|item| {
+            let lat = item.get("lat")?.as_str()?.parse::<f64>().ok()?;
+            let lon = item.get("lon")?.as_str()?.parse::<f64>().ok()?;
+            if !in_primorye(lat, lon) {
+                return None;
+            }
+            let category = item
+                .get("category")
+                .or_else(|| item.get("class"))
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            let type_name = item.get("type").and_then(Value::as_str).unwrap_or("");
+            if !phrase
+                .accepted
+                .iter()
+                .any(|(key, value)| *key == category && *value == type_name)
+            {
+                return None;
+            }
+            let name = item
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::trim)
+                .filter(|name| !name.is_empty())
+                .map(str::to_string)
+                .or_else(|| {
+                    item.get("display_name")
+                        .and_then(Value::as_str)
+                        .map(short_name)
+                })
+                // An object without a name answers with its house number
+                // ("51, улица Ленинская"): a card called "51" is noise, and the
+                // plan cannot name such a stop either.
+                .filter(|name| is_place_name(name))?;
+            let osm_type = item
+                .get("osm_type")
+                .and_then(Value::as_str)
+                .unwrap_or("node");
+            let osm_id = item.get("osm_id").and_then(Value::as_u64).unwrap_or(0);
+            Some(json!({
+                "id": format!("osm:{osm_type}/{osm_id}"),
+                "name": name,
+                "lat": lat,
+                "lon": lon,
+                "kind": crate::tools::providers::osmmap::kind_from_tag(category, type_name),
+                "osm_tag": format!("{category}={type_name}"),
                 "opening_hours": null,
                 "source": "live"
             }))

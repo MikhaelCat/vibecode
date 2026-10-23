@@ -1,13 +1,15 @@
 use std::collections::HashSet;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
 use crate::domain::facts::{SourceKind, ToolOutput};
 use crate::domain::geo::haversine_km;
-use crate::tools::providers::geo;
-use crate::tools::providers::{fallback_lodging, limit_from, load_mock};
+use crate::tools::providers::{
+    fallback_lodging, geo, is_place_name, limit_from, load_mock, normalize_name, osmmap, overpass,
+    DEFAULT_AREA_CITY,
+};
 use crate::tools::registry::{Tool, ToolCtx, ToolError};
 
 pub struct LodgingTool;
@@ -52,7 +54,7 @@ impl Tool for LodgingTool {
                 "Жильё: укажите населённый пункт, бухту или район".to_string(),
             ));
         }
-        let limit = limit_from(&args, 3, 10);
+        let limit = limit_from(&args, 5, 10);
 
         let Some(area) = geo::resolve_area(ctx, &requested).await else {
             return Ok(ToolOutput::ok(
@@ -61,16 +63,76 @@ impl Tool for LodgingTool {
                 format!("Жильё: не удалось определить «{requested}»"),
             ));
         };
+        // "Пожить по Приморью" is not a place: the krai centroid is nobody's
+        // city and its hotels would sit 400 km from the plan. A region-wide
+        // request gets the default starting city, exactly as `search_places`.
+        let area = if area.radius_km >= 100.0 {
+            match geo::resolve_area(ctx, DEFAULT_AREA_CITY).await {
+                Some(city) => city,
+                None => area,
+            }
+        } else {
+            area
+        };
 
         // Level 1: the hub turns a small place, bay or cape into the hotels of
         // the place itself plus the nearest town ("Находка" for "Южно-Морской").
         let candidates = crate::domain::hubs::lodging_candidates(&requested);
 
-        // Level 2: one live query around the reference point covers the hub, so
-        // a 22 km neighbour town is found without a request per settlement.
-        let mut options = overpass_lodging(ctx, &area).await;
+        // Level 2: live sources around the reference point, all at once. The
+        // map tiles hold the nearest hotels, guest houses and camp sites of the
+        // settlement itself; Nominatim answers with the lodging of the whole
+        // 35 km window, which is what makes the neighbouring town visible.
+        let deadline = Instant::now() + LIVE_BUDGET;
+        let wanted = lodging_tags();
+        let window = window_around(area.lat, area.lon, NEARBY_KM);
+        let tiles = osmmap::search(ctx, area.lat, area.lon, &wanted, limit.max(3), deadline);
+        let phrases = async {
+            let mut rows: Vec<Value> = Vec::new();
+            for phrase in lodging_phrases().iter().take(MAX_PHRASES) {
+                if Instant::now() >= deadline {
+                    break;
+                }
+                rows.extend(geo::nominatim_pois(ctx, phrase, window, 50).await);
+            }
+            rows
+        };
+        let mut overpass_task = {
+            let http = ctx.http.clone();
+            let body = overpass_body(area.lat, area.lon, NEARBY_KM);
+            Some(tokio::spawn(async move {
+                overpass::query(http, &body, deadline, OVERPASS_BUDGET).await
+            }))
+        };
+
+        let (tiles, phrase_rows) = tokio::join!(tiles, phrases);
+        let mut options: Vec<Value> = tiles.iter().map(tile_option).collect();
+        options.extend(phrase_rows.into_iter().map(|row| {
+            let kind = geo_tag_option_kind(&row);
+            let mut row = row;
+            if let Some(object) = row.as_object_mut() {
+                object.insert("settlement".to_string(), json!(""));
+                object.insert("price_per_night".to_string(), json!(0));
+                object.insert("kind".to_string(), json!(kind));
+            }
+            row
+        }));
+        let live_found = options.len();
+        // Overpass covers the corners the tiles and Nominatim miss (a holiday
+        // camp on the coast, a hostel in the next settlement); it is only
+        // waited for while the answer is thin.
+        if live_found < limit {
+            if let Some(task) = overpass_task.as_mut() {
+                if let Ok(Ok(Some(value))) = tokio::time::timeout_at(deadline.into(), task).await {
+                    options.extend(parse_lodging_elements(&value, &area));
+                }
+            }
+        }
+        if let Some(task) = overpass_task {
+            task.abort();
+        }
         options.extend(local_lodging(ctx, &requested, &candidates));
-        let options = rank_lodging(options, &area, &requested, limit);
+        let options = rank_lodging(dedupe_lodging(options), &area, &requested, limit);
 
         let live = options
             .iter()
@@ -78,6 +140,12 @@ impl Tool for LodgingTool {
         let summary = if options.is_empty() {
             let hint = nearest_town(&area);
             format!("Жильё в {requested} не найдено{hint}")
+        } else if live {
+            format!(
+                "Жильё в {} и рядом: {} вариантов (живые данные OSM)",
+                area.label,
+                options.len()
+            )
         } else {
             format!(
                 "Жильё в {} и рядом: {} вариантов",
@@ -95,6 +163,194 @@ impl Tool for LodgingTool {
             summary,
         ))
     }
+}
+
+/// Time the live lodging sources may spend. The tool is cut off at
+/// TOOL_TIMEOUT_SECS (15 s); what is missing then comes from the catalogue.
+const LIVE_BUDGET: Duration = Duration::from_secs(12);
+
+/// Overpass may hold a thin answer for this long.
+const OVERPASS_BUDGET: Duration = Duration::from_secs(10);
+
+/// Nominatim phrase requests per lodging search.
+const MAX_PHRASES: usize = 3;
+
+/// Reach of one lodging search: far enough that the nearest town serves a
+/// village, exactly as `rank_lodging` documents.
+const NEARBY_KM: f64 = 35.0;
+
+/// Where people sleep, as OSM tag values.
+fn lodging_tags() -> Vec<String> {
+    [
+        "hotel",
+        "guest_house",
+        "hostel",
+        "motel",
+        "apartment",
+        "chalet",
+        "camp_site",
+        "resort",
+    ]
+    .iter()
+    .map(|value| value.to_string())
+    .collect()
+}
+
+/// Nominatim phrases for lodging, in the order they are asked. "Гостиница"
+/// covers the towns; "база отдыха" is what Primorye calls a holiday camp on the
+/// coast; the rest fill in the villages.
+fn lodging_phrases() -> Vec<geo::Phrase> {
+    vec![
+        geo::Phrase {
+            text: "гостиница",
+            accepted: &[
+                ("tourism", "hotel"),
+                ("tourism", "motel"),
+                ("tourism", "apartment"),
+            ],
+        },
+        geo::Phrase {
+            text: "база отдыха",
+            accepted: &[
+                ("leisure", "resort"),
+                ("tourism", "hotel"),
+                ("tourism", "guest_house"),
+                ("tourism", "chalet"),
+                ("tourism", "camp_site"),
+                ("tourism", "apartment"),
+            ],
+        },
+        geo::Phrase {
+            text: "гостевой дом",
+            accepted: &[("tourism", "guest_house"), ("tourism", "chalet")],
+        },
+        geo::Phrase {
+            text: "хостел",
+            accepted: &[("tourism", "hostel")],
+        },
+    ]
+}
+
+/// A square search window around a point.
+fn window_around(lat: f64, lon: f64, radius_km: f64) -> (f64, f64, f64, f64) {
+    let delta_lat = radius_km / 111.0;
+    let delta_lon = radius_km / (111.0 * lat.to_radians().cos().abs().max(0.2));
+    (
+        lat - delta_lat,
+        lon - delta_lon,
+        lat + delta_lat,
+        lon + delta_lon,
+    )
+}
+
+/// One map-API object as a lodging option.
+fn tile_option(poi: &osmmap::Poi) -> Value {
+    json!({
+        "id": poi.id,
+        "name": poi.name,
+        "settlement": "",
+        "lat": poi.lat,
+        "lon": poi.lon,
+        "price_per_night": 0,
+        "kind": lodging_kind(poi.tourism.as_deref()),
+        "source": "live",
+        "distance_meters": poi.distance_meters,
+    })
+}
+
+/// The lodging vocabulary of the UI: a hotel, a guest house, a hostel or an
+/// apartment. A holiday camp and a camp site are guest houses for a traveller.
+fn lodging_kind(tourism: Option<&str>) -> &'static str {
+    match tourism {
+        Some("hostel") => "hostel",
+        Some("apartment") => "apartment",
+        Some("hotel") | Some("motel") => "hotel",
+        _ => "guesthouse",
+    }
+}
+
+/// The kind of a Nominatim lodging row from its raw OSM tag (`osm_tag`).
+fn geo_tag_option_kind(row: &Value) -> &'static str {
+    let tag = row.get("osm_tag").and_then(Value::as_str).unwrap_or("");
+    let (_, value) = tag.split_once('=').unwrap_or(("", tag));
+    lodging_kind(Some(value.trim()))
+}
+
+/// One Overpass lodging query over the whole 35 km window.
+fn overpass_body(lat: f64, lon: f64, radius_km: f64) -> String {
+    let (south, west, north, east) = window_around(lat, lon, radius_km);
+    format!(
+        "[out:json][timeout:12];\
+         (nwr[\"tourism\"~\"hotel|guest_house|hostel|motel|apartment|chalet|camp_site|resort\"]({south:.4},{west:.4},{north:.4},{east:.4});\
+         nwr[\"leisure\"=\"resort\"]({south:.4},{west:.4},{north:.4},{east:.4}););\
+         out center 120;"
+    )
+}
+
+fn parse_lodging_elements(value: &Value, area: &geo::Area) -> Vec<Value> {
+    let Some(elements) = value.get("elements").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut options = Vec::new();
+    let mut seen = HashSet::new();
+    for element in elements {
+        let Some(tags) = element.get("tags") else {
+            continue;
+        };
+        let Some(name) = tags
+            .get("name:ru")
+            .or_else(|| tags.get("name"))
+            .and_then(Value::as_str)
+            .filter(|name| is_place_name(name))
+        else {
+            continue;
+        };
+        let lat = element.get("lat").and_then(Value::as_f64).or_else(|| {
+            element
+                .get("center")
+                .and_then(|center| center.get("lat"))
+                .and_then(Value::as_f64)
+        });
+        let lon = element.get("lon").and_then(Value::as_f64).or_else(|| {
+            element
+                .get("center")
+                .and_then(|center| center.get("lon"))
+                .and_then(Value::as_f64)
+        });
+        let (Some(lat), Some(lon)) = (lat, lon) else {
+            continue;
+        };
+        let element_type = element
+            .get("type")
+            .and_then(Value::as_str)
+            .unwrap_or("node");
+        let id = element
+            .get("id")
+            .and_then(Value::as_u64)
+            .map(|id| format!("osm:{element_type}/{id}"))
+            .unwrap_or_else(|| format!("osm:{element_type}/{name}"));
+        if !seen.insert(id.clone()) {
+            continue;
+        }
+        let tourism = tags.get("tourism").and_then(Value::as_str);
+        let kind = if tourism.is_some() {
+            lodging_kind(tourism)
+        } else {
+            "guesthouse"
+        };
+        options.push(json!({
+            "id": id,
+            "name": name,
+            "settlement": "",
+            "lat": lat,
+            "lon": lon,
+            "price_per_night": 0,
+            "kind": kind,
+            "source": "live",
+            "distance_meters": (haversine_km((area.lat, area.lon), (lat, lon)) * 1000.0).round()
+        }));
+    }
+    options
 }
 
 /// Keeps the options that belong to the place: closest 15 km first, then the
@@ -256,100 +512,51 @@ fn local_lodging(ctx: &ToolCtx, requested: &str, candidates: &[String]) -> Vec<V
     matched
 }
 
-async fn overpass_lodging(ctx: &ToolCtx, area: &geo::Area) -> Vec<Value> {
-    // One query covers the place itself and the nearest town: the reported
-    // example is 22 km from Южно-Морской to Находка, so a 35 km box is used
-    // and the ranking step decides which distances are acceptable.
-    let lat_delta = 35.0 / 111.0;
-    let lon_delta = 35.0 / (111.0 * area.lat.to_radians().cos().abs().max(0.2));
-    let (south, north) = (area.lat - lat_delta, area.lat + lat_delta);
-    let (west, east) = (area.lon - lon_delta, area.lon + lon_delta);
-    let query = format!(
-        "[out:json][timeout:8];\
-         (nwr[\"tourism\"~\"hotel|guest_house|hostel|apartment|camp_site|chalet\"]({south:.4},{west:.4},{north:.4},{east:.4}););\
-         out center 60;"
-    );
-    let _permit = match crate::tools::providers::OVERPASS_SLOTS.acquire().await {
-        Ok(permit) => permit,
-        Err(_) => return Vec::new(),
-    };
-    let response = match tokio::time::timeout(
-        Duration::from_secs(9),
-        ctx.http
-            .post("https://overpass-api.de/api/interpreter")
-            .body(query)
-            .send(),
-    )
-    .await
-    {
-        Ok(Ok(response)) if response.status().is_success() => response,
-        _ => return Vec::new(),
-    };
-    let Ok(value) = response.json::<Value>().await else {
-        return Vec::new();
-    };
-    let Some(elements) = value.get("elements").and_then(Value::as_array) else {
-        return Vec::new();
-    };
-    let mut options = Vec::new();
-    let mut seen = HashSet::new();
-    for element in elements {
-        let Some(tags) = element.get("tags") else {
-            continue;
-        };
-        let Some(name) = tags
-            .get("name:ru")
-            .or_else(|| tags.get("name"))
+/// One place, one card. The demo catalogue repeats what the live sources have
+/// already found ("Пекинский Дворик" is in both), and a duplicate wastes one of
+/// the few slots the plan sees. The live row wins: it carries coordinates and
+/// the real kind, while the catalogue row stays only for places the live answer
+/// does not know at all.
+fn dedupe_lodging(options: Vec<Value>) -> Vec<Value> {
+    let mut live_names: Vec<(String, Option<(f64, f64)>)> = Vec::new();
+    let mut kept: Vec<Value> = Vec::new();
+    for option in options {
+        let name = option
+            .get("name")
             .and_then(Value::as_str)
-        else {
-            continue;
+            .map(normalize_name)
+            .unwrap_or_default();
+        let coords = match (
+            option.get("lat").and_then(Value::as_f64),
+            option.get("lon").and_then(Value::as_f64),
+        ) {
+            (Some(lat), Some(lon)) => Some((lat, lon)),
+            _ => None,
         };
-        let lat = element.get("lat").and_then(Value::as_f64).or_else(|| {
-            element
-                .get("center")
-                .and_then(|center| center.get("lat"))
-                .and_then(Value::as_f64)
-        });
-        let lon = element.get("lon").and_then(Value::as_f64).or_else(|| {
-            element
-                .get("center")
-                .and_then(|center| center.get("lon"))
-                .and_then(Value::as_f64)
-        });
-        let (Some(lat), Some(lon)) = (lat, lon) else {
-            continue;
-        };
-        let element_type = element
-            .get("type")
-            .and_then(Value::as_str)
-            .unwrap_or("node");
-        let id = element
-            .get("id")
-            .and_then(Value::as_u64)
-            .map(|id| format!("osm:{element_type}/{id}"))
-            .unwrap_or_else(|| format!("osm:{element_type}/{name}"));
-        if !seen.insert(id.clone()) {
+        if name.is_empty() {
             continue;
         }
-        let kind = match tags.get("tourism").and_then(Value::as_str) {
-            Some("hotel") => "hotel",
-            Some("hostel") => "hostel",
-            Some("apartment") => "apartment",
-            _ => "guesthouse",
-        };
-        options.push(json!({
-            "id": id,
-            "name": name,
-            "settlement": "",
-            "lat": lat,
-            "lon": lon,
-            "price_per_night": 0,
-            "kind": kind,
-            "source": "live",
-            "distance_meters": (haversine_km((area.lat, area.lon), (lat, lon)) * 1000.0).round()
-        }));
+        let live = option.get("source").and_then(Value::as_str) == Some("live");
+        let duplicate = live_names.iter().any(|(known, known_coords)| {
+            *known == name
+                && match (coords, known_coords) {
+                    // One place, usually one point: half a kilometre covers a
+                    // hotel mapped both as a node and as a building.
+                    (Some(point), Some(known)) => haversine_km(point, *known) < 0.5,
+                    // The catalogue sometimes has no coordinates: the name is
+                    // all it can match on.
+                    _ => true,
+                }
+        });
+        if duplicate {
+            continue;
+        }
+        if live {
+            live_names.push((name, coords));
+        }
+        kept.push(option);
     }
-    options
+    kept
 }
 
 #[cfg(test)]
@@ -379,5 +586,18 @@ mod tests {
     fn nearby_lodging_keeps_the_place_name() {
         let label = settlement_label(42.8607, 131.3924, "Славянка", 0.4);
         assert_eq!(label, "Славянка");
+    }
+
+    #[test]
+    fn the_catalogue_does_not_repeat_a_live_hotel() {
+        let options = vec![
+            json!({"id": "osm:node/1", "name": "Пекинский Дворик", "lat": 43.1170, "lon": 131.8838, "kind": "hotel", "source": "live"}),
+            json!({"id": "mock:lodging/pekinskiy", "name": "Пекинский дворик", "lat": 43.1170, "lon": 131.8838, "kind": "hotel", "source": "mock", "price_per_night": 4200}),
+            json!({"id": "mock:lodging/versailles", "name": "Версаль", "lat": 43.1160, "lon": 131.8860, "kind": "hotel", "source": "mock", "price_per_night": 3800}),
+        ];
+        let kept = dedupe_lodging(options);
+        assert_eq!(kept.len(), 2);
+        assert_eq!(kept[0]["source"], "live");
+        assert_eq!(kept[1]["name"], "Версаль");
     }
 }
